@@ -11,7 +11,7 @@
 > **Read what you run. No warranty, no support, your risk.**
 
 Turns an **Amazon Echo** into a **Home Assistant voice satellite** that never talks to Amazon. Works on the Echo Dot 3
-(2018); see [Supported Echos](#supported-echos).
+(2018) and the Echo Dot 2; see [Supported Echos](#supported-echos).
 
 Amazon's microphone processing (echo cancellation, beamforming, per-device mic calibration) and wake word engine stay,
 so it hears you across the room and over its own music like before. Only the Alexa client is replaced, by a small daemon
@@ -22,6 +22,7 @@ called `hassmic` that speaks to Home Assistant as an ESPHome device (default) or
 |    | Echo                         | Model  | Codename                               | Way in                                           |
 |----|------------------------------|--------|----------------------------------------|--------------------------------------------------|
 | ✅ | Echo Dot 3rd gen (2018)      | D9N29T | [`donut`](devices/donut/README.md)     | open the case, wires on test pads                |
+| ✅ | Echo Dot 2nd gen (2016)      | RS03QR | [`biscuit`](devices/biscuit/README.md) | micro-USB, no soldering                          |
 | ❌ | Echo Dot 3rd gen (2019–2020) | C78MP8 | `crumpet`                              | the Dot 3 unlock does not work on it             |
 | ❌ | Echo Dot 3rd gen with clock  | 36EBT3 | `doebrite`                             | thought to be `crumpet` hardware                 |
 
@@ -89,8 +90,8 @@ Details:
 
 ## Requirements
 
-- A [supported Echo](#supported-echos) and a USB way into it: wires soldered or held on test pads
-  on the Echo Dot 3. The model's page says what exactly.
+- A [supported Echo](#supported-echos) and a USB way into it: a plain cable on the Echo Dot 2, wires soldered or held
+  on test pads on the Echo Dot 3. The model's page says what exactly.
 - A **Linux PC** with `adb`, `fastboot`, `python3`, `make`, `unzip`, `debugfs` (e2fsprogs), `sqlite3`, ~5 GB free disk.
 - **Home Assistant** with a working Assist pipeline (speech-to-text, conversation agent, text-to-speech). Test it with
   the app first. Optional: Music Assistant (tested with 2.10.4).

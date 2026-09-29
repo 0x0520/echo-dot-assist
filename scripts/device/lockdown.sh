@@ -20,6 +20,9 @@
 # DNS (port 53) is also allowed to the resolvers the network handed out, whatever their address: DHCP often names a public
 # one next to the router (8.8.8.8), and a name that resolves publicly to a LAN address then still works.  Queries already
 # leave through a local resolver anyway, so this opens nothing new.
+# Firmware without ip6tables (biscuit's 6574.1 has none) cannot filter IPv6 at all: there IPv6 is switched off on every
+# interface instead, so a router that hands out global IPv6 addresses cannot open a way around the lock.  hassmic only
+# speaks IPv4, so nothing of ours is lost.
 # Does not cover the seconds between Wi-Fi association at boot and this script: block the device's MAC at the router as
 # well if "never" has to be strict.
 LOCAL4="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 224.0.0.0/4 255.255.255.255"
@@ -29,6 +32,9 @@ NET_GID=3990
 # still goes up (it needs none of that); only stopping services and the stock-online guard have nothing to work with.
 CONF="${0%/*}/device.conf"
 if [ -f "$CONF" ]; then . "$CONF"; else echo "!! $CONF missing: services not stopped, stock-online guard unavailable"; fi
+
+HAVE6=; command -v ip6tables > /dev/null && HAVE6=1
+v6off() { for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do echo 1 > $f || echo "!! IPv6 NOT OFF ($f): take the Echo offline"; done; }
 
 # DNS servers from DHCP (dhcp.<iface>.dnsN) and the system's own (net.dnsN), one per line, sorted
 resolvers() { getprop | sed -nE 's/^\[(dhcp\.[^.]+|net)\.dns[0-9]+\]: \[([^]]+)\]$/\2/p' | sort -u; }
@@ -45,6 +51,7 @@ apply() {
     iptables -w -A hassmic_out -j DROP
     while iptables -w -D OUTPUT -j hassmic_out 2>/dev/null; do :; done
     iptables -w -I OUTPUT 1 -j hassmic_out
+    [ -n "$HAVE6" ] || { v6off; return; }
     ip6tables -w -N hassmic_out 2>/dev/null
     ip6tables -w -F hassmic_out
     ip6tables -w -A hassmic_out -o lo -j RETURN
@@ -59,7 +66,8 @@ apply() {
 
 # Stock firewall.sh uses the owner match itself, so the kernel has it.  A rule that fails to load must not pass silently.
 apply_ota() {
-    for t in iptables ip6tables; do
+    [ -n "$HAVE6" ] || v6off
+    for t in iptables ${HAVE6:+ip6tables}; do
         $t -w -N hassmic_out 2>/dev/null
         $t -w -F hassmic_out
         $t -w -A hassmic_out -o lo -j RETURN
@@ -76,7 +84,7 @@ if [ "$1" = ota-only ]; then
     apply_ota; ota_off
     echo "stock-online: only the updaters are cut off"; iptables -w -S hassmic_out
     # update_engine is started on demand, and "start" undoes a "stop": keep at it.
-    [ "$2" = watch ] && while sleep 5; do first || { apply_ota; echo "OTA guard re-applied"; }; ota_off; done
+    [ "$2" = watch ] && while sleep 5; do first || { apply_ota; echo "OTA guard re-applied"; }; ota_off; [ -n "$HAVE6" ] || v6off; done
     exit 0
 fi
 
@@ -87,11 +95,12 @@ fi
 for s in $ALEXA_SERVICES $UPDATE_SERVICES $UPDATE_ONDEMAND $CLOUD_SERVICES; do stop $s 2>/dev/null; done
 [ -n "$ALEXA_PROP" ] && setprop $ALEXA_PROP 0
 [ "$1" = services ] && exit 0
-echo "egress limited to local addresses"; iptables -w -S hassmic_out
+echo "egress limited to local addresses$([ -n "$HAVE6" ] || echo ", IPv6 off (no ip6tables)")"; iptables -w -S hassmic_out
 
 # Re-apply as well when the resolvers change (other network, new DHCP lease).
 [ "$1" = watch ] && while sleep 5; do
     if ! first; then apply; echo "lockdown re-applied"
     elif [ "$(resolvers)" != "$DNS" ]; then apply; echo "lockdown re-applied, resolvers:" $DNS; fi
+    [ -n "$HAVE6" ] || v6off                        # an interface that comes up later starts with IPv6 on
 done
 exit 0

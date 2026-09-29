@@ -10,6 +10,7 @@ const struct board board = {
     .keypad = "/dev/input/event3",                                  /* gpio-keys: action, volume */
     .privacy_state = "/sys/devices/platform/gpio-privacy/state",
     .privacy_input = "/dev/input/event1",                           /* gpio-privacy driver, not the keypad */
+    .privacy_latch = 1,
 
     .bt_dev = "/dev/stpbt",                                         /* MediaTek WMT combo chip */
     .bt_service = "btmanagerd",

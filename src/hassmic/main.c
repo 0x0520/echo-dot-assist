@@ -46,7 +46,7 @@
 #define TTS_RATE         22050      /* assumed when audio-start carries no rate */
 
 static const char *const state_names[] = { "idle", "listening", "thinking", "speaking" };
-static int use_led = 1, use_earcon = 1, use_volume = 1, use_bt_announce = 1;
+static int use_led = 1, use_earcon = 1, use_volume = 1, use_bt_announce = 1, use_bt = 1;
 static atomic_int sounds_pending;
 static void sound_queue(enum sound s) { atomic_fetch_or(&sounds_pending, 1 << s); }                          /* played by the earcon thread */
 static void sound_request(enum sound s) { if (use_earcon) sound_queue(s); }
@@ -255,6 +255,10 @@ static void pipeline_start(void)
 int core_wake_sound(int set) { if (set >= 0) use_earcon = set; return use_earcon; }
 
 int core_bt_announce(int set) { if (set >= 0) use_bt_announce = set; return use_bt_announce; }
+
+/* Models whose controller does not answer to our bring-up yet (biscuit's MT8163 combo) run with -B: no A2DP sink, no
+ * Bluetooth proxy; the stock stack may keep the radio. */
+int core_bluetooth(int set) { if (set >= 0) use_bt = set; return use_bt; }
 
 /* Stock Alexa played its Bluetooth chime and said "Now connected to <name>".  The chime is on the image; there is no TTS
  * engine on it, so the words come from Home Assistant (the protocol asks it) and only while it is connected. */
@@ -854,7 +858,7 @@ int main(int argc, char **argv)
 {
     const char *manifest = NULL, *input = board.keypad; int port = 0, print_mdns = 0, o;
     core_name = board.default_name;
-    while ((o = getopt(argc, argv, "P:p:n:w:m:b:z:o:a:LEVST")) != -1) switch (o) {
+    while ((o = getopt(argc, argv, "P:p:n:w:m:b:z:o:a:LEVSTB")) != -1) switch (o) {
         case 'P': proto = !strcmp(optarg, "wyoming") ? &proto_wyoming : &proto_esphome; break;
         case 'p': port = atoi(optarg); break;
         case 'n': core_name = optarg; break;
@@ -868,6 +872,7 @@ int main(int argc, char **argv)
         case 'E': use_earcon = 0; break;
         case 'V': use_volume = 0; break;
         case 'S': print_mdns = 1; break;
+        case 'B': use_bt = 0; break;
         case 'T': { char tok[160]; sendspin_init(); sendspin_pairing_token(tok, sizeof tok); puts(tok); return 0; }
         default: fprintf(stderr, "usage: hassmic [-P esphome|wyoming] [-p port] [-n name] [-w local|remote] [-m manifest] [-b input-device] [-z port] [-o port] [-a port] [-L] [-E] [-V] [-S]\n"); return 2;
     }
@@ -899,7 +904,7 @@ int main(int argc, char **argv)
     else if (buttons_muted()) on_mute(1);
 
     if (core_sendspin_port) sendspin_start(core_sendspin_port);
-    a2dp_start(NULL);
+    if (use_bt) a2dp_start(NULL);
     if (ota_port) ota_start(ota_port);
 
     int ls = net_listen(core_port);

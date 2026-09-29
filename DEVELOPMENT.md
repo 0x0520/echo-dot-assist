@@ -24,7 +24,7 @@ rules. `DEVICE` picks one (default `donut`). The adb scripts check it against th
 
 | Path | What |
 |---|---|
-| `devices/` | one directory per Echo model (`donut`): `device.mk`, `board.c`, `device.conf`, `hassmic.rc`, `sepolicy.rules`, `setup.sh`, install instructions |
+| `devices/` | one directory per Echo model (`donut`, `biscuit`): `device.mk`, `board.c`, `device.conf`, `hassmic.rc`, `sepolicy.rules`, `setup.sh`, install instructions |
 | `src/hassmic/` | the daemon: core (capture, wake word, playback, LEDs, buttons), `proto_esphome.c`, `proto_wyoming.c`, `arb.c` (wake word arbitration between Echos), `sendspin.c`, `a2dp.c`, `ble.c`, push updates |
 | `src/tools/` | `mixcap`, `mixplay`, `pryon_test`, `latency`, `otatool`, `runas` (AIPC refuses uid 0, the image has no `su`), `curlspy`, `hciscan` (raw HCI on `/dev/stpbt`) |
 | `src/include/` | C headers for the reversed `libmixerAPI.so` and `libpryon.so` |

@@ -875,7 +875,16 @@ static int setup(void)
 {
     /* LE events: connection, advertising report, connection update, remote features, LTK request, P-256 key, DHKey */
     static const unsigned char mask[8] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f }, le_mask[8] = { 0x9f, 0x01 };
-    if (cmd(OP_RESET, NULL, 0) || cmd(OP_EVENT_MASK, mask, 8) || cmd(OP_LE_EVENT_MASK, le_mask, 8)) return -1;
+    /* Bluetooth 4.0 LE events only: biscuit's MT8163 combo chip refuses the P-256 / DHKey bits with status 0x20
+     * (unsupported parameter value).  Without those events LE Secure Connections cannot work; the supported-commands check
+     * below decides it as before. */
+    static const unsigned char le_mask40[8] = { 0x1f };
+    int st;
+    if ((st = cmd(OP_RESET, NULL, 0)) || (st = cmd(OP_EVENT_MASK, mask, 8)) ||
+        ((st = cmd(OP_LE_EVENT_MASK, le_mask, 8)) && (st < 0 || (st = cmd(OP_LE_EVENT_MASK, le_mask40, 8))))) {
+        if (st > 0) fprintf(stderr, "bluetooth: command %04x refused, HCI status 0x%02x\n", cc_op, st);    /* timeouts say so in cmd() */
+        return -1;
+    }
     if (cmd(OP_LE_READ_BUFFER, NULL, 0) == 0 && u16(cc_ret)) { acl_len = u16(cc_ret); acl_num = cc_ret[2]; }
     else if (cmd(OP_READ_BUFFER, NULL, 0) == 0) { acl_len = u16(cc_ret); acl_num = u16(cc_ret + 3); }    /* shared with BR/EDR */
     if (acl_len < 27) acl_len = 27;

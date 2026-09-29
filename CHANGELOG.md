@@ -4,6 +4,16 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-09-28
 
+- **Echo Dot 2 (`biscuit`) supported.** Tried on a real Echo Dot 2 with the guided setup (`scripts/setup.sh biscuit`):
+  micro-USB, no soldering. Its pinned firmware (Fire OS 6574.1, the same build generation as `donut`) has
+  `libmixerAPI.so` and `libpryon.so` byte-identical to donut's. Unlock files (R0rt1z2's amonet v2.0.0, `boot-root.zip`,
+  firmware) go to `firmware/biscuit/`. It has no mute latch: the mute button is a key, toggled in software.
+- **Bluetooth on the Echo Dot 2.** Its chip only knows Bluetooth 4.0 LE events and refused hassmic's start-up, so
+  Bluetooth was off. hassmic now falls back to the 4.0 set: Bluetooth proxy and speaker mode start on the Dot 2
+  (pairing uses the older LE method there, which the chip is limited to). `-B` leaves Bluetooth to the stock stack on
+  a model where it does not work yet.
+- **Firewall on Echos without IPv6 filtering.** The Dot 2's firmware has no `ip6tables`, so the lock could not cover
+  IPv6 while the log claimed it did. There IPv6 is now switched off entirely; hassmic only uses IPv4.
 - **Other wake words in one command.** `scripts/wakeword.sh <echo-ip>` puts "Echo", "Computer", "Amazon", "Ziggy" (or
   "Alexa" in another language) on an installed Echo. Models fetched once work on every Echo, so a second Echo needs
   no Amazon account at all: pick from the list, it checks the model on that Echo and restarts it. For a new one it

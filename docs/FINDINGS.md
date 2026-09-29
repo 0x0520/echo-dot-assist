@@ -52,7 +52,7 @@ the processed mic stream has one consumer, and the wake word runs inside `Puffin
 
 ## Running bionic binaries on the PC
 
-`qemu-arm -L firmware/rootfs` hangs in a futex unless the PID is below 65536: bionic mutexes store a 16-bit owner tid.
+`qemu-arm -L firmware/donut/rootfs` hangs in a futex unless the PID is below 65536: bionic mutexes store a 16-bit owner tid.
 `tools/qrun.sh` wraps qemu in a fresh PID namespace. `libmixerAPI` clients abort under qemu (no LIPC/D-Bus), `libpryon` works.
 
 ## Protocol choice

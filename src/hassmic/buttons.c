@@ -1,4 +1,5 @@
 #include "buttons.h"
+#include "board.h"
 #include <fcntl.h>
 #include <linux/input.h>
 #include <pthread.h>
@@ -6,8 +7,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PRIVACY_STATE "/sys/devices/platform/gpio-privacy/state"
-#define PRIVACY_INPUT "/dev/input/event1"          /* input device of the gpio-privacy driver */
 #define SHORT_PRESS_MS 1000            /* longer holds belong to acebuttond: 5 s setup mode, 21 s factory reset */
 
 static struct button_handler handler;
@@ -15,7 +14,7 @@ static int fd = -1;
 
 int buttons_muted(void)
 {
-    char c = '0'; int f = open(PRIVACY_STATE, O_RDONLY);
+    char c = '0'; int f = open(board.privacy_state, O_RDONLY);
     if (f < 0) return 0;
     if (read(f, &c, 1) != 1) c = '0';
     close(f);
@@ -74,8 +73,8 @@ int buttons_start(const char *device, const struct button_handler *h)
     fd = open(device, O_RDONLY);
     if (fd < 0) return -1;
     handler = *h;
-    pfd = open(PRIVACY_INPUT, O_RDONLY);
-    if (pfd < 0) fprintf(stderr, "buttons: %s not available, mute button changes go unnoticed\n", PRIVACY_INPUT);
+    if (!board.privacy_input) pfd = -1;
+    else if ((pfd = open(board.privacy_input, O_RDONLY)) < 0) fprintf(stderr, "buttons: %s not available, mute button changes go unnoticed\n", board.privacy_input);
     else if (pthread_create(&t, NULL, privacy_reader, (void *)(long)pfd)) close(pfd);
     return pthread_create(&t, NULL, reader, NULL) ? -1 : 0;
 }

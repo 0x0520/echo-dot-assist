@@ -1,53 +1,74 @@
-# Cross-build for Echo Dot 3 (armv7, Android 7.1 bionic), linking against stock libs.
+# Cross-build for one Echo model, linking against that model's stock libraries.
+#   make [DEVICE=donut]      device binaries into build/$(DEVICE)/, against firmware/$(DEVICE)/rootfs
+# Everything model-specific comes from devices/$(DEVICE)/ (device.mk here, board.c in the daemon); see devices/README.md.
+DEVICE  ?= donut
+ifeq ($(wildcard devices/$(DEVICE)/device.mk),)
+$(error unknown DEVICE "$(DEVICE)": no devices/$(DEVICE)/device.mk)
+endif
+include devices/$(DEVICE)/device.mk
+
 NDK     ?= $(CURDIR)/toolchain/android-ndk-r21e
-CC      := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
-STOCK   := $(CURDIR)/firmware/rootfs/system/lib
+CC      := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin/$(TARGET)-clang
+STOCK   := $(CURDIR)/firmware/$(DEVICE)/rootfs/system/lib
+OUT     := build/$(DEVICE)
+BOARD   := devices/$(DEVICE)/board.c
 BUILD   := $(shell git describe --always --dirty 2>/dev/null || echo nogit)
 CFLAGS  := -O2 -Wall -Wextra -fPIE -Isrc/include -DBUILD='"$(BUILD)"'
 LDFLAGS := -pie -fuse-ld=lld -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs
+STOCK_LIBS = $(addprefix $(STOCK)/,$(filter $(LIBS),$(1)))
 
 # The build id is compiled in; make must notice when it changes (a new commit), not only when sources change.
+# Same for the model the PC builds stand in for (they sit in build/, not build/$(DEVICE)/).
 build/.build-id: FORCE
 	@mkdir -p build; echo '$(BUILD)' | cmp -s - $@ || echo '$(BUILD)' > $@
+build/.device: FORCE
+	@mkdir -p build; echo '$(DEVICE)' | cmp -s - $@ || echo '$(DEVICE)' > $@
 FORCE:
 
-BIN := build/mixcap build/mixplay build/pryon_test build/hassmic build/runas build/latency build/otatool
+# A model without the Amazon mixer or Pryon has no use for the tools built on them: they drop out with the library.
+BIN := $(OUT)/hassmic $(OUT)/runas $(OUT)/otatool \
+       $(if $(filter libmixerAPI.so,$(LIBS)),$(OUT)/mixcap $(OUT)/mixplay $(OUT)/latency) \
+       $(if $(filter libpryon.so,$(LIBS)),$(OUT)/pryon_test)
 
+.DEFAULT_GOAL := all
 all: $(BIN)
 
-build/mixcap build/mixplay: build/%: src/tools/%.c src/include/mixer_api.h src/include/netio.h
-	@mkdir -p build
+$(STOCK)/%.so:
+	@echo "missing $@: unpack the $(DEVICE) firmware first (devices/$(DEVICE)/README.md)"; exit 1
+
+$(OUT)/mixcap $(OUT)/mixplay: $(OUT)/%: src/tools/%.c src/include/mixer_api.h src/include/netio.h $(STOCK)/libmixerAPI.so
+	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(STOCK)/libmixerAPI.so
 
-build/latency: src/tools/latency.c src/include/mixer_api.h
-	@mkdir -p build
+$(OUT)/latency: src/tools/latency.c src/include/mixer_api.h $(STOCK)/libmixerAPI.so
+	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) -lm $(STOCK)/libmixerAPI.so
 
 # update bundles: the same source verifies + unpacks on the Echo and packs + signs on the PC
-build/otatool: src/tools/otatool.c src/third_party/monocypher.c
-	@mkdir -p build
+$(OUT)/otatool: src/tools/otatool.c src/third_party/monocypher.c
+	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $^ -o $@ -pie -fuse-ld=lld
 
 build/otatool-host: src/tools/otatool.c src/third_party/monocypher.c
 	@mkdir -p build
 	cc -O2 -Wall $^ -o $@
 
-build/runas: src/tools/runas.c
-	@mkdir -p build
+$(OUT)/runas: src/tools/runas.c
+	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ -pie -fuse-ld=lld
 
 # not part of "all": raw HCI probe on the Bluetooth controller (stop btmanagerd first, see the file)
-build/hciscan: src/tools/hciscan.c
-	@mkdir -p build
+$(OUT)/hciscan: src/tools/hciscan.c
+	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ -pie -fuse-ld=lld
 
 # not part of "all": LD_PRELOAD shim to see a stock daemon's libcurl requests (see the file)
-build/libcurlspy.so: src/tools/curlspy.c
-	@mkdir -p build
+$(OUT)/libcurlspy.so: src/tools/curlspy.c
+	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -fPIC -shared $< -o $@ -fuse-ld=lld -ldl
 
-build/pryon_test: src/tools/pryon_test.c src/include/pryon_api.h
-	@mkdir -p build
+$(OUT)/pryon_test: src/tools/pryon_test.c src/include/pryon_api.h $(STOCK)/libpryon.so
+	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(STOCK)/libpryon.so
 
 HASSMIC := src/hassmic/main.c src/hassmic/wyoming.c src/hassmic/proto_wyoming.c src/hassmic/proto_esphome.c src/hassmic/buttons.c \
@@ -55,21 +76,21 @@ HASSMIC := src/hassmic/main.c src/hassmic/wyoming.c src/hassmic/proto_wyoming.c 
            src/third_party/monocypher.c src/third_party/freeaptx.c
 HASSMIC_H := $(wildcard src/hassmic/*.h src/include/*.h) build/.build-id
 
-build/hassmic: $(HASSMIC) src/hassmic/audio_mixer.c src/hassmic/wake_pryon.c $(HASSMIC_H)
-	@mkdir -p build
-	$(CC) $(CFLAGS) -Isrc/hassmic $(filter %.c,$^) -o $@ $(LDFLAGS) -lm -ldl $(STOCK)/libmixerAPI.so $(STOCK)/libpryon.so $(STOCK)/libopus.so
+$(OUT)/hassmic: $(HASSMIC) $(BOARD) $(AUDIO) $(WAKE) $(HASSMIC_H) $(addprefix $(STOCK)/,$(LIBS))
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -Isrc/hassmic $(filter %.c,$^) -o $@ $(LDFLAGS) -lm -ldl $(addprefix $(STOCK)/,$(LIBS))
 
-# PC build for protocol tests: file audio backend, no wake word (SIGUSR1 triggers).
-build/hassmic-host: $(HASSMIC) src/hassmic/audio_file.c src/hassmic/wake_none.c $(HASSMIC_H)
+# PC build for protocol tests: file audio backend, no wake word (SIGUSR1 triggers), identity of $(DEVICE).
+build/hassmic-host: $(HASSMIC) $(BOARD) src/hassmic/audio_file.c src/hassmic/wake_none.c $(HASSMIC_H) build/.device
 	@mkdir -p build
 	cc -O2 -Wall -Wextra -DBUILD='"$(BUILD)"' -Isrc/include -Isrc/hassmic $(filter %.c,$^) -o $@ -lpthread -lm -ldl -lopus
 
-# ARM build with file audio but the real wake word, for running under qemu-arm (tools/qrun.sh).
-build/hassmic-qemu: $(HASSMIC) src/hassmic/audio_file.c src/hassmic/wake_pryon.c $(HASSMIC_H)
-	@mkdir -p build
-	$(CC) $(CFLAGS) -Isrc/hassmic $(filter %.c,$^) -o $@ $(LDFLAGS) -lm -ldl $(STOCK)/libpryon.so $(STOCK)/libopus.so
+# ARM build with file audio but the device's wake word engine, for running under qemu-arm (tools/qrun.sh).
+$(OUT)/hassmic-qemu: $(HASSMIC) $(BOARD) src/hassmic/audio_file.c $(WAKE) $(HASSMIC_H) $(call STOCK_LIBS,libpryon.so libopus.so)
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -Isrc/hassmic $(filter %.c,$^) -o $@ $(LDFLAGS) -lm -ldl $(call STOCK_LIBS,libpryon.so libopus.so)
 
-host: build/hassmic-host build/hassmic-qemu build/otatool-host
+host: build/hassmic-host $(OUT)/hassmic-qemu build/otatool-host
 
 # Building blocks of the Sendspin client, checked against reference implementations (aiohttp, python noiseprotocol).
 UNIT := src/hassmic/hash.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/third_party/monocypher.c

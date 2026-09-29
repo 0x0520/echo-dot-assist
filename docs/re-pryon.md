@@ -1,11 +1,11 @@
 # libpryon.so — wake word API notes
 
-Firmware NS65741, `firmware/rootfs/system/lib/libpryon.so` (19.8 MB, Thumb-2). Static analysis, then confirmed by running the
-library under qemu-arm (`tools/qrun.sh`, `build/pryon_test`) and on the device inside hassmic; anything not confirmed says so.
+Firmware NS65741, `firmware/donut/rootfs/system/lib/libpryon.so` (19.8 MB, Thumb-2). Static analysis, then confirmed by running the
+library under qemu-arm (`tools/qrun.sh`, `build/donut/pryon_test`) and on the device inside hassmic; anything not confirmed says so.
 Header: [`src/include/pryon_api.h`](../src/include/pryon_api.h).
 
 Tools used: `tools/fn.sh` (dump one function from an `.asm`), `tools/fnstrings.py` (resolve pc-relative strings in an address range), `tools/pcstr.py`.
-Disassembly: `re/libpryon_api.asm` (0x600c00–0x605200, the exported C wrappers), `re/libWakeWordManager.asm`, `re/libAmazonKWD.asm`, `re/libPryonDetector.asm`.
+Disassembly (git-ignored, in `firmware/donut/re/`): `re/libpryon_api.asm` (0x600c00–0x605200, the exported C wrappers), `re/libWakeWordManager.asm`, `re/libAmazonKWD.asm`, `re/libPryonDetector.asm`.
 
 ## Shape of the API
 

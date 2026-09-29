@@ -3,6 +3,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <time.h>
+#include "board.h"
 #include "core.h"
 #include "wyoming.h"
 
@@ -42,10 +43,10 @@ static void send_info(void)
     snprintf(data, sizeof data,
              "{\"asr\":[],\"tts\":[],\"handle\":[],\"intent\":[],\"wake\":[],\"mic\":[],\"snd\":[],"
              "\"satellite\":{\"name\":\"%s\",\"attribution\":{\"name\":\"hassmic\",\"url\":\"\"},"
-             "\"installed\":true,\"description\":\"Echo Dot 3 with Amazon audio front end\",\"version\":\"" VERSION "\","
+             "\"installed\":true,\"description\":\"%s with Amazon audio front end\",\"version\":\"" VERSION "\","
              "\"area\":null,\"has_vad\":false,\"active_wake_words\":[%s],\"max_active_wake_words\":1,"
              "\"supports_trigger\":true}}",
-             core_name, core_local_wake ? "\"alexa\"" : "");
+             core_name, board.model, core_local_wake ? "\"alexa\"" : "");
     send_event("info", data, NULL, 0);
 }
 

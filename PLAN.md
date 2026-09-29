@@ -1,5 +1,7 @@
 # Echo Dot 3 (donut) → Home Assistant voice satellite
 
+Other models: `devices/` (layout and porting guide in [devices/README.md](devices/README.md)); this plan is the donut's.
+
 Goal: keep Amazon's audio front end (`mixer` + `libasp`: AEC, beamforming, mic calibration, speaker path),
 replace the Alexa client (`PuffinApp`) with a small daemon that talks to Home Assistant.
 
@@ -498,3 +500,10 @@ Run in this order. Each step says what it proves.
 - [x] Revert procedure tested 2026-09-21: `install-system.sh --uninstall` leaves no trace on `/system` (`/sepolicy` md5 back to the pre-hassmic
       value, stock Alexa + `uxeventd` + `otad` run again, no egress lock: only the VLAN protects then); reinstall brings everything back, and
       `/data/local/hassmic/state` (Sendspin identity, pairing record, settings) survives both. `alexa-on.sh` (no reboot) still untested
+- [~] Multi-model layout (2026-09-28): model-specific parts moved to `devices/donut/` (`device.mk`, `board.c` behind
+      `src/hassmic/board.h`, `device.conf`, `hassmic.rc`, `sepolicy.rules`); `DEVICE` selects (default donut), outputs in
+      `build/<codename>/`, firmware in `firmware/<codename>/`. Device scripts read `device.conf` next to them (bundles and
+      `/system/hassmic` carry it); PC adb scripts detect the model via `ro.product.device` and install refuses another
+      firmware than `FIRMWARE_ID`; `main.sh` refuses bundles for another product. Firewall still goes up without
+      `device.conf`. PC: build clean, unit + all protocol tests, qemu Wyoming test and OTA test pass. Not done: push
+      update and `install-system.sh` on the Echo with the new scripts

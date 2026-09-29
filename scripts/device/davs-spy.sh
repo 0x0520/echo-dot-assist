@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Run the stock DAVS downloader (assetmgrd) with libcurlspy.so preloaded, to learn the real request and download URLs of
 # cloud artifacts such as wake-word models.  Needs MODE=stock-online and a registered device.  From the PC:
-#   make build/libcurlspy.so && adb push build/libcurlspy.so build/runas scripts/device/davs-spy.sh /data/local/tmp/
+#   make build/donut/libcurlspy.so && adb push build/donut/libcurlspy.so build/donut/runas scripts/device/davs-spy.sh /data/local/tmp/
 #   adb shell sh /data/local/tmp/davs-spy.sh        then change the wake word in the Alexa app
 #   adb pull /data/davs/curlspy.log device-logs/    (holds the bearer token: device-logs/ is git-ignored)
 # Same user, groups, environment and SELinux domain as the init service.  The domain matters: started from the su domain

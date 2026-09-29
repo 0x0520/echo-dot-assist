@@ -1,4 +1,4 @@
-/* Top buttons of the Echo Dot 3: GPIO keypad on /dev/input/event3 (see docs/re-platform.md). */
+/* Top buttons: GPIO keypad (board.keypad) and the hardware mute latch (board.privacy_*); donut: docs/re-platform.md. */
 #ifndef BUTTONS_H
 #define BUTTONS_H
 

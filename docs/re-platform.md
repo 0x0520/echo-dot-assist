@@ -1,8 +1,8 @@
 # Platform interfaces without PuffinApp
 
-Static analysis of `firmware/rootfs` (NS65741). Nothing here has been run on a device.
+Static analysis of `firmware/donut/rootfs` (NS65741). Nothing here has been run on a device.
 **UNVERIFIED** marks anything not proven from the binaries or configs.
-Paths are relative to `firmware/rootfs/` unless absolute.
+Paths are relative to `firmware/donut/rootfs/` unless absolute.
 
 First thing to run on the device — it enumerates every IPC service, property and current value:
 

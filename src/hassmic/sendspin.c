@@ -27,6 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "audio.h"
+#include "board.h"
 #include "core.h"
 #include "hash.h"
 #include "netio.h"
@@ -523,12 +524,12 @@ static void on_json(struct session *s, char *j, long long t_recv)
         if (rehandshake(s, j)) { fprintf(stderr, "sendspin: re-handshake failed\n"); s->closing = 1; shutdown(s->ws.fd, SHUT_RDWR); }
     } else if (!strcmp(type, "server/hello")) {
         js_str(j, "name", str, sizeof str); fprintf(stderr, "sendspin: server \"%s\"\n", str);
-        send_json(s, "{\"type\":\"client/hello\",\"payload\":{\"name\":\"%s\",\"device_info\":{\"product_name\":\"Echo Dot 3 (hassmic)\","
+        send_json(s, "{\"type\":\"client/hello\",\"payload\":{\"name\":\"%s\",\"device_info\":{\"product_name\":\"%s\","
                      "\"manufacturer\":\"Amazon\",\"software_version\":\"" VERSION "\"},\"supported_roles\":[\"player@v1\",\"controller@v1\"],"
                      "\"player@v1_support\":{\"supported_formats\":[%s],"
                      "\"buffer_capacity\":%u,\"supported_commands\":[\"volume\",\"mute\"]},"
                      "\"supported_pair_methods\":[{\"method\":\"pairing_psk\",\"locations\":[\"device\"]}],\"unpaired_access\":{\"enabled\":true}}}",
-                  core_name, formats_json(), BUFFER_CAPACITY);
+                  core_name, board.product, formats_json(), BUFFER_CAPACITY);
     } else if (!strcmp(type, "server/activate")) {
         int first = !s->activated, playback = 0, pairing = 0;
         if (js_section(j, "activities", sec, sizeof sec)) { playback = strstr(sec, "playback") != NULL; pairing = strstr(sec, "pairing") != NULL; }

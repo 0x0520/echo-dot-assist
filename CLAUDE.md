@@ -4,25 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Turns an Amazon Echo Dot 3 (2018, `donut`, Fire OS 6574.1 / `donut_puffin` NS65741 only) into a Home Assistant voice
-satellite. Amazon's audio front end (`mixer` daemon + `libasp`: AEC, beamforming, mic calibration) and wake word engine
+Turns Amazon Echos into Home Assistant voice satellites. Supported so far: Echo Dot 3 (2018, `donut`, Fire OS 6574.1 /
+`donut_puffin` NS65741 only); the repo is laid out for more models (`devices/`, see "Models" below). Amazon's audio front end (`mixer` daemon + `libasp`: AEC, beamforming, mic calibration) and wake word engine
 (`libpryon.so`) stay; the Alexa client `PuffinApp` is replaced by `hassmic`, a C daemon that is a client of the mixer
 through the reverse-engineered C API of `libmixerAPI.so` and speaks the ESPHome native API (default) or Wyoming.
 
-Docs: `README.md` (user-facing install/usage), `DEVELOPMENT.md` (architecture, layout, tests, contributing), `PLAN.md` (phases, open issues, every measurement), `CHANGELOG.md`
+Docs: `README.md` (user-facing usage; install instructions per model in `devices/<codename>/README.md`, guided by
+`scripts/setup.sh`), `DEVELOPMENT.md` (architecture, layout, tests, contributing), `PLAN.md` (phases, open issues, every measurement), `CHANGELOG.md`
 (user-visible changes by date), `docs/` (reverse-engineering findings: `FINDINGS.md`, `re-platform.md`, `re-pryon.md`,
 `sendspin-digest.md`).
 
 ## Build and test
 
-Device binaries are cross-built with Android NDK r21e (armv7, bionic, API 24) and **link against Amazon's stock libraries
-extracted to `firmware/rootfs/system/lib`**. Neither the NDK (`toolchain/`) nor the firmware (`firmware/`) is in git;
-without them only the host targets build. Extraction steps are in README "2. Unpack the firmware and build".
+Device binaries are cross-built with Android NDK r21e (donut: armv7, bionic, API 24) and **link against Amazon's stock
+libraries extracted to `firmware/<codename>/rootfs/system/lib`**. Neither the NDK (`toolchain/`) nor the firmware (`firmware/`) is in git;
+without them only the host targets build. Extraction steps: `devices/donut/README.md` "2. Unpack the firmware and build".
 
 ```sh
-make                     # ARM binaries into build/ (hassmic, mixcap, mixplay, pryon_test, runas, latency, otatool)
-make host                # build/hassmic-host (PC: file audio + no wake word, SIGUSR1 triggers wake),
-                         # build/hassmic-qemu (ARM + real Pryon, run via tools/qrun.sh), build/otatool-host. Needs libopus
+make [DEVICE=donut]      # ARM binaries into build/donut/ (hassmic, mixcap, mixplay, pryon_test, runas, latency, otatool)
+make host                # build/hassmic-host (PC: file audio + no wake word, SIGUSR1 triggers wake; board.c of DEVICE),
+                         # build/donut/hassmic-qemu (ARM + real Pryon, run via tools/qrun.sh), build/otatool-host. Needs libopus
 make unit                # C unit tests; ws/noise are checked against Python reference impls in .venv
 make build/hassmic-host  # single target
 ```
@@ -39,7 +40,7 @@ tests/ota_push_test.sh                        # signed push-update path end to e
 ```
 
 There is no single-test selector: run one unit test by building/running its line from the `unit` target in the Makefile.
-`tools/qrun.sh [-t secs] <arm-binary> args` runs a device binary on the PC under qemu-arm against `firmware/rootfs`
+`tools/qrun.sh [-t secs] <arm-binary> args` runs a device binary on the PC under qemu-arm against `firmware/$DEVICE/rootfs`
 (needs a new PID namespace; bionic mutexes deadlock with pid > 65535).
 
 ## Device workflow
@@ -53,7 +54,26 @@ There is no single-test selector: run one unit test by building/running its line
   State (API key, BLE bonds, BT keys, Sendspin, settings): `/data/local/hassmic/state/`.
 - `kill -TTIN $(pidof hassmic)` toggles recording of the processed mic stream to `state/capture.raw`. `mixcap` cannot
   capture while hassmic runs: the mixer feeds the mic stream to one client only.
+- `scripts/wakeword.sh [echo-ip]` (logic in `scripts/lib/wakeword.sh`, also the last step of `setup.sh`): installs wake word models from `device-logs/models/` after loading each with the
+  Echo's `pryon_test`, or fetches one from Amazon (stock-online + Alexa app registration, undone afterwards).
 - `scripts/probe.sh` checks the device's libraries match the analysed firmware. Everything assumes exactly that version.
+- PC scripts that use adb (`deploy`, `probe`, `install-system`, `capture-test`) detect the model from `ro.product.device`
+  via `scripts/lib/device.sh`; `ota-push.sh` takes `DEVICE` (default donut). With two Echos on adb set `ANDROID_SERIAL`.
+
+## Models
+
+`devices/<codename>/` holds everything model-specific; porting guide in `devices/README.md`:
+- `device.mk`: NDK target, audio/wake backends, stock libs to link (included by the Makefile).
+- `board.c`: `struct board` (`src/hassmic/board.h`): HA identity, keypad/mute-latch/BT device paths, stock wake word
+  and earcon paths, thermal zone, LED volume steps. Linked into every hassmic build, host builds included.
+- `device.conf`: shell vars (product/firmware id, probe files, `INSTALL` method, daemon user/groups, stock service
+  names). Sourced by PC scripts and shipped to the Echo next to `main.sh`/`lockdown.sh`/`alexa-off.sh`; push bundles
+  carry it, and `main.sh` refuses a bundle whose `PRODUCT` is not the Echo's.
+- `hassmic.rc`, `sepolicy.rules`: installed by `install-system.sh`.
+- `README.md` (model facts + install steps by hand) and `setup.sh` (same steps for the guided `scripts/setup.sh`:
+  `STEPS` list + `step_<id>` functions using `scripts/lib/setup.sh`; `--dry-run` walks them without running). Keep
+  the two in step.
+No model `#ifdef`s in shared code: new differences become a board field, a `device.conf` variable or a backend.
 
 ## Architecture
 
@@ -85,7 +105,7 @@ There is no single-test selector: run one unit test by building/running its line
 - `src/tools/`: standalone device tools (`mixcap`, `mixplay`, `pryon_test`, `latency`, `runas` — AIPC refuses uid 0 and
   the image has no `su`; `curlspy`, `hciscan` not in `all`).
 
-Boot integration (`scripts/system/`): `hassmic.rc` (init) starts `boot.sh` (fixed, on /system), which picks the factory
+Boot integration (`scripts/system/`, rc in `devices/<codename>/`): `hassmic.rc` (init) starts `boot.sh` (fixed, on /system), which picks the factory
 copy or a verified update and runs `main.sh` (updatable): `main.sh firewall` (egress lock re-asserted in a loop, root side
 of push updates) and `main.sh satellite` (stops Alexa/updater/telemetry, keeps hassmic running). No `hassmic.conf` =
 stock behaviour. `scripts/device/` holds on-device helpers (`lockdown.sh` firewall, `alexa-off/on.sh`, `wifi-join.sh`).
@@ -103,6 +123,6 @@ must stay in that range.
 - Feature commits update `CHANGELOG.md` (user-facing, dated, plain language), `PLAN.md` (status, measurements) and the
   README when behaviour visible to users changes.
 - Code comments explain *why* with device facts and measurements; match that style and density.
-- Proprietary/derived/secret material is git-ignored and must stay out of git: `firmware/`, `re/`, `kamakiri/`,
-  `boot-root/`, `toolchain/`, `build/`, `device-logs/`, `secrets/`, `*.bin`, `*.zip`.
+- Proprietary/derived/secret material is git-ignored and must stay out of git: `firmware/` (per model:
+  stock image, unpacked rootfs, unlock zips, `re/` disassembly), `toolchain/`, `build/`, `device-logs/`, `secrets/`, `*.bin`, `*.zip`.
 - Third-party code in `src/third_party/` keeps its own licence (freeaptx is LGPL, statically linked).

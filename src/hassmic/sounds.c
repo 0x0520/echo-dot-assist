@@ -1,16 +1,13 @@
 /* Stock UI sounds: WAV (48 kHz s16, mono or stereo) or MP3 (decoded with the vendored minimp3, whose implementation lives
  * in proto_esphome.c), mixed down to mono for the Earcon stream.  Loaded on first use, kept for the life of the process. */
 #include "sounds.h"
+#include "board.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "../third_party/minimp3.h"
 
-#ifndef SOUND_DIR
-#define SOUND_DIR "/system/local/share/earcon/base/"      /* overridable for a PC check against the extracted image */
-#endif
-#define DIR SOUND_DIR
 static const char *const names[SND_COUNT] = { "ui_wakesound", "ui_wakesound_touch", "state_privacy_mode_on", "state_privacy_mode_off",
                                               "state_volume_adjust_tone", "state_bluetooth_connected", "state_bluetooth_disconnected" };
 static struct { short *pcm; size_t n; unsigned rate; int tried; } cache[SND_COUNT];
@@ -76,9 +73,9 @@ int sound_get(enum sound s, const short **pcm, size_t *samples, unsigned *rate)
     if (s < 0 || s >= SND_COUNT) return 0;
     if (!cache[s].tried) {
         cache[s].tried = 1;
-        snprintf(path, sizeof path, DIR "%s.wav", names[s]);
+        snprintf(path, sizeof path, "%s%s.wav", board.earcon_dir, names[s]);
         cache[s].pcm = load_wav(path, &cache[s].n, &cache[s].rate);
-        if (!cache[s].pcm) { snprintf(path, sizeof path, DIR "%s.mp3", names[s]); cache[s].pcm = load_mp3(path, &cache[s].n, &cache[s].rate); }
+        if (!cache[s].pcm) { snprintf(path, sizeof path, "%s%s.mp3", board.earcon_dir, names[s]); cache[s].pcm = load_mp3(path, &cache[s].n, &cache[s].rate); }
         if (!cache[s].pcm) fprintf(stderr, "sound %s: not on this image, using the built-in tone\n", names[s]);
     }
     if (!cache[s].pcm) return 0;

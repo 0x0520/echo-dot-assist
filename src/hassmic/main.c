@@ -1,5 +1,5 @@
 /*
- * hassmic - Home Assistant voice satellite for the Echo Dot 3 (donut).
+ * hassmic - Home Assistant voice satellite for Amazon Echo devices (first: Echo Dot 3, donut; see devices/).
  *
  * Replaces PuffinApp as the client of Amazon's `mixer` daemon: reads the post-AEC/beamformer stream,
  * runs the stock "Alexa" wake word locally, and speaks the ESPHome native API or Wyoming to Home Assistant.
@@ -40,8 +40,8 @@
 #include "ota.h"
 #include "sendspin.h"
 #include "sounds.h"
+#include "board.h"
 
-#define DEFAULT_MANIFEST "/system/local/models/keyword/en-US/ALEXA/pryon.manifest"
 #define PIPELINE_TIMEOUT 30         /* seconds in LISTENING or THINKING before giving up */
 #define TTS_RATE         22050      /* assumed when audio-start carries no rate */
 
@@ -51,7 +51,7 @@ static atomic_int sounds_pending;
 static void sound_queue(enum sound s) { atomic_fetch_or(&sounds_pending, 1 << s); }                          /* played by the earcon thread */
 static void sound_request(enum sound s) { if (use_earcon) sound_queue(s); }
 
-const char *core_name = "Echo Dot";
+const char *core_name;                  /* -n, else board.default_name */
 
 const char *core_node_name(void)
 {
@@ -202,7 +202,7 @@ static int wake_word_add(const char *id, const char *manifest)
 static void wake_words_scan(const char *m_arg)
 {
     char path[512], saved[64] = ""; DIR *d; struct dirent *e; FILE *f; int def = 0;
-    wake_word_add("alexa", DEFAULT_MANIFEST);        /* the firmware's own: always there */
+    wake_word_add(board.wake_id, board.wake_manifest);      /* the firmware's own: always there */
     if ((d = opendir(models_dir()))) {
         while ((e = readdir(d))) {
             if (e->d_name[0] == '.') continue;
@@ -636,7 +636,7 @@ static void on_mute(int muted)          /* hardware latch changed (button) */
     pthread_mutex_unlock(&core_lock);
 }
 
-/* Volume: 10 % per press like stock (3 of the ring's 30 steps).  The volume_step-NN animations show 2 s and then loop
+/* Volume: 10 % per press like stock (3 of the ring's 30 steps on donut, board.volume_steps).  The volume_step-NN animations show 2 s and then loop
  * black forever, so the previous one has to be unset or they pile up in ledcontroller; a timer clears the last one. */
 static int volume = -1;                      /* 0..100, read from the device on first use */
 static char vol_pat[24];
@@ -679,7 +679,7 @@ void core_set_volume(int v)
 {
     char pat[24]; int step;
     volume = v < 0 ? 0 : v > 100 ? 100 : v;
-    step = volume * 30 / 100 ? volume * 30 / 100 : 1;
+    step = volume * board.volume_steps / 100 ? volume * board.volume_steps / 100 : 1;
     snprintf(pat, sizeof pat, "volume_step-%02d", step);
     set_prop_volume("MainVolume", volume);
     set_prop_volume("TTSVolume", volume);
@@ -852,7 +852,8 @@ static void on_ttin(int s) { (void)s; atomic_store(&dump_toggle, 1); }
 
 int main(int argc, char **argv)
 {
-    const char *manifest = NULL, *input = "/dev/input/event3"; int port = 0, print_mdns = 0, o;
+    const char *manifest = NULL, *input = board.keypad; int port = 0, print_mdns = 0, o;
+    core_name = board.default_name;
     while ((o = getopt(argc, argv, "P:p:n:w:m:b:z:o:a:LEVST")) != -1) switch (o) {
         case 'P': proto = !strcmp(optarg, "wyoming") ? &proto_wyoming : &proto_esphome; break;
         case 'p': port = atoi(optarg); break;

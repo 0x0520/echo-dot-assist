@@ -1,21 +1,26 @@
 #!/bin/sh
 # Phase 5: install hassmic into the active system slot through TWRP, so it starts at boot instead of Alexa.
+# This is the installer for models with INSTALL=twrp-ab in devices/<codename>/device.conf (donut); the model is the one
+# on adb, and it must run the firmware its support was built for.
 # Needs: boot-root already flashed (permissive su domain), device reachable over adb.
-# Touches: /system/hassmic/ (new), /system/etc/init/hassmic.rc (new), /sepolicy (3 allow rules added; old copy kept as
+# Touches: /system/hassmic/ (new), /system/etc/init/hassmic.rc (new), /sepolicy (allow rules added; old copy kept as
 # /sepolicy.pre-hassmic), /data/local/hassmic/hassmic.conf (new).
 # Later versions go over Wi-Fi with scripts/ota-push.sh; this script is only needed once per device (and again if
 # secrets/update.key is lost, or the bootstrap / verification tool themselves change).
 # Undo: scripts/install-system.sh --uninstall, or delete /data/local/hassmic/hassmic.conf (boot.sh then does nothing).
-#   install-system.sh [name]                 e.g. install-system.sh "Echo Dot"
+#   install-system.sh [name]                 e.g. install-system.sh "Kitchen"; default DEFAULT_NAME of the model
 #   install-system.sh --uninstall
 set -e
 cd "$(dirname "$0")/.."
+. scripts/lib/device.sh; device_load adb
+[ "$INSTALL" = twrp-ab ] || die "$DEVICE installs with INSTALL=$INSTALL, which this script does not do ($DDIR/README.md)"
 MNT=/mnt/hm_system
 t() { adb shell "$@"; }
 
 if [ "$1" != --uninstall ]; then
-    NAME=${1:-Echo Dot}
-    make -s all build/otatool-host
+    NAME=${1:-$DEFAULT_NAME}
+    [ "$(adb get-state 2>/dev/null)" = device ] && device_check_firmware
+    make -s all build/otatool-host DEVICE=$DEVICE
     # Signing key for push updates.  The public half goes onto the read-only system partition and is what the device trusts.
     mkdir -p secrets
     [ -f secrets/update.key ] || { build/otatool-host keygen secrets/update.key secrets/update.pub; echo "new update signing key: secrets/update.key (keep it, back it up)"; }
@@ -25,20 +30,20 @@ if [ "$1" != --uninstall ]; then
         # Base = the policy as boot-root left it.  On a re-install /sepolicy is already patched; the untouched copy is kept beside it.
         BASEF=/sepolicy; t "[ -f /sepolicy.pre-hassmic ]" && BASEF=/sepolicy.pre-hassmic
         adb pull $BASEF device-logs/backup/sepolicy.boot-root >/dev/null
-        printf 'NAME="%s"\nARGS=""\n' "$NAME" > build/hassmic.conf
-        t "mkdir -p /data/local/hassmic"; adb push build/hassmic.conf /data/local/hassmic/hassmic.conf >/dev/null
+        printf 'NAME="%s"\nARGS="%s"\n' "$NAME" "$DEFAULT_ARGS" > $OUT/hassmic.conf
+        t "mkdir -p /data/local/hassmic"; adb push $OUT/hassmic.conf /data/local/hassmic/hassmic.conf >/dev/null
         t "rm -rf /data/local/hassmic/ota; rm -f /data/local/hassmic/hassmic"      # boot.sh prefers a binary here (scripts/deploy.sh test builds); the fresh install wins
         # Patch the policy here, not in TWRP: magiskpolicy is dynamically linked and aborts in the recovery environment.
-        adb push boot-root/patch/magiskpolicy32 /data/local/tmp/mp >/dev/null
-        adb push scripts/system/sepolicy.rules /data/local/tmp/ >/dev/null
+        adb push $SEPOLICY_TOOL /data/local/tmp/mp >/dev/null
+        adb push $DDIR/sepolicy.rules /data/local/tmp/ >/dev/null
         t "cd /data/local/tmp; chmod 755 mp; rm -f sepolicy.new
            ./mp --load $BASEF --apply sepolicy.rules --save sepolicy.new >/dev/null 2>&1
            [ -s sepolicy.new ] && ./mp --load sepolicy.new --print-rules 2>/dev/null | grep -q '^allow init su process'" ||
             { echo "sepolicy patch failed, nothing changed"; exit 1; }
-        adb pull /data/local/tmp/sepolicy.new build/sepolicy.hassmic >/dev/null
-        md5sum device-logs/backup/sepolicy.boot-root > build/sepolicy.hassmic.base
+        adb pull /data/local/tmp/sepolicy.new $OUT/sepolicy.hassmic >/dev/null
+        md5sum device-logs/backup/sepolicy.boot-root > $OUT/sepolicy.hassmic.base
     fi
-    [ -s build/sepolicy.hassmic ] || { echo "no patched policy yet: boot the normal OS (adb reboot) and run this again"; exit 1; }
+    [ -s $OUT/sepolicy.hassmic ] || { echo "no patched policy yet: boot the normal OS (adb reboot) and run this again"; exit 1; }
 fi
 
 echo "rebooting to TWRP ..."
@@ -59,15 +64,15 @@ if [ "$1" = --uninstall ]; then
 fi
 
 # Policy: the copy patched and verified under the running OS.  Refuse if the partition's policy is not the one it was made from.
-BASE=$(cut -d' ' -f1 build/sepolicy.hassmic.base)
-WANT=$(md5sum build/sepolicy.hassmic | cut -d' ' -f1)
+BASE=$(cut -d' ' -f1 $OUT/sepolicy.hassmic.base)
+WANT=$(md5sum $OUT/sepolicy.hassmic | cut -d' ' -f1)
 if [ "$(t "md5sum $MNT/sepolicy" | cut -d' ' -f1)" = "$WANT" ]; then
     echo "sepolicy already patched"
 else
     t "[ -f $MNT/sepolicy.pre-hassmic ] || cp -p $MNT/sepolicy $MNT/sepolicy.pre-hassmic"
     [ "$(t "md5sum $MNT/sepolicy.pre-hassmic" | cut -d' ' -f1)" = "$BASE" ] ||
         { echo "policy on system_$SLOT differs from the one that was patched; nothing written"; t "umount $MNT"; exit 1; }
-    adb push build/sepolicy.hassmic /tmp/sepolicy.new >/dev/null
+    adb push $OUT/sepolicy.hassmic /tmp/sepolicy.new >/dev/null
     [ "$(t 'md5sum /tmp/sepolicy.new' | cut -d' ' -f1)" = "$WANT" ] ||
         { echo "policy transfer corrupted; nothing written"; t "umount $MNT"; exit 1; }
     t "cat /tmp/sepolicy.new > $MNT/sepolicy"          # in place: keeps inode and label
@@ -75,14 +80,14 @@ fi
 echo "sepolicy patched"
 
 t "rm -rf $MNT/system/hassmic; mkdir -p $MNT/system/hassmic"
-adb push build/hassmic build/runas build/mixcap build/mixplay build/pryon_test \
-         build/otatool secrets/update.pub scripts/system/boot.sh scripts/system/main.sh scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh \
+adb push $OUT/hassmic $OUT/runas $(ls $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $OUT/otatool secrets/update.pub $DDIR/device.conf \
+         scripts/system/boot.sh scripts/system/main.sh scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh \
          $MNT/system/hassmic/ >/dev/null
-adb push scripts/system/hassmic.rc $MNT/system/etc/init/hassmic.rc >/dev/null
-t "chown -R 0:2000 $MNT/system/hassmic; chmod 755 $MNT/system/hassmic $MNT/system/hassmic/*; chmod 644 $MNT/system/hassmic/update.pub
+adb push $DDIR/hassmic.rc $MNT/system/etc/init/hassmic.rc >/dev/null
+t "chown -R 0:2000 $MNT/system/hassmic; chmod 755 $MNT/system/hassmic $MNT/system/hassmic/*; chmod 644 $MNT/system/hassmic/update.pub $MNT/system/hassmic/device.conf
    chown 0:0 $MNT/system/etc/init/hassmic.rc; chmod 644 $MNT/system/etc/init/hassmic.rc
    chcon -R u:object_r:system_file:s0 $MNT/system/hassmic $MNT/system/etc/init/hassmic.rc $MNT/sepolicy.pre-hassmic
    ls -lZ $MNT/system/hassmic $MNT/system/etc/init/hassmic.rc $MNT/sepolicy $MNT/system/etc/init/fosflags.rc
    sync; umount $MNT"
-echo "installed into system_$SLOT; rebooting"
+echo "installed $DEVICE support into system_$SLOT; rebooting"
 adb reboot

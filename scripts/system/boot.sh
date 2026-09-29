@@ -10,10 +10,11 @@ SYS=/system/hassmic
 BASE=/data/local/hassmic
 OTA=$BASE/ota
 [ -f $BASE/hassmic.conf ] || exit 0
+[ -f $SYS/device.conf ] && . $SYS/device.conf   # this model's facts, installed together with this file; main.sh copes without
 
-# Only root may put things where root executes them from; the daemon (user puffin) owns state/ alone.
+# Only root may put things where root executes them from; the daemon (DAEMON_USER) owns state/ alone.
 chown root:root $BASE; chmod 755 $BASE
-mkdir -p $OTA $BASE/state; chown root:root $OTA; chmod 755 $OTA; chown puffin $BASE/state; chmod 700 $BASE/state
+mkdir -p $OTA $BASE/state; chown root:root $OTA; chmod 755 $OTA; chown ${DAEMON_USER:-root} $BASE/state; chmod 700 $BASE/state
 
 D=$SYS
 if [ -f $OTA/current/main.sh ]; then

@@ -43,10 +43,10 @@
 #include <sys/system_properties.h>
 #endif
 #include "ble.h"
+#include "board.h"
 #include "ble_crypto.h"
 #include "hci.h"
 
-#define DEV "/dev/stpbt"
 #define SCAN_INTERVAL 512                       /* 320 ms, units of 0.625 ms */
 #define SCAN_WINDOW 48                          /* 30 ms */
 #define ATT_MTU 517                             /* what we offer; ESPHome's too */
@@ -849,11 +849,12 @@ static int cmd(unsigned op, const void *par, unsigned n)
 
 /* ---------------------------------------------------------------- controller thread */
 
-static int btmanagerd_running(void)
+static int stock_bt_running(void)
 {
 #ifdef __ANDROID__
-    char v[PROP_VALUE_MAX] = "";
-    __system_property_get("init.svc.btmanagerd", v);
+    char p[PROP_NAME_MAX], v[PROP_VALUE_MAX] = "";
+    snprintf(p, sizeof p, "init.svc.%s", board.bt_service);
+    __system_property_get(p, v);
     return !strcmp(v, "running");
 #else
     return 0;
@@ -863,7 +864,7 @@ static int btmanagerd_running(void)
 /* The controller's address, from idme like btmac.sh does; the chip carries the same one. */
 static void read_bdaddr(void)
 {
-    char h[16] = ""; FILE *f = fopen("/proc/idme/bt_mac_addr", "r");
+    char h[16] = ""; FILE *f = fopen(board.bt_mac, "r");
     if (f) { if (fscanf(f, "%12s", h) != 1) h[0] = 0; fclose(f); }
     if (strlen(h) == 12)
         snprintf(bdaddr, sizeof bdaddr, "%.2s:%.2s:%.2s:%.2s:%.2s:%.2s", h, h + 2, h + 4, h + 6, h + 8, h + 10);
@@ -1049,8 +1050,8 @@ static void *thread(void *arg)
 {
     (void)arg;
     for (int said = 0;; sleep(5)) {
-        if (btmanagerd_running()) { if (!said++) fprintf(stderr, "bluetooth: waiting for btmanagerd to stop\n"); continue; }
-        if ((fd = open(DEV, O_RDWR | O_NOCTTY | O_CLOEXEC)) < 0) { if (!said++) fprintf(stderr, "bluetooth: %s: %s\n", DEV, strerror(errno)); continue; }
+        if (stock_bt_running()) { if (!said++) fprintf(stderr, "bluetooth: waiting for %s to stop\n", board.bt_service); continue; }
+        if ((fd = open(board.bt_dev, O_RDWR | O_NOCTTY | O_CLOEXEC)) < 0) { if (!said++) fprintf(stderr, "bluetooth: %s: %s\n", board.bt_dev, strerror(errno)); continue; }
         /* Left unread by the previous user.  A hassmic that was killed while scanning leaves the chip scanning, so this
          * does not run dry: stop after a moment, the reset stops the flow and pump() finds the packet boundaries again. */
         struct timespec t0; now(&t0);
@@ -1092,7 +1093,7 @@ static void *thread(void *arg)
 
 /* ---------------------------------------------------------------- API */
 
-int ble_present(void) { return access(DEV, F_OK) == 0; }
+int ble_present(void) { return access(board.bt_dev, F_OK) == 0; }
 const char *ble_mac(void) { return bdaddr; }
 int ble_scanning(void) { return atomic_load(&scanning); }
 

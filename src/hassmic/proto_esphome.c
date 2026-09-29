@@ -42,6 +42,7 @@
 #include "a2dp.h"
 #include "arb.h"
 #include "ble.h"
+#include "board.h"
 #include "core.h"
 #include "hash.h"
 #include "noise.h"
@@ -353,7 +354,7 @@ static void send_token_state(void)      /* lock held */
 }
 
 /* ---------------------------------------------------------------- diagnostics
- * SoC temperature (thermal zone "mtktscpu") and CPU usage, as sensors that are diagnostic and disabled by default: Home
+ * SoC temperature (thermal zone board.thermal_type) and CPU usage, as sensors that are diagnostic and disabled by default: Home
  * Assistant records them only once the user switches them on.  Pushed every 30 s to whoever subscribed to states. */
 
 static float read_soc_temp(void)
@@ -363,7 +364,7 @@ static float read_soc_temp(void)
         snprintf(path, sizeof path, "/sys/class/thermal/thermal_zone%d/type", z);
         FILE *f = fopen(path, "r"); if (!f) break;
         int ok = fscanf(f, "%31s", type) == 1; fclose(f);
-        if (!ok || strcmp(type, "mtktscpu")) continue;
+        if (!ok || strcmp(type, board.thermal_type)) continue;
         snprintf(path, sizeof path, "/sys/class/thermal/thermal_zone%d/temp", z);
         if ((f = fopen(path, "r"))) { int mc; if (fscanf(f, "%d", &mc) == 1) t = mc / 1000.0f; fclose(f); }
         break;
@@ -996,7 +997,7 @@ static void send_device_info(void)
 {
     PB(b, 512);
     pb_str(&b, 2, node_name()); pb_str(&b, 3, mac()); pb_str(&b, 4, "2025.5.0"); pb_str(&b, 5, __DATE__ " " __TIME__);
-    pb_str(&b, 6, "Echo Dot 3 (donut)"); pb_str(&b, 8, "hassmic.echo-dot-3"); pb_str(&b, 9, VERSION);
+    pb_str(&b, 6, board.model); pb_str(&b, 8, board.project); pb_str(&b, 9, VERSION);
     pb_str(&b, 12, "Amazon"); pb_str(&b, 13, core_name);
     if (ble_present()) { pb_uint(&b, 11, 5); pb_uint(&b, 15, BLE_FEATURES); pb_str(&b, 18, ble_mac()); }    /* 11: legacy "active connections" */
     pb_uint(&b, 17, FEAT_VOICE | FEAT_API_AUDIO | FEAT_TIMERS | FEAT_ANNOUNCE | FEAT_START_CONVERSATION);      /* no SPEAKER: see top */

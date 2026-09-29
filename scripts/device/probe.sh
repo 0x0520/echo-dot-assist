@@ -1,7 +1,8 @@
 #!/system/bin/sh
 # Phase 3: record stock state before changing anything.  Output goes to stdout; run via scripts/probe.sh on the PC.
+# Arguments: stock files (relative to /system) to checksum.
 sec() { echo; echo "######## $*"; }
-sec build;      getprop ro.build.fingerprint; getprop ro.build.version.number; uname -a
+sec build;      getprop ro.product.device; getprop ro.build.display.id; getprop ro.build.fingerprint; getprop ro.build.version.number; uname -a
 sec selinux;    getenforce 2>&1; id
 sec services;   getprop | grep init.svc
 sec props;      getprop | grep -iE "puffin|audio|mixer|oobe|wha|ota"
@@ -14,5 +15,5 @@ sec privacy;    cat /sys/devices/platform/gpio-privacy/state 2>&1
 sec leds;       ledctrl -g 2>&1
 sec firewall;   iptables -S INPUT 2>&1
 sec wifi;       wpa_cli -i wlan0 -p /data/misc/wifi/sockets status 2>&1 | grep -vE "^(bssid|address|uuid)"
-sec libs;       md5sum /system/lib/libmixerAPI.so /system/lib/libpryon.so /system/lib/libasp.so /system/bin/mixer /system/bin/PuffinApp
+sec libs;       for f in "$@"; do md5sum /system/$f; done
 sec model;      ls -la /system/local/models/keyword/*/*/ /data/avs/ 2>&1 | head -40

@@ -10,8 +10,8 @@
 #                        the same time interleave (duplicate rules, or the DROP ahead of some of them)
 #   lockdown.sh ota-only [watch]
 #                        stock Alexa with internet, firmware updates still impossible (MODE=stock-online in hassmic.conf):
-#                        no egress lock, nothing stopped except the updaters.  otad and ace_otad both run as user ace_otad
-#                        and lose all network access; update_engine (root, started on demand) is kept stopped.
+#                        no egress lock, nothing stopped except the updaters.  Those that run as UPDATE_UID (donut: otad,
+#                        ace_otad) lose all network access; UPDATE_ONDEMAND (update_engine, root) is kept stopped.
 # hassmic itself may connect anywhere: it creates its outgoing sockets with filesystem group NET_GID (runas -r in main.sh
 # and run.sh, setfsgid in net.c; the owner match checks that group) and only fetches what Home
 # Assistant (encrypted, paired connection) or Music Assistant send it.  That can be a public host name, a Tailscale address
@@ -25,6 +25,10 @@
 LOCAL4="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 224.0.0.0/4 255.255.255.255"
 LOCAL6="fe80::/10 fc00::/7 ff02::/16"
 NET_GID=3990
+# Service names and the updaters' user: device.conf of this model, next to this script.  Without it the egress lock
+# still goes up (it needs none of that); only stopping services and the stock-online guard have nothing to work with.
+CONF="${0%/*}/device.conf"
+if [ -f "$CONF" ]; then . "$CONF"; else echo "!! $CONF missing: services not stopped, stock-online guard unavailable"; fi
 
 # DNS servers from DHCP (dhcp.<iface>.dnsN) and the system's own (net.dnsN), one per line, sorted
 resolvers() { getprop | sed -nE 's/^\[(dhcp\.[^.]+|net)\.dns[0-9]+\]: \[([^]]+)\]$/\2/p' | sort -u; }
@@ -59,12 +63,12 @@ apply_ota() {
         $t -w -N hassmic_out 2>/dev/null
         $t -w -F hassmic_out
         $t -w -A hassmic_out -o lo -j RETURN
-        $t -w -A hassmic_out -m owner --uid-owner ace_otad -j DROP || echo "!! OTA GUARD NOT ACTIVE ($t): take the Echo offline"
+        $t -w -A hassmic_out -m owner --uid-owner "$UPDATE_UID" -j DROP || echo "!! OTA GUARD NOT ACTIVE ($t): take the Echo offline"
         while $t -w -D OUTPUT -j hassmic_out 2>/dev/null; do :; done
         $t -w -I OUTPUT 1 -j hassmic_out
     done
 }
-ota_off() { for s in otad ace_otad update_engine; do stop $s 2>/dev/null; done; }
+ota_off() { for s in $UPDATE_SERVICES $UPDATE_ONDEMAND; do stop $s 2>/dev/null; done; }
 
 first() { iptables -w -S OUTPUT 2>/dev/null | grep -m1 '^-A' | grep -q hassmic_out; }
 
@@ -80,10 +84,8 @@ fi
 # Everything that phones home.  mixer, shmd, ledcontroller, acebuttond, netmgrd, wifisvc stay.
 # perfmonitord stays too: every new micAsr stream makes the mixer connect to it over AIPC and wait up to 20 s for it
 # before opening the mic, so without it each hassmic (re)start was 20 s deaf.  Anything it sends out is dropped by the egress lock.
-for s in puffin puffinmrmd dacd smarthomed otad ace_otad update_engine assetmgrd gadgetsd logmgr ace_metricd \
-         minerva_service usagestat_protod aceusagestatd trackerd provisionerd adepd sntpd UdssCampSvc fmonitor \
-         ace_messaging ahe shs; do stop $s 2>/dev/null; done
-setprop com.amazon.puffin.PUFFIN_START 0
+for s in $ALEXA_SERVICES $UPDATE_SERVICES $UPDATE_ONDEMAND $CLOUD_SERVICES; do stop $s 2>/dev/null; done
+[ -n "$ALEXA_PROP" ] && setprop $ALEXA_PROP 0
 [ "$1" = services ] && exit 0
 echo "egress limited to local addresses"; iptables -w -S hassmic_out
 

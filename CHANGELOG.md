@@ -2,6 +2,38 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-09-28
+
+- **Other wake words in one command.** `scripts/wakeword.sh <echo-ip>` puts "Echo", "Computer", "Amazon", "Ziggy" (or
+  "Alexa" in another language) on an installed Echo. Models fetched once work on every Echo, so a second Echo needs
+  no Amazon account at all: pick from the list, it checks the model on that Echo and restarts it. For a new one it
+  does the Amazon part for you and only stops for registering and deregistering in the Alexa app; the update block
+  stays on the whole time and everything is undone at the end. Then pick the wake word in Home Assistant. The guided
+  setup offers the same as its last step.
+- **Guided installation.** `scripts/setup.sh` is a terminal app: it recognises the Echo on adb, shows a progress bar
+  and the step list, runs the steps one after the other and only stops when you have to do something (download,
+  solder, hold a button, type a name). Downloads are picked up from `~/Downloads` by themselves and checked, missing
+  tools are offered for install, the Android NDK is fetched without a question. Command output goes to
+  `build/<codename>/setup.log`; you see it only when something fails. One typed `yes` at the start covers everything
+  that wipes or flashes the Echo. You can stop at any point; it goes on where it left off. The install instructions
+  moved from this README to a page per model: [devices/donut/README.md](devices/donut/README.md).
+- **Setup ends with a finished satellite.** The install step asks the name, installs, waits until the Echo is up as a
+  satellite, prints its address and tells you to adopt it. Model-specific hassmic arguments are written at install.
+  The end screen shows the Sendspin pairing token and reminds you to allow the Echo to perform Home Assistant actions
+  (needed for several Echos to agree which one answers).
+- **Ready for more Echo models.** Everything that differs between models now sits in one folder per model under
+  `devices/`, so other Echos can be added later. The 2018 Echo Dot 3 (`donut`) behaves exactly as before. If you
+  build it yourself, two things move:
+  - the firmware image, `kamakiri-donut-v1.0.0.zip`, `boot-root.zip` and what is unpacked from them go to
+    `firmware/donut/`; move your existing `firmware/rootfs`, `firmware/images`, `kamakiri/` and `boot-root/` there;
+  - the Echo binaries are built into `build/donut/`.
+
+  The scripts that use adb now check which model is connected and that it runs the right firmware, and the installer
+  refuses to write to any other. An Echo turns down a pushed update built for another model, once it has received one
+  update of this version.
+- The stock-online guard (install step 3) needs `devices/donut/device.conf` pushed next to `lockdown.sh`. Without it,
+  the guard reports "OTA GUARD NOT ACTIVE" instead of running.
+
 ## 2026-09-25
 
 - **Only one Echo answers, like Alexa.** With several Echos in earshot, only the one that heard "Alexa" most clearly

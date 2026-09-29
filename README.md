@@ -79,7 +79,8 @@ Details:
   group), Music Assistant starting on the Echo pauses the phone. The voice assistant ducks both.
 - **Bluetooth**: the proxy works like an ESPHome `bluetooth_proxy` with `active: true`, up to 3 connections, "Just Works"
   pairing only. While a phone plays, the proxy stops scanning: the radio cannot do both without the music stuttering.
-- **Settings in Home Assistant**: noise suppression level, auto gain, mic volume multiplier, mute switch, "Do not disturb"
+- **Settings in Home Assistant**: "Mic level" (how loud speech reaches the voice assistant, -35 to -15 dBFS, default
+  -26; the Echo adjusts its gain to it), mute switch, "Do not disturb"
   switch (drops announcements, purple pulse when switched on), "Wake sound" switch (covers all local sounds),
   "Bluetooth pairing" switch, "Bluetooth announcements" switch and their language, "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
   only Sendspin servers paired with the token may play), equalizer (bass, mid, treble, −6 to +6 dB, Amazon's own,

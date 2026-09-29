@@ -2,6 +2,18 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-09-29
+
+- **Quiet speech is understood.** The Echo's microphones deliver speech far quieter than a Voice PE (about 30 dB):
+  Amazon's cloud was tuned for that, Home Assistant's speech recognition and "finished speaking" detection are not, so
+  softly spoken commands came out as wrong words or were cut off mid-sentence. The Echo now brings speech to a steady
+  level itself before sending it, starting from how loud the wake word was, without raising the room noise in pauses
+  and without clipping when someone speaks up close. The wake word is not affected.
+- **One mic setting that works: "Mic level".** "Noise suppression level", "Auto gain" and "Mic volume multiplier" never
+  had an effect: Home Assistant ignores them for ESPHome devices. They are replaced by "Mic level" (-35 to -15 dBFS,
+  default -26, the usual reference level for speech): how loud speech reaches the voice assistant; raise it if quiet speech is still missed. Delete the three
+  leftover entities in Home Assistant.
+
 ## 2026-09-28
 
 - **Echo 2 (`radar`) supported.** Tried on a real Echo 2 with the guided setup (`scripts/setup.sh radar`). It has no

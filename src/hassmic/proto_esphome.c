@@ -44,6 +44,7 @@
 #include "ble.h"
 #include "board.h"
 #include "core.h"
+#include "micgain.h"
 #include "hash.h"
 #include "noise.h"
 #include "sendspin.h"
@@ -76,7 +77,8 @@ enum { BLE_REQ_CONNECT = 0, BLE_REQ_DISCONNECT, BLE_REQ_PAIR, BLE_REQ_UNPAIR, BL
 enum { EV_ERROR = 0, EV_RUN_START, EV_RUN_END, EV_STT_START, EV_STT_END, EV_INTENT_START, EV_INTENT_END, EV_TTS_START,
        EV_TTS_END, EV_WAKE_START, EV_WAKE_END, EV_VAD_START, EV_VAD_END, EV_TTS_STREAM_START = 98, EV_TTS_STREAM_END = 99, EV_INTENT_PROGRESS = 100 };
 enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FEAT_ANNOUNCE = 16, FEAT_START_CONVERSATION = 32 };
-enum { KEY_NOISE = 2, KEY_GAIN, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
+/* KEY_NOISE and KEY_MULT: retired entities (noise suppression, mic volume multiplier), kept so the others keep their keys */
+enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
        KEY_SS_UNPAIRED };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
@@ -272,11 +274,12 @@ static int key_set(const unsigned char *k, size_t len)
 }
 
 /* ---------------------------------------------------------------- settings entities
- * Home Assistant applies these to the mic stream on its side (they travel in every VoiceAssistantRequest), like the
- * controls of its Wyoming integration.  Kept in a small file so they survive restarts. */
+ * Kept in a small file so they survive restarts.  "Mic level" is the speech level the Echo's own gain aims at
+ * (micgain.h).  It replaced noise suppression, auto gain and mic volume multiplier (2026-09-29): Home Assistant ignores
+ * the audio settings of an ESPHome VoiceAssistantRequest, so they never did anything, and Amazon's front end suppresses
+ * noise already. */
 
-static const char *const noise_names[] = { "Off", "Low", "Medium", "High", "Max" };
-static int noise_level, auto_gain; static float vol_mult = 1.0f;
+static int mic_level = MICGAIN_LEVEL;
 /* The words of the Bluetooth announcements.  Home Assistant speaks them with the satellite's pipeline voice, but tells
  * neither us nor a template that pipeline's language (not in any ESPHome event, not on the pipeline select, no action
  * returns it), so the user picks the language here to match.  Four whole sentences each rather than one "a device" to
@@ -302,22 +305,25 @@ static const char *settings_path(void) { const char *p = getenv("HASSMIC_SETTING
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
-    if (!f) return;
-    /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language) */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s", &n, &g, &v, &m, &w, &a, &d, l) >= 5) {
-        noise_level = n < 0 ? 0 : n > 4 ? 4 : n; auto_gain = g < 0 ? 0 : g > 31 ? 31 : g; vol_mult = v < 0.1f ? 0.1f : v > 10 ? 10 : v;
+    int n, g, m, w, a = 1, d = 0, fmt = 0; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
+    if (!f) { core_mic_level(mic_level); return; }
+    /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
+     * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
+     * which ignored them; unused since). */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt) >= 5) {
+        if (fmt == 2) mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g;
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
     }
     fclose(f);
+    core_mic_level(mic_level);
 }
 
 static void settings_save(void)
 {
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
-    fprintf(f, "%d %d %.2f %d %d %d %d %s\n", noise_level, auto_gain, vol_mult, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
+    fprintf(f, "0 %d 1 %d %d %d %d %s 2\n", mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
             bt_langs[bt_lang].code);
     fclose(f);
 }
@@ -327,9 +333,7 @@ static void send_setting(int key)       /* lock held */
     PB(b, 48);
     pb_fixed32(&b, 1, key);
     switch (key) {
-    case KEY_NOISE: pb_str(&b, 2, noise_names[noise_level]); send_state(SELECT_STATE, &b); break;
-    case KEY_GAIN:  pb_float(&b, 2, auto_gain); send_state(NUMBER_STATE, &b); break;
-    case KEY_MULT:  pb_float(&b, 2, vol_mult); send_state(NUMBER_STATE, &b); break;
+    case KEY_MIC_LEVEL: pb_float(&b, 2, mic_level); send_state(NUMBER_STATE, &b); break;
     case KEY_MUTE:  pb_uint(&b, 2, core_muted()); send_state(SWITCH_STATE, &b); break;
     case KEY_WAKE_SOUND: pb_uint(&b, 2, core_wake_sound(-1)); send_state(SWITCH_STATE, &b); break;
     case KEY_BT_PAIRING: if (ble_present()) { pb_uint(&b, 2, a2dp_pairing()); send_state(SWITCH_STATE, &b); } break;
@@ -425,12 +429,9 @@ static void send_diag_entities(void)
 
 static void send_setting_entities(void)
 {
-    { PB(b, 256); pb_str(&b, 1, "noise_suppression_level"); pb_fixed32(&b, 2, KEY_NOISE); pb_str(&b, 3, "Noise suppression level");
-      pb_str(&b, 5, "mdi:volume-off"); for (int i = 0; i < 5; i++) pb_str(&b, 6, noise_names[i]); pb_uint(&b, 8, 1); send_msg(LIST_SELECT, &b); }
-    { PB(b, 256); pb_str(&b, 1, "auto_gain"); pb_fixed32(&b, 2, KEY_GAIN); pb_str(&b, 3, "Auto gain"); pb_str(&b, 5, "mdi:microphone-plus");
-      pb_float(&b, 6, 0); pb_float(&b, 7, 31); pb_float(&b, 8, 1); pb_uint(&b, 10, 1); pb_str(&b, 11, "dBFS"); pb_uint(&b, 12, 2); send_msg(LIST_NUMBER, &b); }
-    { PB(b, 256); pb_str(&b, 1, "mic_volume_multiplier"); pb_fixed32(&b, 2, KEY_MULT); pb_str(&b, 3, "Mic volume multiplier"); pb_str(&b, 5, "mdi:volume-vibrate");
-      pb_float(&b, 6, 0.1f); pb_float(&b, 7, 10); pb_float(&b, 8, 0.1f); pb_uint(&b, 10, 1); pb_uint(&b, 12, 1); send_msg(LIST_NUMBER, &b); }
+    { PB(b, 256); pb_str(&b, 1, "mic_level"); pb_fixed32(&b, 2, KEY_MIC_LEVEL); pb_str(&b, 3, "Mic level"); pb_str(&b, 5, "mdi:microphone-plus");
+      pb_float(&b, 6, MICGAIN_LEVEL_MIN); pb_float(&b, 7, MICGAIN_LEVEL_MAX); pb_float(&b, 8, 1); pb_uint(&b, 10, 1); pb_str(&b, 11, "dBFS");
+      pb_uint(&b, 12, 2); send_msg(LIST_NUMBER, &b); }
     static const char *const eq_ids[] = { "equalizer_bass", "equalizer_mid", "equalizer_treble" };
     static const char *const eq_labels[] = { "Equalizer bass", "Equalizer mid", "Equalizer treble" };   /* sort together in HA */
     for (int i = 0; i < 3; i++) {       /* like the Alexa app's sliders */
@@ -479,10 +480,11 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         else if (f.field == 2 && f.wire == 0) on = f.v != 0;
         else if (f.field == 2 && f.data) pbf_str(&f, opt, sizeof opt);
     }
-    if (type == SELECT_COMMAND && key == KEY_NOISE) { for (int i = 0; i < 5; i++) if (!strcmp(opt, noise_names[i])) noise_level = i; }
-    else if (type == SELECT_COMMAND && key == KEY_BT_LANG) { for (int i = 0; i < BT_LANGS; i++) if (!strcmp(opt, bt_langs[i].name)) bt_lang = i; }
-    else if (type == NUMBER_COMMAND && key == KEY_GAIN) auto_gain = num < 0 ? 0 : num > 31 ? 31 : (int)(num + 0.5f);
-    else if (type == NUMBER_COMMAND && key == KEY_MULT) vol_mult = num < 0.1f ? 0.1f : num > 10 ? 10 : num;
+    if (type == SELECT_COMMAND && key == KEY_BT_LANG) { for (int i = 0; i < BT_LANGS; i++) if (!strcmp(opt, bt_langs[i].name)) bt_lang = i; }
+    else if (type == NUMBER_COMMAND && key == KEY_MIC_LEVEL) {
+        mic_level = num < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : num > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : (int)lroundf(num);
+        core_mic_level(mic_level);
+    }
     else if (type == SWITCH_COMMAND && key == KEY_MUTE) { core_soft_mute(on); settings_save(); send_setting(KEY_MUTE); return; }
     else if (type == SWITCH_COMMAND && key == KEY_WAKE_SOUND) core_wake_sound(on);
     else if (type == SWITCH_COMMAND && key == KEY_BT_ANNOUNCE) core_bt_announce(on);
@@ -494,8 +496,8 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         core_set_eq(key - KEY_EQ_BASS, (int)lroundf(num)); send_setting(key); return;
     }
     else return;
-    fprintf(stderr, "settings: noise=%s gain=%d mult=%.1f mute=%d wake_sound=%d bt_announce=%d dnd=%d bt_lang=%s\n", noise_names[noise_level], auto_gain,
-            vol_mult, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1), bt_langs[bt_lang].code);
+    fprintf(stderr, "settings: mic_level=%d mute=%d wake_sound=%d bt_announce=%d dnd=%d bt_lang=%s\n", mic_level,
+            core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1), bt_langs[bt_lang].code);
     settings_save(); send_setting(key);
 }
 
@@ -884,8 +886,9 @@ static void start(void)
     tts_expected = 0; tts_url[0] = 0;
     pb_uint(&b, 1, 1);                                  /* start */
     pb_uint(&b, 3, core_local_wake ? 1 : 3);            /* flags: USE_VAD, plus USE_WAKE_WORD when detection is remote */
-    { PB(as, 24); pb_uint(&as, 1, noise_level); pb_uint(&as, 2, auto_gain); pb_float(&as, 3, vol_mult);
-      pb_varint(&b, 4 << 3 | 2); pb_varint(&b, as.n); pb_raw(&b, as.p, as.n); }
+    /* audio settings: neutral.  Home Assistant ignores them today; the gain is applied here (micgain.h), and absent they
+     * would read as volume multiplier 0 should it ever start using them */
+    { PB(as, 8); pb_float(&as, 3, 1.0f); pb_varint(&b, 4 << 3 | 2); pb_varint(&b, as.n); pb_raw(&b, as.p, as.n); }
     if (core_local_wake) { const struct core_wake_word *w; if (core_wake_words(&w)) pb_str(&b, 5, w[core_wake_word(-1)].name); }  /* HA's duplicate check keys on it */
     send_va(VA_REQUEST, &b);
 }
@@ -1078,7 +1081,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
     case LIST_ENTITIES_REQ: send_entities(); break;
     case SUBSCRIBE_STATES:
         for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i].fd == reply_fd) clients[i].states = 1;
-        send_mp_state(); for (int k = KEY_NOISE; k <= KEY_WAKE_SOUND; k++) send_setting(k); send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_ANNOUNCE); send_setting(KEY_DND);
+        send_mp_state(); send_setting(KEY_MIC_LEVEL); send_setting(KEY_MUTE); send_setting(KEY_WAKE_SOUND); send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_ANNOUNCE); send_setting(KEY_DND);
         send_setting(KEY_BT_LANG);
         for (int k = KEY_EQ_BASS; k <= KEY_EQ_TREBLE; k++) send_setting(k);
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);

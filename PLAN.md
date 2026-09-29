@@ -230,8 +230,8 @@ Run in this order. Each step says what it proves.
       (alarm until button / wake word / 60 s), volume both ways, wake-word config, generated mDNS file (`hassmic -S`).
       Port **26053** (stock firewall admits inbound TCP 16384–32767 only). `tests/fake_ha_esphome.py` against `aioesphomeapi`:
       20/20. With real HA (2026-09-21): discovery, voice pipeline, settings entities, mute confirmed by the user.
-      Settings entities (HA applies them to the mic stream, values travel in each request, saved in `/data/local/hassmic/state/settings`):
-      noise suppression level, auto gain, mic volume multiplier, wake sound; mute switch.
+      Settings entities (saved in `/data/local/hassmic/state/settings`): mic level (since 2026-09-29, see "Mic gain"; replaced
+      noise suppression, auto gain and mic volume multiplier, which HA ignored), wake sound; mute switch.
       Mute: button = hardware latch, reported by the `gpio-privacy` input device (`/dev/input/event1`, not the keypad); software can
       set the latch (`enable` <- 1) but not clear it (write 0 rejected while set, second 1 does not toggle; DT has one output, one
       input) → HA switch = soft mute, shows latch OR soft, button unmute clears both.
@@ -525,3 +525,27 @@ Run in this order. Each step says what it proves.
       firmware than `FIRMWARE_ID`; `main.sh` refuses bundles for another product. Firewall still goes up without
       `device.conf`. PC: build clean, unit + all protocol tests, qemu Wyoming test and OTA test pass. Not done: push
       update and `install-system.sh` on the Echo with the new scripts
+- [~] Mic gain (2026-09-29, user report: quiet speech misrecognised or cut off, fine on a Voice PE and on stock): HA ignored
+      our three mic settings all along. HA core `dev`: `esphome/assist_satellite.py` `handle_pipeline_start` takes
+      `audio_settings` and drops it, `assist_satellite/entity.py` builds `AudioSettings(silence_seconds=...)` only; the
+      speex AGC/NS in `assist_pipeline/audio_enhancer.py` never runs for ESPHome satellites (Voice PE/ReSpeaker do it on the
+      device and offer no such entities). micAsr has no AGC either: AFE.cfg ASR path ends in a fixed "ASR Output Gain"
+      +5.2 dB. Measured on the installed Echo: 10 wake words at -49 to -62 dBFS (keyword rms) over a -64..-69 dBFS floor;
+      old captures: speech -38..-55 dBFS in 100 ms windows, floor -64..-67, close transients up to 0 dBFS.
+      Now `micgain.c` on what goes to the pipeline (wake word still gets the stock stream): per 10 ms frame floor tracker,
+      frames 9 dB above it count as speech; their power mean over ~0.5 s is the talker's active speech level (ITU-T P.56
+      style, pauses left out), gain = target - that level in -12..+36 dB, falls at once, rises 12 dB/s during speech only,
+      per-frame peak limit 29000. Starts from the wake word's rms so the first words already arrive at level. Always on;
+      one entity "Mic level" (-35..-15 dBFS, default -26 = P.56's -26 dBov reference) is the output's active level.
+      First version aimed an upper envelope (up ~50 ms, down ~2 s) at the target instead: its distance to the active level
+      depends on the speech, +4 dB on the unit test's syllables, -7..+2 dB on the captures, so no fixed offset could make
+      the slider mean the output. Output active level at -26 on the captures (speech frames, whole file): 1 s mean
+      -25.2..-27.0, 0.5 s -26.2..-26.5, 0.33 s -26.4..-26.7 (0.5 s kept: shorter evens out words); micAsr-170444 at
+      -31.7 (starts cold with its loudest word, fades 15 dB in 2.5 s). Noise suppression, auto gain
+      and mic volume multiplier entities removed (a multiplier on top of an AGC only moves its target). Request carries
+      neutral audio settings (0, 0, 1.0). Settings file format 2 (9th field); older files: default level. On the
+      captures: speech -22..-30 dBFS in 100 ms windows, floor ~20 dB below it, no clipping.
+      `tests/unit/micgain_test.c` (synthetic syllables at -55 and -16 dBFS over a -67 floor: active level within 1.5 dB of
+      the target after 1 s, within 3 dB in the first 250 ms, no pumping in pauses, peaks limited, lowest level); `fake_ha_esphome.py` checks migration, neutral settings,
+      level. Pushed to the installed Echo; logs "mic gain: talker .. dBFS, gain .. dB" per pipeline.
+      Not done: STT results with quiet speech on the device, a second capture with the gain on

@@ -3,7 +3,7 @@
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
 import asyncio, base64, io, math, os, signal, struct, subprocess, sys, tempfile, threading, wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from aioesphomeapi import SelectInfo, NumberInfo, SwitchInfo, SelectState, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo
+from aioesphomeapi import NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
 from aioesphomeapi import ZERO_NOISE_PSK
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
@@ -44,6 +44,7 @@ async def main():
     play = tempfile.mktemp(suffix=".raw")
     settings = tempfile.mktemp(suffix=".settings")
     state = tempfile.mkdtemp(); mdns = os.path.join(state, "hassmic.service")
+    with open(settings, "w") as f: f.write("3 9 4.00 0 1 1 0 en\n")         # from before the mic level: gain values for HA
     env = dict(os.environ, HASSMIC_STATE=state, HASSMIC_SETTINGS=settings, HASSMIC_CAP=f"{ROOT}/testdata/alexa_espeak.raw", HASSMIC_PLAY=play,
                HASSMIC_MDNS_FILE=mdns, HASSMIC_ARB_ADDR="127.255.255.255",      # arbitration beacons stay on this PC
                HASSMIC_MODELS=os.path.join(state, "models"))
@@ -68,8 +69,9 @@ async def main():
         states = []
         cli.subscribe_states(states.append)
         by = {e.object_id: e for e in entities}
-        check(isinstance(by.get("noise_suppression_level"), SelectInfo) and list(by["noise_suppression_level"].options) == ["Off", "Low", "Medium", "High", "Max"]
-              and isinstance(by.get("auto_gain"), NumberInfo) and by["auto_gain"].max_value == 31 and isinstance(by.get("mic_volume_multiplier"), NumberInfo)
+        check("noise_suppression_level" not in by
+              and "auto_gain" not in by and "mic_volume_multiplier" not in by
+              and isinstance(by.get("mic_level"), NumberInfo) and (by["mic_level"].min_value, by["mic_level"].max_value) == (-35, -15)
               and isinstance(by.get("mute"), SwitchInfo) and isinstance(by.get("wake_sound"), SwitchInfo), "settings entities listed")
         tok = by.get("sendspin_pairing_token")
         check(isinstance(tok, TextSensorInfo) and tok.disabled_by_default and int(tok.entity_category) == 2, "Sendspin pairing token entity: diagnostic, disabled by default")
@@ -77,6 +79,9 @@ async def main():
         check(isinstance(temp, SensorInfo) and temp.disabled_by_default and int(temp.entity_category) == 2 and temp.device_class == "temperature"
               and temp.unit_of_measurement == "\u00b0C" and isinstance(cpu, SensorInfo) and cpu.disabled_by_default and cpu.unit_of_measurement == "%"
               and int(cpu.state_class) == 1, "diagnostic sensors: SoC temperature and CPU usage, disabled by default")
+        await asyncio.sleep(0.3)
+        level0 = [x.state for x in states if isinstance(x, NumberState) and x.key == by["mic_level"].key]
+        check(level0 == [-26], f"mic level at its default after a settings file from before it: {level0}")
         eqs = [by.get(k) for k in ("equalizer_bass", "equalizer_mid", "equalizer_treble")]
         await asyncio.sleep(0.3)
         check(all(isinstance(e, NumberInfo) and e.min_value == -6 and e.max_value == 6 and e.step == 1 and e.unit_of_measurement == "dB" for e in eqs)
@@ -85,10 +90,9 @@ async def main():
         await asyncio.sleep(0.5)
         check(any(isinstance(x, NumberState) and x.key == eqs[0].key and x.state == 4 for x in states)
               and any(isinstance(x, NumberState) and x.key == eqs[2].key and x.state == -6 for x in states), "equalizer commands reflected, clamped to -6..+6")
-        cli.select_command(by["noise_suppression_level"].key, "High"); cli.number_command(by["auto_gain"].key, 15)
-        cli.number_command(by["mic_volume_multiplier"].key, 2.5)
+        cli.number_command(by["mic_level"].key, -20)
         await asyncio.sleep(0.5)
-        check(any(isinstance(x, SelectState) and x.state == "High" for x in states) and any(isinstance(x, NumberState) and x.state == 15 for x in states),
+        check(any(isinstance(x, NumberState) and x.key == by["mic_level"].key and x.state == -20 for x in states),
               "setting commands reflected in state")
         want = subprocess.run([f"{ROOT}/build/hassmic-host", "-T"], env=env, capture_output=True, text=True).stdout.strip()
         got = [x.state for x in states if isinstance(x, TextSensorState) and x.key == tok.key]
@@ -100,7 +104,7 @@ async def main():
         svcs = (await cli.list_entities_services())[1]
         check([(v.name, [(x.name, int(x.type)) for x in v.args]) for v in svcs] == [("arbitration_key", [("network", 3), ("key", 3)])],
               "action \"arbitration_key\" (network, key: strings) for other Echos to hand over their network")
-        check(open(settings).read().split()[:3] == ["3", "15", "2.50"], f"settings persisted: {open(settings).read().strip()!r}")
+        check(open(settings).read().split()[1:2] == ["-20"] and open(settings).read().split()[8:9] == ["2"], f"settings persisted: {open(settings).read().strip()!r}")
         cfg = await cli.get_voice_assistant_configuration(5)
         avail = sorted((w.id, w.wake_word, list(w.trained_languages)) for w in cfg.available_wake_words)
         check(avail == [("alexa", "Alexa", ["en"]), ("computer-en-US", "Computer", ["en"]), ("echo-de", "Echo", ["de"])]
@@ -120,9 +124,11 @@ async def main():
         proc.send_signal(signal.SIGUSR1)                                           # "wake word"
         await asyncio.wait_for(started.wait(), 5)
         check(handle_start.args == (1, "Alexa"), f"pipeline request: flags, phrase = {handle_start.args}")
-        check(handle_start.audio == (3, 15, 2.5), f"audio settings travel with the request: {handle_start.audio}")
+        check(handle_start.audio == (0, 0, 1.0), f"neutral audio settings in the request (the gain is applied on the Echo): {handle_start.audio}")
         await asyncio.sleep(1.0)
+        peak = max(abs(v) for v in struct.unpack(f"<{len(mic) // 2}h", mic[:len(mic) // 2 * 2])) if mic else 0
         check(len(mic) > 16000, f"mic audio streamed: {len(mic)} bytes in 1 s")
+        check(8000 < peak <= 29100, f"mic audio brought up to speech level, peaks limited below full scale: peak {peak}")
 
         cli.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_START, None)
         cli.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_START, None)
@@ -160,9 +166,9 @@ async def main():
         async def stop2(*a): pass
         cli2.subscribe_voice_assistant(handle_start=start2, handle_stop=stop2)
         await asyncio.sleep(0.3); n1 = len(states)
-        cli2.number_command(by["auto_gain"].key, 7)
+        cli2.number_command(by["mic_level"].key, -30)
         await asyncio.sleep(0.5)
-        check(any(isinstance(x, NumberState) and x.state == 7 for x in states[n1:]) and any(isinstance(x, NumberState) and x.state == 7 for x in states2),
+        check(any(isinstance(x, NumberState) and x.state == -30 for x in states[n1:]) and any(isinstance(x, NumberState) and x.state == -30 for x in states2),
               "a change made by one client reaches both")
         started.clear(); proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
         check(not started2.is_set(), "the voice assistant stays with the first subscriber")

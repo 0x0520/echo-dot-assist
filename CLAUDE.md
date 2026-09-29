@@ -81,7 +81,8 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 
 - **Core (`main.c`, `core.h`)**: state machine `IDLE/LISTENING/THINKING/SPEAKING`, pipeline timeout, TTS queue with
   barge-in flush, alarms (timers), mute (hardware latch that software can set but never clear, plus a soft mute from HA),
-  volume, LED ring, earcons, wake word threshold hints. `core_lock` guards state and client socket writes; `core.h`
+  volume, LED ring, earcons, wake word threshold hints. `micgain.c`: AGC on the mic audio sent to the pipeline (the stock
+  micAsr level is ~30 dB below what STT expects, and HA ignores the ESPHome audio settings); the wake word gets it raw. `core_lock` guards state and client socket writes; `core.h`
   documents per function whether the lock is held.
 - **Protocols (`struct proto` in `core.h`)**: `proto_esphome.c` (ESPHome native API incl. Noise encryption provisioned
   by HA, voice assistant, media player, timers, settings entities, Bluetooth proxy messages) and `proto_wyoming.c` +

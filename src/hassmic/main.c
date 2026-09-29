@@ -34,6 +34,7 @@
 #include "a2dp.h"
 #include "arb.h"
 #include "buttons.h"
+#include "micgain.h"
 #include "netio.h"
 #include "wake.h"
 #include "core.h"
@@ -101,6 +102,9 @@ static int soft_mute;                               /* under lock: mute switch f
 static int dnd;                                     /* under lock: do not disturb */
 static int barge_in;                                /* under lock: start a new pipeline once the current one has ended
                                                       * (wake word during a reply, or the server asked to continue the conversation) */
+static struct micgain mic_gain;                     /* under lock: gain of what the pipeline hears (micgain.h) */
+static int mic_fresh;                               /* under lock: a pipeline started, the gain has not seen it yet */
+static float keyword_db = 1;                        /* under lock: rms of the last wake word, dBFS */
 
 /* ---------------------------------------------------------------- LED ring */
 
@@ -269,6 +273,7 @@ static int quiet_abort;
 static void pipeline_start(void)
 {
     quiet_abort = 0;
+    mic_fresh = 1;
     proto->start();
     atomic_store(&streaming, 1);
     if (core_local_wake) core_set_state(LISTENING);
@@ -333,6 +338,27 @@ int core_soft_mute(int set)
 }
 
 void core_mic_off(void) { atomic_store(&streaming, 0); }
+
+void core_mic_level(int dbfs)
+{
+    if (dbfs != mic_gain.level) { micgain_init(&mic_gain, dbfs); mic_fresh = 1; }
+}
+
+/* lock held.  Mic audio to the pipeline, brought to speech level first; the wake word before it counts from 3 s back. */
+static void send_mic(const int16_t *pcm, size_t n)
+{
+    static int16_t out[1024];
+    if (mic_fresh) {
+        micgain_start(&mic_gain, mono_ms() - last_wake_ms < 3000 ? keyword_db : 1); mic_fresh = 0;
+        fprintf(stderr, "mic gain: talker %.1f dBFS, gain %+.1f dB\n", micgain_talker_db(&mic_gain), mic_gain.gain_db);
+    }
+    while (n) {
+        size_t k = n < 1024 ? n : 1024;
+        micgain_run(&mic_gain, pcm, out, k);
+        proto->audio(out, k * 2);
+        pcm += k; n -= k;
+    }
+}
 void core_restart_after(void) { barge_in = 1; }
 
 void core_pipeline_finish(void)
@@ -457,7 +483,7 @@ static void stream_ring(uint64_t from)              /* lock held */
     while (from < ring_n) {
         uint64_t at = from % RING_SAMPLES, n = ring_n - from;
         if (n > RING_SAMPLES - at) n = RING_SAMPLES - at;
-        proto->audio(ring + at, n * 2);
+        send_mic(ring + at, n);
         from += n;
     }
 }
@@ -490,6 +516,8 @@ static void on_wake(const char *keyword, uint64_t begin, uint64_t end)
     if (!core_local_wake) return;
     if (!strcasecmp(keyword, "STOP")) { stop_word(); return; }
     last_wake_ms = mono_ms();
+    { float db = 10 * log10f((ring_power(begin, end) + 1) / (32768.0f * 32768.0f));     /* the talker's level, for the gain */
+      pthread_mutex_lock(&core_lock); keyword_db = db; pthread_mutex_unlock(&core_lock); }
     if (!arb_running()) { trigger(0); return; }
     pthread_mutex_lock(&core_lock); det_begin = begin; det_end = end; pthread_mutex_unlock(&core_lock);
     atomic_store(&det_pending, 1);                  /* the ring is the capture thread's */
@@ -850,7 +878,7 @@ static void *capture_thread(void *arg)
         if (core_local_wake) { ring_put(pcm, n / 2); wake_feed(pcm, n / 2); }
         if (atomic_load(&streaming)) {
             pthread_mutex_lock(&core_lock);
-            if (atomic_load(&streaming) && connected) proto->audio(pcm, n);
+            if (atomic_load(&streaming) && connected) send_mic(pcm, n / 2);
             pthread_mutex_unlock(&core_lock);
         }
         if (atomic_exchange(&det_pending, 0)) {
@@ -880,6 +908,7 @@ int main(int argc, char **argv)
 {
     const char *manifest = NULL, *input = board.keypad; int port = 0, print_mdns = 0, o;
     core_name = board.default_name;
+    micgain_init(&mic_gain, MICGAIN_LEVEL);            /* until the protocol has its saved settings (Wyoming: always) */
     while ((o = getopt(argc, argv, "P:p:n:w:m:b:z:o:a:LEVSTB")) != -1) switch (o) {
         case 'P': proto = !strcmp(optarg, "wyoming") ? &proto_wyoming : &proto_esphome; break;
         case 'p': port = atoi(optarg); break;

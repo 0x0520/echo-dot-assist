@@ -42,6 +42,7 @@ enum state core_state(void);
 void core_set_state(enum state s);
 void core_link(int connected, int ready);       /* client connection / server wants pipelines.  (0,0) ends a running pipeline */
 void core_mic_off(void);                        /* server has heard enough */
+void core_mic_level(int dbfs);                  /* speech level the pipeline gets: micgain.h */
 void core_pipeline_finish(void);
 void core_restart_after(void);                  /* start another pipeline once the current one has finished */
 void core_error(void);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Another wake word for an installed Echo: "Echo", "Computer", "Amazon", "Ziggy", or "Alexa" in another language.
 # The models are Amazon's (DAVS) and the same for every Echo, so ones fetched before (device-logs/models/, git-ignored)
-# are only copied over.  Each is first loaded by the Echo's own engine (pryon_test): an older engine cannot load
+# are only copied over.  Each is first loaded by the Echo's own engine (pryon_test): an older engine (radar) cannot load
 # every set.  A model not there yet is fetched from Amazon, which needs the Echo registered to an Amazon account once:
 # it runs stock Alexa with the updaters cut off (MODE=stock-online) until then, and everything is undone afterwards
 # (registration, the Wi-Fi the Alexa app added, the mode).  Home Assistant then offers every installed model in the

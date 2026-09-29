@@ -9,4 +9,5 @@ int  sendspin_button(void);                             /* action button: 1 = us
 void sendspin_pause(void);                              /* another source started: pause the group if it plays */
 void sendspin_volume_changed(int percent);              /* volume changed locally: tell the server */
 void sendspin_mdns(int port, char *out, size_t outsz);  /* <service> element for the avahi service file */
+int  sendspin_unpaired(int set);                        /* unpaired servers may play: -1 asks, 0/1 sets (kept in the state) */
 #endif

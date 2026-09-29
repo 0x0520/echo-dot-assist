@@ -170,6 +170,14 @@ Run in this order. Each step says what it proves.
       - [ ] **(device)** `echo-en-US` (5 MB, NTT fusion) live. Loads under qemu after all (2026-09-22,
             the earlier "insufficient permissions" on `ntt.cfg.json` did not come back) but gives only a type=0 near miss on espeak
             "Echo" where `echo-de-DE` accepts; the NTT fusion models want a real voice, test on the device
+      - [x] Models across Echos (2026-09-28): the DAVS sets are account-independent files, so one fetch serves every Echo.
+            Under qemu the NTT fusion sets (`alexa-de-DE`, `echo-en-US`, `computer-en-US`) fail on every model with
+            "insufficient permissions" on `ntt.cfg.json`, but load on the real donut (`pryon_test` on 192.168.100.147:
+            both load, `alexa-de-DE` scores espeak "Alexa" type=0): a qemu artefact, so compatibility is checked on the
+            Echo. The plain sets (`echo/computer/amazon/ziggy-de-DE`) load under qemu with donut's, biscuit's and radar's
+            engines, `echo-de-DE` detects espeak "Echo" (type=2) on all three. radar's engine lists `wakeword_ecids` up
+            to 35 (donut, biscuit: 37) and throws on the NTT sets under qemu: `davs-fetch.py --ecids` asks with the
+            Echo's own list, which `scripts/wakeword.sh` reads from `pryon_test`'s attributes line
       - The spied `assetmgrd` must run in its own SELinux domain (`runcon u:r:assetmgrd:s0`, shim labelled `system_file`, log in
         `/data/davs`): from the `su` domain its AIPC service is unreachable and the Alexa app shows the device as unavailable
 - [x] Assistant replies ignored the volume: the mixer keeps one volume per stream type, the `TTS` stream follows `TTSVolume`, and
@@ -201,6 +209,12 @@ Run in this order. Each step says what it proves.
       `puffin`, Alexa services + `oobed` stopped, `hassmic_out` first in OUTPUT, HA reconnected on its own ~60 s after power-up.
       `magiskpolicy` aborts inside TWRP (even with `/system` bind-mounted) → installer patches the policy under the running OS
       and only copies it in TWRP, with md5 checks on base and transfer
+- [x] Adopted Echo offered again as "discovered" (radar, 2026-09-28): the boot-time avahi service file had hassmic's
+      placeholder MAC 02:00:00:00:00:01 (radar's wlan0 appears after main.sh ran), Home Assistant keys ESPHome devices by
+      MAC. main.sh now waits for the wlan address (max 120 s, hassmic keeps starting) and gives the service directory to
+      DAEMON_USER, so hassmic's own rewrite on a key change (mdns_refresh) works on the device too (it could not write
+      there before). avahi's host name was "linux"/"linux-2" (shown by HA as "Küchen Echo (linux)"); now the node name,
+      via a copy of avahi-daemon.conf with host-name. Checked by hand on radar: `k--chen-echo.local`, real MAC
 - [x] Setup voice prompts + orange spinner at boot (unregistered device): played by `uxeventd`. `boot.sh` now stops `uxeventd` and
       `oobed_*` at `on boot` and again after PuffinApp is stopped. Reinstalled + rebooted 2026-09-21: user confirms no audio, no LED at boot; `uxeventd` stays stopped, device stable
 - [x] Volume buttons felt dead: step was 3 %, `volume_step-NN` patterns were never unset (they loop black forever and pile up),
@@ -284,6 +298,10 @@ Run in this order. Each step says what it proves.
       Device with real MA: MA picks FLAC, hassmic stays at 8 % CPU, sync err ≤ 0.3 ms; decoded queue sized for the 30 s horizon (8 MB) after
       the PCM-sized limit dropped FLAC audio silently; paired session resumes directly with the long-term key after a reboot.
       Real MA 2026-09-21: token pairing done by the user (sentinel → pairing key → long-term key), action button pause/resume works.
+      Radar with real MA 2026-09-28: played without the token (unpaired access, as designed then). Switch "Music Assistant without
+      pairing" (2026-09-28, state/sendspin.unpaired, default off since the same day, user's call): off = hello says `unpaired_access.enabled:false`, a Sentinel/pairing-key
+      session that declares playback or roles gets `client/goodbye pairing_required`, an admitted unpaired one is cut off.
+      `tests/fake_ma_sendspin.py`: approved unpaired → no player role; paired with the token → plays (19/19)
       The pairing token is also an ESPHome text sensor ("Sendspin pairing token", diagnostic, disabled by default) so it can be copied
       from Home Assistant.
       Not implemented: PIN pairing (CPace: SHA-512 + Elligator2) → refused with `pair/abort method_not_supported`;

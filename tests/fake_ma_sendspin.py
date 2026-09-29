@@ -23,6 +23,7 @@ async def main():
     if "-v" in sys.argv: logging.basicConfig(level=logging.DEBUG)
     state = tempfile.mkdtemp(); music = os.path.join(state, "music.raw")
     want = os.environ.get("CODEC", "flac")         # CODEC=flac|opus|pcm: what the player lists first
+    open(os.path.join(state, "sendspin.unpaired"), "w").write("1")     # unpaired access switched on for the first part
     env = dict(os.environ, HASSMIC_SENDSPIN_CODECS=want, HASSMIC_STATE=state, HASSMIC_MUSIC=music, HASSMIC_SETTINGS=os.path.join(state, "settings"), HASSMIC_OUTPUT_LATENCY_MS="0")
     proc = subprocess.Popen([f"{ROOT}/build/hassmic-host", "-p", "16959", "-z", str(PORT), "-L"], env=env)
     await asyncio.sleep(0.5)
@@ -109,6 +110,29 @@ async def main():
         await server.unpair(cid)
         await asyncio.sleep(1.5)
         check(os.path.getsize(os.path.join(state, "sendspin.records")) == 0, "server/unpair deletes the record on the player")
+    finally:
+        proc.terminate(); await server.close()
+
+    # ---- unpaired access off, the default (the Home Assistant switch, kept in state/sendspin.unpaired): approving the device
+    # unpaired gives it no role; pairing with the token still works and then it plays
+    proc.wait(5)                                    # its Sendspin port is taken again below
+    state2 = tempfile.mkdtemp()                     # no sendspin.unpaired file: the default
+    env2 = dict(env, HASSMIC_STATE=state2, HASSMIC_SETTINGS=os.path.join(state2, "settings"))
+    proc = subprocess.Popen([f"{ROOT}/build/hassmic-host", "-p", "16954", "-z", str(PORT), "-L"], env=env2)
+    await asyncio.sleep(0.5)
+    server = SendspinServer(loop, Identity.generate(), "fake-ma", pairing_store=InMemoryServerPairingStore())
+    added = asyncio.Queue(); server.add_event_listener(on_event)
+    try:
+        await server.start_server(port=16955, discover_clients=False)
+        server.connect_to_client(f"ws://127.0.0.1:{PORT}/sendspin", retry_initial_connection=True, retry_indefinitely=True)
+        cid = await asyncio.wait_for(added.get(), 15)
+        await server.trust_unpaired(cid)
+        await asyncio.sleep(2)
+        check(server.get_client(cid).role("player@v1") is None, "unpaired access off: approved unpaired, still no player role")
+        tok = decode_token(subprocess.run([f"{ROOT}/build/hassmic-host", "-T"], env=env2, capture_output=True, text=True).stdout.strip())
+        await server.initiate_pairing(cid, PairingAttempt(method=PairMethod.PAIRING_PSK, pairing_psk=tok.pairing_psk))
+        await asyncio.sleep(5)
+        check(server.get_client(cid).role("player@v1") is not None, "unpaired access off: plays once paired with the token")
     finally:
         proc.terminate(); await server.close()
     print("FAILED" if check.failed else "all good")

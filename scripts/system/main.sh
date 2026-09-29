@@ -130,13 +130,32 @@ satellite)
     BIN=$D/hassmic; [ -x /data/local/hassmic/hassmic ] && BIN=/data/local/hassmic/hassmic
     netwatch >> $LOG 2>&1 &
     # mDNS through the stock avahi-daemon: hassmic prints the service file for its protocol, name and MAC address.
+    # The MAC in it is how Home Assistant tells devices apart.  On radar wlan0 appears only later in the boot, hassmic
+    # printed its placeholder MAC, and Home Assistant offered the adopted Echo as a new device.  So wait for Wi-Fi
+    # (there is no mDNS without it anyway); hassmic keeps going meanwhile.  The directory belongs to the daemon's user so
+    # hassmic can rewrite the file itself when Home Assistant sets or clears the encryption key.
     mkdir -p /data/misc/avahi/services
-    $BIN -P ${PROTO:-esphome} -n "$NAME" $ARGS -S > /data/misc/avahi/services/hassmic.service 2>> $LOG
-    chmod 644 /data/misc/avahi/services/hassmic.service
-    # The init-started avahi runs in its own SELinux domain, which may not read /data/misc/avahi/services (avc denied), and
-    # magiskpolicy cannot parse a rule for a type with a hyphen ("avahi-daemon").  So run it from here, in our domain.
-    stop avahi-daemon; pkill avahi-daemon; sleep 1
-    avahi-daemon --no-drop-root > /dev/null 2>&1 &
+    chown $DAEMON_USER /data/misc/avahi/services
+    (
+        i=0
+        while [ $i -lt 120 ] && ! grep -q '[1-9a-f]' /sys/class/net/$WLAN/address 2>/dev/null; do sleep 1; i=$((i + 1)); done
+        [ $i -gt 0 ] && echo "mDNS: waited ${i}s for the $WLAN address"
+        $BIN -P ${PROTO:-esphome} -n "$NAME" $ARGS -S > /data/misc/avahi/services/hassmic.service
+        chown $DAEMON_USER /data/misc/avahi/services/hassmic.service; chmod 644 /data/misc/avahi/services/hassmic.service
+        # The init-started avahi runs in its own SELinux domain, which may not read /data/misc/avahi/services (avc denied),
+        # and magiskpolicy cannot parse a rule for a type with a hyphen ("avahi-daemon").  So run it from here, in our domain.
+        # Host name = the ESPHome node name, as on a real ESPHome device.  Stock avahi calls every Echo "linux" (a second
+        # one "linux-2"), and Home Assistant showed that next to the name.  [server] is the stock file's first section, so
+        # host-name lands in it.
+        conf=/system/etc/avahi-daemon.conf
+        node=$(sed -n 's|^ *<name>\([a-z0-9-]*\)</name>$|\1|p' /data/misc/avahi/services/hassmic.service)
+        if [ -n "$node" ]; then
+            { echo "[server]"; echo "host-name=$node"; grep -v '^\[server\]' $conf; } > /data/misc/avahi/avahi-daemon.conf
+            conf=/data/misc/avahi/avahi-daemon.conf
+        fi
+        stop avahi-daemon; pkill avahi-daemon; sleep 1
+        avahi-daemon -f $conf --no-drop-root > /dev/null 2>&1 &
+    ) >> $LOG 2>&1 &
     # The bootstrap counted this start as an attempt; a minute of hassmic running counts as success.
     (sleep 60; pidof hassmic > /dev/null && echo 0 > $OTA/tries) &
     fast=0

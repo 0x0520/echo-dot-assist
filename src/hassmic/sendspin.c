@@ -10,6 +10,9 @@
  *   trust       unpaired access under the published Sentinel PSK (the operator approves the device in Music Assistant),
  *               or paired: the operator pastes our pairing token, we hand over a fresh long-term PSK ("pairing_psk" flow),
  *               the server re-handshakes in band to it.  PIN pairing (CPace) is not implemented and is refused.
+ *               Unpaired access is off unless switched on (sendspin_unpaired, a Home Assistant switch): anyone on the
+ *               LAN knows the Sentinel PSK, so it can play here and sit between us and a real server.  Off, a server
+ *               has to pair with the token first; the Sentinel session still carries that pairing.
  *   servers     every Sendspin server on the LAN dials us; one connection is admitted, ranked by declared activity
  *   sync        two-state Kalman filter on client/time exchanges; chunks are written to the mixer so that their first
  *               frame leaves the speaker at the server's timestamp (hard snap at start, then whole-frame drop/duplicate)
@@ -287,6 +290,7 @@ struct record { uint8_t psk[32]; char server_id[48]; };
 static pthread_mutex_t rec_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct record records[MAX_RECORDS]; static int n_records;
 static uint8_t sentinel_psk[32], pairing_psk[32];
+static atomic_int unpaired_ok;         /* unpaired access (Sentinel PSK) allowed; state file sendspin.unpaired, default off */
 static char last_playback_server[48];
 
 static void state_path(char *out, size_t n, const char *name) { snprintf(out, n, "%s/%s", state_dir, name); }
@@ -528,13 +532,20 @@ static void on_json(struct session *s, char *j, long long t_recv)
                      "\"manufacturer\":\"Amazon\",\"software_version\":\"" VERSION "\"},\"supported_roles\":[\"player@v1\",\"controller@v1\"],"
                      "\"player@v1_support\":{\"supported_formats\":[%s],"
                      "\"buffer_capacity\":%u,\"supported_commands\":[\"volume\",\"mute\"]},"
-                     "\"supported_pair_methods\":[{\"method\":\"pairing_psk\",\"locations\":[\"device\"]}],\"unpaired_access\":{\"enabled\":true}}}",
-                  core_name, board.product, formats_json(), BUFFER_CAPACITY);
+                     "\"supported_pair_methods\":[{\"method\":\"pairing_psk\",\"locations\":[\"device\"]}],\"unpaired_access\":{\"enabled\":%s}}}",
+                  core_name, board.product, formats_json(), BUFFER_CAPACITY, atomic_load(&unpaired_ok) ? "true" : "false");
     } else if (!strcmp(type, "server/activate")) {
         int first = !s->activated, playback = 0, pairing = 0;
         if (js_section(j, "activities", sec, sizeof sec)) { playback = strstr(sec, "playback") != NULL; pairing = strstr(sec, "pairing") != NULL; }
         s->rank = playback ? 2 : pairing ? 1 : 0;
         s->activated = 1;
+        /* Unpaired access off: a Sentinel or pairing-key session may pair, but not play (spec: pairing_required, close).
+         * Checked before arbitration, so a refused server does not push out the admitted one. */
+        if (!atomic_load(&unpaired_ok) && s->psk_cat != PSK_LONGTERM &&
+            (playback || (js_section(j, "active_roles", sec, sizeof sec) && strstr(sec, "@v")))) {
+            fprintf(stderr, "sendspin: unpaired server turned away (paired servers only)\n");
+            goodbye(s, "pairing_required"); return;
+        }
         if (first && !arbitrate(s)) return;
         if (!s->admitted) return;
         if (playback && strcmp(last_playback_server, s->server_id)) {
@@ -545,7 +556,9 @@ static void on_json(struct session *s, char *j, long long t_recv)
             int on = strstr(sec, "player@v1") != NULL;
             if (on && !s->player_active) { s->activated_at = raw_us(); s->state_sent = 0; fprintf(stderr, "sendspin: player role active (%s)\n", s->psk_cat == PSK_LONGTERM ? "paired" : "unpaired"); }
             if (!on && s->player_active) { stream_set(0); q_flush(); }
-            if (!on && !pairing && first) fprintf(stderr, "sendspin: connected, no role yet: approve the device in Music Assistant\n");
+            if (!on && !pairing && first)
+                fprintf(stderr, "sendspin: connected, no role yet: %s\n", atomic_load(&unpaired_ok) ? "approve the device in Music Assistant"
+                        : "pair it with the token (or allow Music Assistant without pairing in Home Assistant)");
             s->player_active = on;
             s->controller_active = strstr(sec, "controller@v1") != NULL;
         }
@@ -760,6 +773,7 @@ static void load_identity(void)
     b64_encode(id_pub, 32, client_id, 1, 0);
     int r = load_file("sendspin.records", records, sizeof records); n_records = r > 0 ? r / (int)sizeof records[0] : 0;
     r = load_file("sendspin.lastserver", last_playback_server, sizeof last_playback_server - 1); last_playback_server[r > 0 ? r : 0] = 0;
+    r = load_file("sendspin.unpaired", buf, sizeof buf - 1); atomic_store(&unpaired_ok, r > 0 && buf[0] == '1');
     r = load_file("sendspin.delay", buf, sizeof buf - 1); buf[r > 0 ? r : 0] = 0;
     if (r > 0 && atoi(buf) >= 0 && atoi(buf) <= 5000) atomic_store(&static_delay_ms, atoi(buf));
 }
@@ -771,6 +785,21 @@ void sendspin_mdns(int p, char *out, size_t outsz)
 }
 
 void sendspin_init(void) { load_identity(); }
+
+int sendspin_unpaired(int set)
+{
+    if (set < 0) return atomic_load(&unpaired_ok);
+    atomic_store(&unpaired_ok, set != 0);
+    save_file("sendspin.unpaired", set ? "1" : "0", 1);
+    fprintf(stderr, "sendspin: unpaired access %s\n", set ? "allowed" : "off, paired servers only");
+    if (!set) {                         /* an unpaired server playing now goes; it has to pair to come back */
+        pthread_mutex_lock(&adm_lock);
+        struct session *s = admitted;
+        if (s && s->psk_cat != PSK_LONGTERM && !s->pairing) { s->admitted = 0; admitted = NULL; stream_set(0); q_flush(); goodbye(s, "pairing_required"); }
+        pthread_mutex_unlock(&adm_lock);
+    }
+    return set != 0;
+}
 
 int sendspin_start(int p)
 {

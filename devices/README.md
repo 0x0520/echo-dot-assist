@@ -9,6 +9,7 @@ and refuse a mismatch.
 |---|---|---|---|
 | Echo Dot 3rd gen (2018), D9N29T | [`donut`](donut/README.md) | `donut_puffin` | supported, firmware 6574.1 (NS65741) only |
 | Echo Dot 2nd gen (2016), RS03QR | [`biscuit`](biscuit/README.md) | `biscuit_puffin` (OTA metadata) | tested on a real Echo Dot 2; guided setup; some on-device values still marked "verify" |
+| Echo 2nd gen (2017) | [`radar`](radar/README.md) | `radar_puffin` (OTA metadata) | in preparation: builds, Pryon verified under qemu against its own ALEXA model; unlock files staged; on-device values to check |
 | Echo Dot 3rd gen refresh (2019–2020), C78MP8 | `crumpet` | `crumpet`? (OTA metadata; fastboot says `CRUMPET`) | not started: `kamakiri-donut` does not apply |
 | Echo Dot 3rd gen with clock, 36EBT3 | `doebrite` | ? | not started; thought to be `crumpet` hardware plus the clock display |
 

@@ -53,12 +53,34 @@ static void sound_request(enum sound s) { if (use_earcon) sound_queue(s); }
 
 const char *core_name;                  /* -n, else board.default_name */
 
+/* The name is UTF-8.  Latin-1 letters (U+00C0..U+00FF, lead byte 0xC3) are spelled out, the German way for the umlauts
+ * ("Küchen Echo" -> "kuechen-echo"); anything else that is not a letter or digit separates words.  Each byte of "ü"
+ * used to become a dash ("k--chen-echo"), which Home Assistant showed as the host name next to the friendly name. */
+static const char *latin1_ascii(unsigned char c)        /* second byte after 0xC3, upper and lower case alike */
+{
+    static const char *const t[32] = {
+        "a", "a", "a", "a", "ae", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",        /* À..Ï */
+        "d", "n", "o", "o", "o", "o", "oe", NULL, "o", "u", "u", "u", "ue", "y", "th", "ss" };    /* Ð..ß (× is no letter) */
+    if (c == 0xBF) return "y";                                                                  /* ÿ */
+    if (c == 0xB7) return NULL;                                                                 /* ÷ */
+    return c >= 0x80 && c <= 0xBF ? t[(c - 0x80) & 0x1F] : NULL;
+}
+
 const char *core_node_name(void)
 {
-    static char n[64]; size_t j = 0;
-    for (const char *s = core_name; *s && j < sizeof n - 1; s++)
-        n[j++] = isalnum((unsigned char)*s) ? (char)tolower((unsigned char)*s) : '-';
+    static char n[64]; size_t j = 0; int dash = 0;
+    for (const unsigned char *s = (const unsigned char *)core_name; *s; s++) {
+        const char *add = NULL; char one[2] = { 0, 0 };
+        if (isalnum(*s)) { one[0] = (char)tolower(*s); add = one; }
+        else if (*s == 0xC3 && s[1]) add = latin1_ascii(*++s);
+        else while ((s[1] & 0xC0) == 0x80) s++;          /* other UTF-8 characters: skip their continuation bytes */
+        if (!add) { dash = j > 0; continue; }            /* separators collapse to one dash, none at the start */
+        if (dash && j < sizeof n - 1) n[j++] = '-';
+        dash = 0;
+        for (; *add && j < sizeof n - 1; add++) n[j++] = *add;
+    }
     n[j] = 0;
+    if (!j) snprintf(n, sizeof n, "echo");              /* a name with no Latin letter at all ("日本") */
     return n;
 }
 static int ota_port = 28929;                        /* 0 = no push updates */

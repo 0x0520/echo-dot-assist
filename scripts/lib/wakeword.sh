@@ -1,7 +1,7 @@
 # Wake word models for an installed Echo, shared by scripts/wakeword.sh and the last step of scripts/setup.sh.  bash;
 # sourced from the repository root after scripts/lib/device.sh and scripts/lib/setup.sh.
 # The models are Amazon's (DAVS) and the same for every Echo, so ones fetched before (device-logs/models/, git-ignored)
-# are only copied over.  Each is first loaded by the Echo's own engine (pryon_test): an older engine cannot load
+# are only copied over.  Each is first loaded by the Echo's own engine (pryon_test): an older engine (radar) cannot load
 # every set.  A model not there yet is fetched from Amazon, which needs the Echo registered to an Amazon account once:
 # it runs stock Alexa with the updaters cut off (MODE=stock-online) until then, and everything is undone afterwards
 # (registration, the Wi-Fi the Alexa app added, the mode).  Home Assistant then offers every installed model in the
@@ -91,6 +91,7 @@ _wakeword_run() {
         [ -f build/$DEVICE/pryon_test ] || { fail "no pryon_test on the Echo or in build/$DEVICE: make DEVICE=$DEVICE"; return 1; }
         adb push build/$DEVICE/pryon_test /data/local/tmp/ > /dev/null && PT=/data/local/tmp/pryon_test
     fi
+    ECIDS=$(ashell "$PT -m /nonexistent /dev/null 2>&1" | grep -o '"wakeword_ecids":\[[0-9,]*\]' | grep -o '[0-9][0-9,]*')
     NETS=build/wakeword-$(adb get-serialno | tr -c 'A-Za-z0-9\n' _).nets    # Wi-Fi networks before the Alexa app
     ONLINE=; [ -n "$(ashell "grep '^MODE=stock-online' $D/hassmic.conf")" ] && ONLINE=1
     HAVE=" $(ashell "ls $D/models 2>/dev/null" | tr '\n' ' ') "
@@ -156,7 +157,7 @@ _wakeword_run() {
 
         # --- fetch
         ww_stage fetch
-        task "Downloading $(label $ID)" python3 tools/davs-fetch.py $TMP/map.db $KEY $LOC $MODELS || {
+        task "Downloading $(label $ID)" python3 tools/davs-fetch.py ${ECIDS:+--ecids $ECIDS} $TMP/map.db $KEY $LOC $MODELS || {
             info "The token may have expired: wait a minute (the Echo renews it) and run this again."; return 1; }
         rm -f $TMP/map.db*
         ww_stage install

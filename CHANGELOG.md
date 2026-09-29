@@ -4,6 +4,23 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-09-28
 
+- **Echo 2 (`radar`) supported.** Tried on a real Echo 2 with the guided setup (`scripts/setup.sh radar`). It has no
+  USB socket: the setup shows where to solder the USB wires (TP13/14/15 on the amplifier/tweeter board) and that the
+  power adapter is needed for the unlock. Its firmware is Fire OS 6572 (one build older than the Dot 3's): the same
+  334 `libmixerAPI.so` exports as donut, the slimmer Pryon engine generation (as on `crumpet`) with all needed
+  symbols. The keys are where the Echo Dot 2 has them. Bluetooth stays off for now (`-B`, written at install).
+  Unlock zip and firmware go to `firmware/radar/`.
+- **Music Assistant: paired servers only.** Music Assistant now has to pair with the Echo's token before it can play
+  (an unpaired connection is encrypted under a key everyone knows). An Echo that played unpaired so far goes quiet in
+  Music Assistant until it is paired, or until the new switch "Music Assistant without pairing" in Home Assistant is
+  switched on (off by default; switching it off cuts off an unpaired server that is playing).
+- **An adopted Echo no longer shows up as "discovered" again.** On the Echo 2 Wi-Fi comes up late in the boot, so the
+  Echo announced itself with a placeholder MAC address and Home Assistant took it for a new device. The announcement
+  now waits for Wi-Fi. Every Echo also announces its own host name (e.g. `echo-dot.local`) instead of `linux.local`,
+  which Home Assistant showed next to the name. Names with umlauts become readable host names ("Küchen Echo" ->
+  `kuechen-echo`).
+- **Other wake words on every Echo.** `scripts/wakeword.sh` asks each Echo's engine which model sets it can load: the
+  Echo 2's engine is older and gets its own.
 - **Echo Dot 2 (`biscuit`) supported.** Tried on a real Echo Dot 2 with the guided setup (`scripts/setup.sh biscuit`):
   micro-USB, no soldering. Its pinned firmware (Fire OS 6574.1, the same build generation as `donut`) has
   `libmixerAPI.so` and `libpryon.so` byte-identical to donut's. Unlock files (R0rt1z2's amonet v2.0.0, `boot-root.zip`,

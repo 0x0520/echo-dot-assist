@@ -645,4 +645,10 @@ Run in this order. Each step says what it proves.
       over the Echo's room noise gets better with every dB of reduction (SNR 6 dB: 10.9 dB at cap 6, 9.9 at 18, input
       12.3), so it does not show them; and the +24 dB around RNNoise made no difference (0 / 12 / 24 / 36 dB within
       0.2 dB): removed. Not done: a case where STT fails without noise reduction and succeeds with it
+- [x] `scripts/mic-compare.sh` + `tools/mic-compare.py` (2026-09-30): the two scratch scripts of the listening mode
+      hunt as a tool. Records micRaw (mixcap) beside hassmic's micAsr dump, `-l` with listening mode, finds the sentence
+      in micRaw and prints both streams' signal to noise for its first 1.5 s, the rest and the last 1.5 s. On the two
+      captures of that entry it finds the sentences (4.3..7.2 s, 4.5..8.7 s) and gives the hand-measured numbers
+      (micAsr rest 2.1 dB without, 6.1 dB with listening mode). Run against the Dot 3 and the Echo 2 (mixcap from the
+      installed update's directory); the Echo 2 was muted: it says "digital silence" instead of numbers
 

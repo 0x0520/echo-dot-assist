@@ -54,10 +54,12 @@ There is no single-test selector: run one unit test by building/running its line
   State (API key, BLE bonds, BT keys, Sendspin, settings): `/data/local/hassmic/state/`.
 - `kill -TTIN $(pidof hassmic)` toggles recording of the processed mic stream to `state/capture.raw`. `mixcap` cannot
   capture while hassmic runs: the mixer feeds the mic stream to one client only.
+- `scripts/mic-compare.sh [-l] [secs]` records micRaw beside that dump and prints speech against noise for both
+  (`tools/mic-compare.py`): what the front end does to a sentence. `-l` sets listening mode for the recording.
 - `scripts/wakeword.sh [echo-ip]` (logic in `scripts/lib/wakeword.sh`, also the last step of `setup.sh`): installs wake word models from `device-logs/models/` after loading each with the
   Echo's `pryon_test`, or fetches one from Amazon (stock-online + Alexa app registration, undone afterwards).
 - `scripts/probe.sh` checks the device's libraries match the analysed firmware. Everything assumes exactly that version.
-- PC scripts that use adb (`deploy`, `probe`, `install-system`, `capture-test`) detect the model from `ro.product.device`
+- PC scripts that use adb (`deploy`, `probe`, `install-system`, `capture-test`, `mic-compare`) detect the model from `ro.product.device`
   via `scripts/lib/device.sh`; `ota-push.sh` takes `DEVICE` (default donut). With two Echos on adb set `ANDROID_SERIAL`.
 
 ## Models

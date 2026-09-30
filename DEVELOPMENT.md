@@ -29,7 +29,7 @@ rules. `DEVICE` picks one (default `donut`). The adb scripts check it against th
 | `src/tools/` | `mixcap`, `mixplay`, `pryon_test`, `latency`, `otatool`, `runas` (AIPC refuses uid 0, the image has no `su`), `curlspy`, `hciscan` (raw HCI on `/dev/stpbt`) |
 | `src/include/` | C headers for the reversed `libmixerAPI.so` and `libpryon.so` |
 | `src/third_party/` | monocypher 4.0.2, `dr_flac.h`, `minimp3.h`, libfreeaptx 0.2.2, RNNoise 0.1.1 (own licences, see README) |
-| `scripts/` | PC side: `setup.sh` (guided install), `wakeword.sh` (more wake words on an installed Echo), `deploy.sh`, `probe.sh`, `capture-test.sh`, `wifi-join.sh`, `install-system.sh`, `ota-push.sh`; `lib/device.sh` picks the model, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
+| `scripts/` | PC side: `setup.sh` (guided install), `wakeword.sh` (more wake words on an installed Echo), `deploy.sh`, `probe.sh`, `capture-test.sh`, `mic-compare.sh` (micRaw against micAsr on a running Echo), `wifi-join.sh`, `install-system.sh`, `ota-push.sh`; `lib/device.sh` picks the model, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
 | `scripts/device/`, `scripts/system/` | run on the Echo, reading the model's `device.conf` next to them; boot integration (`boot.sh`, `main.sh`) |
 | `tools/` | OTA payload dumper, Thumb disassembly helpers, `qrun.sh` (device binaries under qemu-arm), `davs-fetch.py` |
 | `tests/` | protocol tests against the reference implementations |

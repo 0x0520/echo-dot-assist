@@ -2,6 +2,27 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-09-30
+
+- **Commands no longer fade out after the first second.** Amazon's audio processing has to be told when a command is
+  being spoken; otherwise it treats a voice that keeps talking as background noise and removes it after about 1.5
+  seconds. The stock Alexa software did that, the Echo as a Home Assistant satellite did not: quietly spoken commands
+  lost their second half (wrong words, or Home Assistant stopped listening mid-sentence). It does now, from the wake
+  word until Home Assistant has heard the command.
+- **New setting "Noise reduction"**: off (default), low, medium, high. Takes background noise out of what the voice
+  assistant hears (RNNoise, by up to 6, 9 or 12 dB) before the volume is evened out. Worth trying if quietly spoken
+  commands are misunderstood; more than that was audible as artefacts. It costs some processor time while a command
+  is being heard.
+- **The wake sound no longer makes the command quieter.** The Echo's own wake sound is still faintly in what the
+  microphones pick up; the volume control took it for a loud talker and turned the command after it down.
+- **Echo 2: the firewall could fail to come up after a boot.** A helper of the firewall service could hang right at
+  its start (a quirk of the Echo 2's system tools), and then the rule that keeps Amazon's software from reaching the
+  internet was missing until the next boot, and push updates were not installed. Alexa and the firmware updaters
+  were stopped all the same. Fixed; update the Echo 2 (`scripts/ota-push.sh`).
+- **Several Echos: better pick of the one that answers.** The Echos now compare the measurement Amazon's audio
+  processing itself takes of each wake word (the one Alexa's cloud used), instead of one taken from the finished
+  microphone stream. Echos on an older version still take part.
+
 ## 2026-09-29
 
 - **Quiet speech is understood.** The Echo's microphones deliver speech far quieter than a Voice PE (about 30 dB):

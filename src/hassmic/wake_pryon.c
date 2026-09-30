@@ -1,6 +1,9 @@
 /* Amazon's stock wake-word engine (libpryon.so) with the stock "Alexa" model. */
 #include "wake.h"
 #include <pthread.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <zlib.h>
 #include <stdio.h>
 #include <string.h>
 #include "pryon_api.h"
@@ -30,11 +33,44 @@ static void on_log(int level, const char *tag, const char *msg)
     if (level <= 3) fprintf(stderr, "pryon %s: %s\n", tag ? tag : "", msg ? msg : "");
 }
 
+/* The front end writes its clock into the lowest bit of the micAsr samples (the first 23 samples of each 128-sample
+ * frame carry a fixed pattern, data follows), the engine reads it back and reports where the keyword lies on that clock
+ * in the result's metadata: a header starting "JSON_GZ_AND_FP", a gzip stream with JSON ("audioMetadataDuringDetection":
+ * {.."timestamp_before_ww_end":9559,"timestamp_before_ww_start":8823}, "has_audio_lsb_metadata":1), a fingerprint.
+ * Stock hands those two numbers back to the front end before it asks for the wake word's energies (main.c). */
+static long afe_start, afe_end; static atomic_int afe_known;
+
+static void read_metadata(const unsigned char *m, size_t n)
+{
+    static char js[1 << 16];
+    size_t at = 0; z_stream z; const char *a, *b;
+    atomic_store(&afe_known, 0);
+    while (m && at + 3 < n && at < 64 && !(m[at] == 0x1f && m[at + 1] == 0x8b && m[at + 2] == 8)) at++;
+    if (!m || at >= 64 || at + 3 >= n) return;
+    memset(&z, 0, sizeof z);
+    z.next_in = (Bytef *)(m + at); z.avail_in = n - at; z.next_out = (Bytef *)js; z.avail_out = sizeof js - 1;
+    if (inflateInit2(&z, 16 + MAX_WBITS) != Z_OK) return;
+    inflate(&z, Z_FINISH); inflateEnd(&z);
+    js[sizeof js - 1 - z.avail_out] = 0;
+    if (!strstr(js, "\"has_audio_lsb_metadata\":1") || !(a = strstr(js, "\"timestamp_before_ww_start\":"))
+        || !(b = strstr(js, "\"timestamp_before_ww_end\":"))) return;
+    afe_start = atol(strchr(a, ':') + 1); afe_end = atol(strchr(b, ':') + 1);
+    atomic_store(&afe_known, 1);
+}
+
+int wake_afe_times(long *start, long *end)
+{
+    if (!atomic_load(&afe_known)) return 0;
+    *start = afe_start; *end = afe_end;
+    return 1;
+}
+
 static void on_result(const char *decoderId, PryonEnumeratedResult *r)
 {
     (void)decoderId;
     fprintf(stderr, "wake: %s type=%d samples %llu-%llu (fed %llu)\n", r->keyword ? r->keyword : "?", r->detectionType,
             (unsigned long long)r->beginSampleIndex, (unsigned long long)r->endSampleIndex, (unsigned long long)sample_index);
+    if (r->detectionType == PRYON_DETECTION_TYPE_ACCEPT) read_metadata(r->metadata, r->metadataSize);
     if (r->detectionType == PRYON_DETECTION_TYPE_ACCEPT && r->keyword) callback(r->keyword, r->beginSampleIndex, r->endSampleIndex);
 }
 

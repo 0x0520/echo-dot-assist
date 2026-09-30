@@ -97,10 +97,13 @@ ota_watch() {
 
 # A push update runs "firewall" again (exec, same PID) while the previous firewall watcher is still looping: stop it first,
 # or every update adds one and old and new rules take turns.  Matched by command line, which also catches the ones that
-# earlier versions left behind.
+# earlier versions left behind.  Read with the shell itself: a process that exits between the open and the read leaves
+# the Echo 2's tr (Fire OS 6572) spinning on the read error for ever, and this script never got to the firewall watcher
+# and the installer below (seen 2026-09-30 right after a boot: no egress lock, push updates unanswered).
 if [ "$1" = firewall ]; then
     for p in /proc/[0-9]*; do
-        case "$(tr '\0' ' ' 2>/dev/null < $p/cmdline)" in *lockdown.sh*watch*) kill ${p#/proc/} 2>/dev/null;; esac
+        c=; while IFS= read -r -d '' a; do c="$c $a"; done 2>/dev/null < $p/cmdline
+        case "$c" in *lockdown.sh*watch*) kill ${p#/proc/} 2>/dev/null;; esac
     done
 fi
 

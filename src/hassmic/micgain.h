@@ -20,6 +20,8 @@ struct micgain {
     int level;                          /* speech level wanted, dBFS (MICGAIN_LEVEL_MIN..MAX) */
     float speech_pow, noise_db, gain_db; /* talker's active speech level (mean power, full scale 1), floor, gain applied */
     float applied;                      /* linear gain at the end of the last frame: the next one ramps from there */
+    int hold;                           /* set by the caller: what comes in is not the talker (our own sounds): the
+                                         * levels and the gain stay as they are, the peak limit still works */
 };
 
 void micgain_init(struct micgain *g, int level);

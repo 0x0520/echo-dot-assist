@@ -31,6 +31,59 @@ the processed mic stream has one consumer, and the wake word runs inside `Puffin
 - Mic mute: `mixer` reads LIPC `com.doppler.buttond` property `muteState` (`libaudioCtrl.so` 0x1a58c). No Alexa involved.
 - LIPC property `AllowMic` on `com.doppler.audiod` gates recording. Default without PuffinApp unknown — first thing to check if capture is silent.
 
+## Listening mode (libasp.so, disassembly + device, 2026-09-30)
+
+The front end has to be told when a command is being spoken. Without it a sentence is cancelled as interference after
+~1.5 s (captures: micAsr 0-3 dB over its floor for the rest of a quiet sentence, micRaw 8-10 dB; with the flag micAsr
+within 1 dB of micRaw over 4 s).
+
+- The flag: one byte in the AFE object (`GenericAFE` +0x11d7), set by the method that logs `Utterance start detected`
+  (0x77ed0, vtable +0xc4), cleared by `Utterance end detected` (0x77eec, vtable +0xc8). Nothing else writes it: no
+  timeout.
+- Three ways to set / clear it, all LIPC properties of `com.doppler.lasp`:
+  - `LASP_CMD_SET_LISTENING_MODE` (Int, 1 / 0; ASP command 146). What hassmic uses. Also shows as `InListeningMode` in
+    `LASP_CMD_GET_ASP_DEBUG_INFO`.
+  - Reading `LASP_CMD_REQUEST_ARBITRATION_JSON` sets it (handler at 0x15c5c: utterance start, fill the reply, "Start
+    AFE Diag"). **This is stock's path**: PuffinApp reads it after every wake word for the cloud's device arbitration.
+    Reply: `{"sequenceID":0,"voiceEnergy":8717,"ambientEnergy":62048,"voiceEnergy_BToA":..,"ambientEnergy_BToA":..,
+    "PGA_Gain":12.00,"ADC_Gain":0.00,"AFE_Input_Gain":12.00,"AFE_Output_Gain":4.20,"referenceAudioLevelOutputInDb":-52.00}`.
+  - `LASP_CMD_NOTIFY_ASR_STREAM_STOPPED` (Int) clears it ("Stop AFE Diag and report metrics", 0x270ac). Stock's end.
+  - Neither PuffinApp nor `libgenericaspclient.so` contains the name `LASP_CMD_SET_LISTENING_MODE`; stock never
+    sends it.
+- What the flag does, per 8 ms frame in the AFE's process function (0x713c4):
+  - `ARA_V2` (interference canceller, AFE +0x8d4): state setter 0xce438 stores `(utterance || voice messaging) && !TTS`
+    at +0x194; 0xce1b8 computes `update = energy_ok && !that` (+0x1c8) and skips the filter update loop when 0 (with
+    "ARA_v2 Enable Leaky Update" the leaky update runs instead). The training and periodic-reset counters (0xcdf38)
+    stand still too.
+  - `AEC_V2` (echo canceller, AFE +0x8d0): setter 0xcb4e8 stores `utterance && !TTS` at +0x380; 0xcb220 sets
+    `adapt = ref_ok && mic_ok && !that` (+0x354), no filter update when 0.
+  - `GroupBeamMergerV2` (AFE +0x904): setter 0x868d8 stores `utterance || voice messaging` at +0xda; 0x86b1c skips the
+    search for a better beam group while it is set: the beam stays on the talker.
+  - So while a reply (TTS stream) plays, both cancellers keep adapting whatever the flag says; with music they freeze
+    for the length of the command.
+- Other AFE state bytes met on the way: +0x11d8 in TTS, +0x11d5 in alarm, +0x11d6 in music alarm, +0x11c0 in playback,
+  +0x120c voice messaging, +0x11d9 AFE diagnostics running (ORed with the utterance flag in two places).
+- `LASP_CMD_SET_WAKEWORD_METADATA` (`{"timestamp_before_ww_start":ms,"timestamp_before_ww_end":ms}`) only feeds the
+  arbitration energies and metrics ("1-mic ESP"); it does not touch the flag. Without valid times the front end logs
+  "Falling back to default behavior of using the 1100 ms oldest sample buffer - 500 ms noise 600 ms wakeword".
+- Where the times come from: the front end writes its clock (ms, 16 bit) into the lowest bit of the micAsr samples:
+  in every 128-sample frame the first 23 samples carry a fixed pattern, data follows. Pryon reads it back and reports
+  in the result's metadata (24-byte header starting `JSON_GZ_AND_FP`, gzip JSON, fingerprint):
+  `"audioMetadataDuringDetection":{.."afe_frame_before_ww_start":50,"afe_frame_before_ww_end":14,
+  "playback_volume_before_ww_start":66,"timestamp_before_ww_start":8823,"timestamp_before_ww_end":9559},
+  "deviceMetrics":{.."has_audio_lsb_metadata":1,..}`. Seen under qemu with the low bits of a device capture put onto
+  `testdata/alexa_espeak.raw` (`pryon_test` prints the JSON as `META`); a file without them gives
+  `has_audio_lsb_metadata:0` and no times. The clock is not the pipeline's sample count: (InSampleCnt / 16 + ~2600)
+  mod 65536 on one mixer run.
+- hassmic's arbitration score (2026-09-30) is stock's sequence: metadata times to the front end, read the JSON,
+  1000 * log10(voiceEnergy / ambientEnergy); `LASP_CMD_NOTIFY_ASR_STREAM_STOPPED` afterwards. Both lipc tools in one
+  `sh -c`: 150 ms on the device.
+- `LASP_CMD_SET_NDVC_BYPASS` (Int): noise dependent volume control off; no effect on micAsr (one capture).
+- ARA step size in `AFE.cfg` ("ARA_V2 Steady state mu <mode>", 0.75): 0.01 gives nearly the same result as the flag
+  (mode here was "lineout": something in the 3.5 mm jack switches the tuning). Not needed with the flag.
+- `micRaw` gives one channel whatever is asked for; `micMultiChAsr` gives nothing (mixer sets `multi_ch_asr_disable=1`
+  in the HAL at start). `/proc/idme/miccal.0-3` are floats (this Echo: 1.51, 1.72, 0.91, 8.05).
+
 ## Wake word
 
 - Engine `libpryon.so` (20 MB), deps only `libfst`, `libfstfar`, `libc++_shared`, `liblog`. Header: [`src/include/pryon_api.h`](../src/include/pryon_api.h).

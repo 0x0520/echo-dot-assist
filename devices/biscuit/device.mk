@@ -5,4 +5,4 @@ TARGET  := armv7a-linux-androideabi24
 # Backends (src/hassmic/audio.h, wake.h) and the stock libraries they link against, from $(STOCK).
 AUDIO   := src/hassmic/audio_mixer.c
 WAKE    := src/hassmic/wake_pryon.c
-LIBS    := libmixerAPI.so libpryon.so libopus.so
+LIBS    := libmixerAPI.so libpryon.so libopus.so libz.so

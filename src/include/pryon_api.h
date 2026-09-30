@@ -49,7 +49,7 @@ typedef struct _PryonEnumeratedResult {
     uint8_t     _unknown20[0x04];
     int32_t     detectionType;      /* +0x24: 0 = NearMiss, 2 = Accept (confirmed against library log). 1 and 3 not observed */
     uint32_t    metadataSize;       /* +0x28 */
-    const void *metadata;           /* +0x2c opaque blob Alexa uploads with the utterance; not needed */
+    const void *metadata;           /* +0x2c header "JSON_GZ_AND_FP..", gzip JSON, fingerprint: wake_pryon.c */
     uint8_t     _unknown30[0x10];
     uint64_t    endSampleIndex;     /* +0x40 */
 } PryonEnumeratedResult;

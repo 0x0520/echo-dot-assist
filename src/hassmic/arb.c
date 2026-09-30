@@ -5,7 +5,8 @@
  * phrase in 2 s wins, later ones get "duplicate_wake_up_detected" (assist_pipeline, WAKE_WORD_COOLDOWN).
  *
  * Round (per keyword: an Echo listening for "Echo" and one for "Alexa" never compete): main.c scores a detection
- * (signal to noise of the wake word in the processed mic stream) and it is broadcast as a claim; WINDOW_MS later the
+ * (signal to noise of the wake word: the front end's own energies where it gives them, else taken from the processed mic
+ * stream) and it is broadcast as a claim; WINDOW_MS later the
  * Echo answers only if no claim of the last LOOKBACK_MS beats it.  An Echo in a conversation or ringing claims with
  * priority: the next wake word is for it.  The winner broadcasts that it answers, so an Echo whose detection comes late
  * does not answer as well.  With no other member heard from lately there is no round and no delay.

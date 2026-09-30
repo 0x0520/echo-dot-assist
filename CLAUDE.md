@@ -81,7 +81,9 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 
 - **Core (`main.c`, `core.h`)**: state machine `IDLE/LISTENING/THINKING/SPEAKING`, pipeline timeout, TTS queue with
   barge-in flush, alarms (timers), mute (hardware latch that software can set but never clear, plus a soft mute from HA),
-  volume, LED ring, earcons, wake word threshold hints. `micgain.c`: AGC on the mic audio sent to the pipeline (the stock
+  volume, LED ring, earcons, wake word threshold hints. The front end is told when a command is spoken (`listening()`:
+  without it its cancellers remove the talker after 1.5 s). `micdenoise.c` (RNNoise, HA select off/low/medium/high, off by default) then
+  `micgain.c`: AGC on the mic audio sent to the pipeline (the stock
   micAsr level is ~30 dB below what STT expects, and HA ignores the ESPHome audio settings); the wake word gets it raw. `core_lock` guards state and client socket writes; `core.h`
   documents per function whether the lock is held.
 - **Protocols (`struct proto` in `core.h`)**: `proto_esphome.c` (ESPHome native API incl. Noise encryption provisioned
@@ -92,7 +94,7 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 - **Wake word (`wake.h`)**: `wake_pryon.c` (stock `libpryon.so`, headers in `src/include/pryon_api.h`) or `wake_none.c`
   (host build). Also link-time swap.
 - **Wake word arbitration (`arb.c`, `arb.h`)**: when several Echos hear the wake word, only the best one answers
-  (stock's ESP, done on the LAN). UDP broadcast on 28930, shared network key; a member hands it to a newcomer only
+  (stock's ESP, done on the LAN; the score is the front end's own wake word energy ratio, as stock reads it). UDP broadcast on 28930, shared network key; a member hands it to a newcomer only
   through Home Assistant, as the newcomer's own ESPHome action `esphome.<node>_arbitration_key` (encrypted to its
   X25519 key). ESPHome only; needs "Allow the device to perform Home Assistant actions".
 - **Music**: `sendspin.c` (Music Assistant Sendspin player over `ws.c`/`noise.c`/`net.c`/`hash.c`, decodes via

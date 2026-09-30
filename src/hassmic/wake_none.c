@@ -5,3 +5,4 @@ void wake_feed(const int16_t *samples, size_t count) { (void)samples; (void)coun
 void wake_reset(void) {}
 void wake_property(const char *name, int value) { (void)name; (void)value; }
 void wake_close(void) {}
+int  wake_afe_times(long *start, long *end) { (void)start; (void)end; return 0; }

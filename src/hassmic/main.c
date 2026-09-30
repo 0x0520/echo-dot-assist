@@ -34,6 +34,7 @@
 #include "a2dp.h"
 #include "arb.h"
 #include "buttons.h"
+#include "micdenoise.h"
 #include "micgain.h"
 #include "netio.h"
 #include "wake.h"
@@ -105,6 +106,11 @@ static int barge_in;                                /* under lock: start a new p
 static struct micgain mic_gain;                     /* under lock: gain of what the pipeline hears (micgain.h) */
 static int mic_fresh;                               /* under lock: a pipeline started, the gain has not seen it yet */
 static float keyword_db = 1;                        /* under lock: rms of the last wake word, dBFS */
+static int mic_denoise;                             /* under lock: noise reduction ahead of the gain (micdenoise.h):
+                                                      * 0 off, 1 low, 2 medium, 3 high */
+static long long denoise_ns; static unsigned denoise_frames;   /* under lock: its cost in the running pipeline */
+static atomic_int earcon_sounding;                  /* one of our sounds plays ... */
+static atomic_llong earcon_heard_until;             /* ... and is still in the mic stream until then (mono_ms) */
 
 /* ---------------------------------------------------------------- LED ring */
 
@@ -270,12 +276,42 @@ static long long wake_cut_ms;    /* when the wake word last cut a reply or an al
 static long long last_wake_ms;   /* Amazon's models know "stop" only in the ~2 s after the wake word (op.cfg.json: awake state) */
 static int quiet_abort;
 
+static atomic_int afe_asked;                        /* the front end was asked for the wake word's energies (afe_score) */
+
+static void afe_done(void)                          /* any thread: no command follows, or it is over */
+{
+    if (!atomic_exchange(&afe_asked, 0)) return;
+    char *argv[] = { "/system/bin/lipc-set-prop", "-i", "com.doppler.lasp", "LASP_CMD_NOTIFY_ASR_STREAM_STOPPED", "1", NULL };
+    run_argv(argv);
+}
+
+/* lock held.  Tells Amazon's front end that a command is being spoken, as stock does after the wake word.  While its
+ * "utterance" flag is set (libasp.so, FINDINGS.md "Listening mode") the echo canceller (AEC_V2) and the interference
+ * canceller (ARA_V2) stop adapting and the beam merger keeps its beam group; without it they adapt to the talker and take
+ * the voice for interference after ~1.5 s: in micAsr a quiet sentence then sinks to 0-3 dB over the floor while micRaw
+ * still has it at 8-10 dB (6 captures, 2026-09-30); with it micAsr stays within 1 dB of micRaw for a 4 s sentence.
+ * Stock PuffinApp sets the flag by reading LASP_CMD_REQUEST_ARBITRATION_JSON and clears it with
+ * LASP_CMD_NOTIFY_ASR_STREAM_STOPPED; those also start and stop the front end's diagnostics with their metrics, so this
+ * uses the plain switch.  No timeout in the front end, and the mixer keeps the state: cleared at start in case hassmic
+ * died while listening.  Not with the wake word at the server (-w remote): the mic streams all the time then, and the
+ * cancellers would never adapt. */
+static void listening(int on)
+{
+    static int is = -1;
+    if (!core_local_wake) on = 0;
+    if (on == is) return;
+    is = on;
+    char *argv[] = { "/system/bin/lipc-set-prop", "-i", "com.doppler.lasp", "LASP_CMD_SET_LISTENING_MODE", on ? "1" : "0", NULL };
+    run_argv(argv);
+}
+
 static void pipeline_start(void)
 {
     quiet_abort = 0;
     mic_fresh = 1;
     proto->start();
     atomic_store(&streaming, 1);
+    listening(1);
     if (core_local_wake) core_set_state(LISTENING);
 }
 
@@ -337,33 +373,34 @@ int core_soft_mute(int set)
     return soft_mute;
 }
 
-void core_mic_off(void) { atomic_store(&streaming, 0); }
-
 void core_mic_level(int dbfs)
 {
     if (dbfs != mic_gain.level) { micgain_init(&mic_gain, dbfs); mic_fresh = 1; }
 }
 
-/* lock held.  Mic audio to the pipeline, brought to speech level first; the wake word before it counts from 3 s back. */
-static void send_mic(const int16_t *pcm, size_t n)
+int core_mic_denoise(int set)
 {
-    static int16_t out[1024];
-    if (mic_fresh) {
-        micgain_start(&mic_gain, mono_ms() - last_wake_ms < 3000 ? keyword_db : 1); mic_fresh = 0;
-        fprintf(stderr, "mic gain: talker %.1f dBFS, gain %+.1f dB\n", micgain_talker_db(&mic_gain), mic_gain.gain_db);
-    }
-    while (n) {
-        size_t k = n < 1024 ? n : 1024;
-        micgain_run(&mic_gain, pcm, out, k);
-        proto->audio(out, k * 2);
-        pcm += k; n -= k;
-    }
+    if (set >= 0 && set != mic_denoise) { mic_denoise = set > 3 ? 3 : set; mic_fresh = 1; }
+    return mic_denoise;
 }
+
+/* lock held.  The mic stream to the pipeline has stopped. */
+static void mic_stopped(void)
+{
+    listening(0);
+    afe_done();
+    if (denoise_frames) fprintf(stderr, "denoise: %.1f s of audio took %.0f ms of CPU\n", denoise_frames / 100.0, denoise_ns / 1e6);
+    denoise_frames = 0; denoise_ns = 0;
+}
+
+void core_mic_off(void) { atomic_store(&streaming, 0); mic_stopped(); }
+
 void core_restart_after(void) { barge_in = 1; }
 
 void core_pipeline_finish(void)
 {
     if (atomic_exchange(&streaming, 0) && connected && proto->stop) proto->stop();
+    mic_stopped();
     core_set_state(IDLE);
     if (mono_ms() - last_wake_ms > 3000) wake_reset();      /* a reset puts the engine back to sleep: "<wake word>, stop" would lose its "stop" */
     if (!connected) barge_in = 0;
@@ -467,6 +504,30 @@ static double ring_power(uint64_t a, uint64_t b)    /* mean square over samples 
  * that an early "begin" does not count the word as noise).  On the processed stream after beamforming, AEC and gain
  * control, the absolute level says less than how far the voice stands out of the room: the Echo the talker is close to
  * and facing hears it clearest.  HASSMIC_TEST_SCORE stands in for it on the PC, where SIGUSR1 plays the detection. */
+/* Amazon's own measure of the wake word, which its cloud used to pick the Echo that answers ("ESP"): the energy of the
+ * keyword and of the room before it as the front end measures them ("1-mic ESP" in its log).  As stock does it: hand the front end the keyword's place on its clock
+ * (wake_afe_times), then read LASP_CMD_REQUEST_ARBITRATION_JSON: {"voiceEnergy":..,"ambientEnergy":..,..}.  Both
+ * through lipc's tools: 150 ms (measured), inside the arbitration window of the others, who wait 200 ms and count
+ * claims up to a second old.  Their ratio in dB x 100 is a signal to noise like our own score below, so Echos without
+ * it (older builds, other front ends) still compare.  Reading it also puts the front end into its utterance state and
+ * starts its diagnostics (FINDINGS.md "Listening mode"): afe_done() ends both.  0: not available. */
+static int afe_score(int *score)                    /* capture thread */
+{
+    long ts, te; char cmd[400], buf[512]; const char *v, *a;
+    if (!wake_afe_times(&ts, &te)) return 0;
+    snprintf(cmd, sizeof cmd, "/system/bin/lipc-set-prop -s com.doppler.lasp LASP_CMD_SET_WAKEWORD_METADATA "
+             "'{\"timestamp_before_ww_start\":%ld,\"timestamp_before_ww_end\":%ld}' && "
+             "/system/bin/lipc-get-prop -s com.doppler.lasp LASP_CMD_REQUEST_ARBITRATION_JSON", ts, te);
+    char *argv[] = { "/system/bin/sh", "-c", cmd, NULL };
+    run_output(argv, buf, sizeof buf);
+    if (!(v = strstr(buf, "\"voiceEnergy\":")) || !(a = strstr(buf, "\"ambientEnergy\":"))) return 0;
+    atomic_store(&afe_asked, 1);
+    double voice = atof(strchr(v, ':') + 1), ambient = atof(strchr(a, ':') + 1);
+    *score = (int)lround(1000 * log10((voice + 1) / (ambient + 1)));
+    fprintf(stderr, "wake: front end: voice energy %.0f, ambient %.0f\n", voice, ambient);
+    return 1;
+}
+
 static int wake_score(uint64_t begin, uint64_t end, int simulated)
 {
     const char *t = getenv("HASSMIC_TEST_SCORE");
@@ -474,8 +535,53 @@ static int wake_score(uint64_t begin, uint64_t end, int simulated)
     uint64_t gap = CAP_RATE / 10, len = CAP_RATE / 2;
     uint64_t ne = begin > gap ? begin - gap : 0, nb = ne > len ? ne - len : 0;
     double w = ring_power(begin, end), n = ring_power(nb, ne), fs = 32768.0 * 32768.0;
+    int own = (int)lround(1000 * log10((w + 1) / (n + 1))), afe;
     fprintf(stderr, "wake: level %.1f dBFS over noise %.1f dBFS\n", 10 * log10((w + 1) / fs), 10 * log10((n + 1) / fs));
-    return (int)lround(1000 * log10((w + 1) / (n + 1)));
+    if (simulated || !afe_score(&afe)) return own;
+    fprintf(stderr, "wake: score %d from the front end (%d from the mic stream)\n", afe, own);
+    return afe;
+}
+
+/* lock held.  Mic audio to the pipeline: noise reduction if switched on, then brought to speech level.  at: the ring's
+ * index of the first sample (0: not from the ring).
+ * - The wake word just before it sets the gain to start with (from up to 3 s back), and RNNoise first hears the second
+ *   of room and wake word ahead of the command, so that it does not start on the first word.
+ * - Our own wake sound is still in the stream after the echo canceller: +21 dB over the floor in micRaw, +4 to +8 dB in
+ *   micAsr (4 triggers, 2026-09-30), as loud as a quiet talker.  The gain took it for speech and came down for the
+ *   command behind it (-32 instead of -26 dBFS in Home Assistant's recording), so it holds still while a sound plays. */
+static void send_mic(const int16_t *pcm, size_t n, uint64_t at)
+{
+    static int16_t out[1024 + MICDENOISE_FRAME];
+    if (mic_fresh) {
+        micgain_start(&mic_gain, mono_ms() - last_wake_ms < 3000 ? keyword_db : 1); mic_fresh = 0;
+        static const int denoise_db[] = { 0, 6, 9, 12 };
+        fprintf(stderr, "mic gain: talker %.1f dBFS, gain %+.1f dB", micgain_talker_db(&mic_gain), mic_gain.gain_db);
+        if (mic_denoise) fprintf(stderr, ", noise reduction %d dB", denoise_db[mic_denoise]);
+        fprintf(stderr, "\n");
+        if (mic_denoise) {
+            micdenoise_reset(denoise_db[mic_denoise]);
+            for (uint64_t i = at > CAP_RATE ? at - CAP_RATE : 0; at && i < at; ) {
+                size_t o = i % RING_SAMPLES, k = at - i;
+                if (k > RING_SAMPLES - o) k = RING_SAMPLES - o;
+                micdenoise_run(ring + o, k, NULL);
+                i += k;
+            }
+        }
+    }
+    mic_gain.hold = atomic_load(&sounds_pending) || atomic_load(&earcon_sounding) || mono_ms() < atomic_load(&earcon_heard_until);
+    while (n) {
+        size_t k = n < 1024 ? n : 1024, m = k;
+        const int16_t *src = pcm;
+        if (mic_denoise) {
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t0);
+            m = micdenoise_run(pcm, k, out); src = out;
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t1);
+            denoise_ns += (t1.tv_sec - t0.tv_sec) * 1000000000LL + t1.tv_nsec - t0.tv_nsec; denoise_frames += m / MICDENOISE_FRAME;
+        }
+        if (m) { micgain_run(&mic_gain, src, out, m); proto->audio(out, m * 2); }
+        pcm += k; n -= k;
+    }
 }
 
 static void stream_ring(uint64_t from)              /* lock held */
@@ -483,7 +589,7 @@ static void stream_ring(uint64_t from)              /* lock held */
     while (from < ring_n) {
         uint64_t at = from % RING_SAMPLES, n = ring_n - from;
         if (n > RING_SAMPLES - at) n = RING_SAMPLES - at;
-        send_mic(ring + at, n);
+        send_mic(ring + at, n, from);
         from += n;
     }
 }
@@ -495,6 +601,7 @@ static void answer(uint64_t from)                   /* capture thread: act on th
     pthread_mutex_lock(&core_lock);
     if (from && !was && atomic_load(&streaming) && connected) stream_ring(from);
     pthread_mutex_unlock(&core_lock);
+    if (!atomic_load(&streaming)) afe_done();          /* it stopped an alarm, or cut a reply: the pipeline's end follows */
 }
 
 static void wake_heard(uint64_t begin, uint64_t end, int simulated)     /* capture thread */
@@ -507,7 +614,7 @@ static void wake_heard(uint64_t begin, uint64_t end, int simulated)     /* captu
     if (!can) { trigger(0); return; }               /* could not answer: a claim would only silence the Echos that can */
     pthread_mutex_lock(&core_lock); char kw[64]; snprintf(kw, sizeof kw, "%s", wake_words[wake_active].name); pthread_mutex_unlock(&core_lock);
     long long due = arb_claim(kw, wake_score(begin, end, simulated), prio);
-    if (!due) { trigger(0); return; }
+    if (!due) { trigger(0); if (!atomic_load(&streaming)) afe_done(); return; }
     arb_due = due; arb_from = ring_n;
 }
 
@@ -601,6 +708,7 @@ static void *playback_thread(void *arg)
 void core_tts_begin(unsigned rate, unsigned channels)
 {
     atomic_store(&streaming, 0);
+    mic_stopped();
     core_set_state(SPEAKING);
     q_push(Q_START, rate, channels, NULL, 0);
 }
@@ -658,8 +766,11 @@ static void *earcon_thread(void *arg)
         for (int p = atomic_exchange(&sounds_pending, 0), s = 0; p && s < SND_COUNT; s++) {
             const short *pcm; size_t n; unsigned rate;
             if (!(p & 1 << s)) continue;
+            atomic_store(&earcon_sounding, 1);
             if (sound_get((enum sound)s, &pcm, &n, &rate)) { fprintf(stderr, "sound: %s\n", snd_names[s]); play_earcon(pcm, n, rate); }
             else if (s == SND_WAKE || s == SND_TOUCH) play_earcon(tone, N, RATE);
+            atomic_store(&earcon_heard_until, mono_ms() + 250);         /* speaker to mic stream: 85 ms, and the room's tail */
+            atomic_store(&earcon_sounding, 0);
         }
         if (atomic_load(&alarm_on)) {                   /* timer finished: triple blip every 1.2 s, at most a minute */
             if (!alarm_end) alarm_end = mono_ms() + 60000;
@@ -878,14 +989,14 @@ static void *capture_thread(void *arg)
         if (core_local_wake) { ring_put(pcm, n / 2); wake_feed(pcm, n / 2); }
         if (atomic_load(&streaming)) {
             pthread_mutex_lock(&core_lock);
-            if (atomic_load(&streaming) && connected) send_mic(pcm, n / 2);
+            if (atomic_load(&streaming) && connected) send_mic(pcm, n / 2, core_local_wake ? ring_n - n / 2 : 0);
             pthread_mutex_unlock(&core_lock);
         }
         if (atomic_exchange(&det_pending, 0)) {
             pthread_mutex_lock(&core_lock); uint64_t b = det_begin, e = det_end; pthread_mutex_unlock(&core_lock);
             wake_heard(b, e, 0);
         }
-        if (arb_due && mono_ms() >= arb_due) { arb_due = 0; if (arb_decide()) answer(arb_from); }    /* after this block went out live */
+        if (arb_due && mono_ms() >= arb_due) { arb_due = 0; if (arb_decide()) answer(arb_from); else afe_done(); }    /* after this block went out live */
 
         pthread_mutex_lock(&core_lock);
         if (core_local_wake && (state == LISTENING || state == THINKING) && time(NULL) - state_since > PIPELINE_TIMEOUT) {
@@ -933,6 +1044,7 @@ int main(int argc, char **argv)
     if (access("/system/bin/ledctrl", X_OK)) use_led = 0;
 
     if (cap_open() < 0) { fprintf(stderr, "cannot open capture (is PuffinApp still running?)\n"); return 1; }
+    pthread_mutex_lock(&core_lock); listening(0); pthread_mutex_unlock(&core_lock);
     if (core_local_wake) {
         wake_words_scan(manifest);
         const char *m = wake_words[wake_active].manifest;

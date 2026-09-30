@@ -3,7 +3,7 @@
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
 import asyncio, base64, io, math, os, signal, struct, subprocess, sys, tempfile, threading, wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from aioesphomeapi import NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo
+from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
 from aioesphomeapi import ZERO_NOISE_PSK
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
@@ -72,7 +72,9 @@ async def main():
         check("noise_suppression_level" not in by
               and "auto_gain" not in by and "mic_volume_multiplier" not in by
               and isinstance(by.get("mic_level"), NumberInfo) and (by["mic_level"].min_value, by["mic_level"].max_value) == (-35, -15)
-              and isinstance(by.get("mute"), SwitchInfo) and isinstance(by.get("wake_sound"), SwitchInfo), "settings entities listed")
+              and isinstance(by.get("mute"), SwitchInfo) and isinstance(by.get("wake_sound"), SwitchInfo)
+              and isinstance(by.get("noise_reduction"), SelectInfo) and list(by["noise_reduction"].options) == ["Off", "Low", "Medium", "High"],
+              "settings entities listed")
         tok = by.get("sendspin_pairing_token")
         check(isinstance(tok, TextSensorInfo) and tok.disabled_by_default and int(tok.entity_category) == 2, "Sendspin pairing token entity: diagnostic, disabled by default")
         temp, cpu = by.get("soc_temperature"), by.get("cpu_usage")
@@ -90,6 +92,7 @@ async def main():
         await asyncio.sleep(0.5)
         check(any(isinstance(x, NumberState) and x.key == eqs[0].key and x.state == 4 for x in states)
               and any(isinstance(x, NumberState) and x.key == eqs[2].key and x.state == -6 for x in states), "equalizer commands reflected, clamped to -6..+6")
+        check(any(isinstance(x, SelectState) and x.key == by["noise_reduction"].key and x.state == "Off" for x in states), "noise reduction off by default")
         cli.number_command(by["mic_level"].key, -20)
         await asyncio.sleep(0.5)
         check(any(isinstance(x, NumberState) and x.key == by["mic_level"].key and x.state == -20 for x in states),
@@ -104,7 +107,7 @@ async def main():
         svcs = (await cli.list_entities_services())[1]
         check([(v.name, [(x.name, int(x.type)) for x in v.args]) for v in svcs] == [("arbitration_key", [("network", 3), ("key", 3)])],
               "action \"arbitration_key\" (network, key: strings) for other Echos to hand over their network")
-        check(open(settings).read().split()[1:2] == ["-20"] and open(settings).read().split()[8:9] == ["2"], f"settings persisted: {open(settings).read().strip()!r}")
+        check(open(settings).read().split()[:2] == ["0", "-20"] and open(settings).read().split()[8:9] == ["2"], f"settings persisted: {open(settings).read().strip()!r}")
         cfg = await cli.get_voice_assistant_configuration(5)
         avail = sorted((w.id, w.wake_word, list(w.trained_languages)) for w in cfg.available_wake_words)
         check(avail == [("alexa", "Alexa", ["en"]), ("computer-en-US", "Computer", ["en"]), ("echo-de", "Echo", ["de"])]
@@ -326,6 +329,15 @@ async def main():
         await asyncio.wait_for(started.wait(), 5); await asyncio.sleep(1.0)
         check(len(mic) > 16000, f"encrypted: mic audio streamed: {len(mic)} bytes in 1 s")
         enc.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_END, None); await asyncio.sleep(0.3)
+        enc.select_command(by["noise_reduction"].key, "Medium"); await asyncio.sleep(0.3)
+        check(open(settings).read().split()[:1] == ["2"], f"noise reduction set to medium and persisted: {open(settings).read().strip()!r}")
+        started.clear(); mic.clear(); proc.send_signal(signal.SIGUSR1)
+        await asyncio.wait_for(started.wait(), 5); await asyncio.sleep(1.0)
+        peak = max(abs(v) for v in struct.unpack(f"<{len(mic) // 2}h", mic[:len(mic) // 2 * 2])) if mic else 0
+        check(len(mic) > 16000 and len(mic) % 320 == 0 and 8000 < peak <= 29100,
+              f"with noise reduction: mic audio streamed in whole 10 ms frames at speech level: {len(mic)} bytes in 1 s, peak {peak}")
+        enc.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_END, None); await asyncio.sleep(0.3)
+        enc.select_command(by["noise_reduction"].key, "Off"); await asyncio.sleep(0.3)
         before = os.path.getsize(play)
         res = await enc.send_voice_assistant_announcement_await_response(f"http://127.0.0.1:{HTTP_PORT}/a.wav", 15, "x")
         check(res.success and os.path.getsize(play) - before == 48000, "encrypted: announcement played")

@@ -548,4 +548,101 @@ Run in this order. Each step says what it proves.
       `tests/unit/micgain_test.c` (synthetic syllables at -55 and -16 dBFS over a -67 floor: active level within 1.5 dB of
       the target after 1 s, within 3 dB in the first 250 ms, no pumping in pauses, peaks limited, lowest level); `fake_ha_esphome.py` checks migration, neutral settings,
       level. Pushed to the installed Echo; logs "mic gain: talker .. dBFS, gain .. dB" per pipeline.
-      Not done: STT results with quiet speech on the device, a second capture with the gain on
+      Not done: STT results with quiet speech on the device, a second capture with the gain on. The captures this was
+      tuned on were made without listening mode (next entry): check the default again
+- [~] Listening mode (2026-09-30): the AGC left a user recording at -32 dBFS with speech barely over the noise. Captures
+      of micRaw (mixcap beside hassmic) and micAsr (SIGTTIN dump) at once, quiet sentence, no wake word, SNR against the
+      silence before and after:
+      | | micRaw first 1.5 s / rest | micAsr first 1.5 s / rest |
+      | stock, 4 captures | 12.2 / 8.8, 10.9 / 8.5, 10.7 / 10.0, 9.2 / 8.0 | 11.9 / 0.6, 10.7 / 3.2, 10.4 / 5.6 (end 1.9), 5.7 / 2.1 |
+      | NDVC bypass | (third row above) | no change |
+      | AFE.cfg ARA mu 0.01, all modes | 10.7 / 9.3 (end 8.2) | 10.7 / 9.2 (end 5.9) |
+      | listening mode 1, stock AFE.cfg | 7.9 / 6.7 (end 6.6) | 7.5 / 6.1 (end 5.8) |
+      Floors: micRaw -77 dBFS, micAsr -65 dBFS. Cause: nobody told the front end that a command was being spoken, so
+      its cancellers adapted to the talker; stock does it by reading LASP_CMD_REQUEST_ARBITRATION_JSON after the wake
+      word (FINDINGS.md "Listening mode", from libasp.so). hassmic now sets LASP_CMD_SET_LISTENING_MODE 1 at pipeline
+      start and 0 when the mic stream stops (HA heard enough, reply starts, pipeline ends or times out) and at start-up;
+      not with `-w remote`. On the Echo: SIGUSR1 pipeline logs "set listening mode 1" / "Utterance start detected", 15 s
+      later (HA: no text recognized) "set listening mode 0". Host build + fake_ha_esphome, fake_ha, fake_ha_arbitration pass.
+      The AFE.cfg bind mount of the test is gone (mixer restarted on the stock file; that restart also showed the
+      micAsr stall recovery of 2026-09-25 working: "delivers nothing (status 110), reopening", audio back).
+      Not done: a spoken command through HA with the fix, sentences over 4 s, wake word during music (both cancellers
+      freeze for the command unless the stream is TTS), "internal" speaker mode (this Echo: lineout), the mic level
+      default with the fix. Ideas: voiceEnergy / ambientEnergy of the arbitration JSON as arbitration score; RNNoise if
+      6-8 dB SNR of quiet speech stays too little for STT
+- [~] Wake sound in the pipeline's audio (2026-09-30): HA's recording at mic level -26 had the wake sound at -15 dBFS and
+      the command at -32. 4 triggers without speech, micRaw beside micAsr: the sound is +21..+22 dB over the floor in
+      micRaw, +4..+8 dB in micAsr (-57 dBFS): the echo canceller takes ~15 dB, the rest is as loud as a quiet talker
+      (this Echo plays through the 3.5 mm jack, "lineout" tuning). Listening mode forced off during the sound: -57.8 and
+      -62.4 dBFS against -57.1 and -56.9 with it: not the cause. The gain took the sound for speech (+35.7 dB -> -15 dBFS)
+      and came down for the command. Now the gain holds (levels and gain frozen, peak limit on) while one of our sounds
+      plays and 250 ms after. The sound itself stays in the stream (RNNoise takes another 4..17 dB of it on the captures).
+      Not done: a recording from HA with the fix; whether to skip the stream during the sound as the Voice PE does
+- [~] Noise reduction (2026-09-30): RNNoise 0.1.1 (`src/third_party/rnnoise`, BSD-3) in `micdenoise.c`, ahead of the gain,
+      only on what goes to the pipeline; HA switch "Noise reduction", off by default, in the settings file's first
+      field (superseded the same day: a select with three strengths and no level change around RNNoise, see "Noise
+      reduction strengths"). 16 kHz -> 48 kHz (x3, 96-tap low-pass) -> RNNoise -> 16 kHz; +24 dB on the way in and back out (RNNoise was
+      trained on levels down to -40 dB, ours is -55 dBFS); reduction capped at 18 dB by mixing the delayed input back in
+      (uncapped the floor went from -65 to below -108 dBFS: gated). Delay 12 ms + framing. It hears the second before
+      the command from the ring first (cold it needs 2 s on white noise, 0.2 s on the Echo's room noise).
+      On the captures of the listening mode entry: floor -65 -> -83 dBFS, SNR of a quiet sentence 7.5 / 6.1 dB (first
+      1.5 s / rest) -> 22.8 / 19.1 dB, speech itself ~3 dB down; clean espeak speech passes with correlation 0.978 and
+      the same level. With the gain behind it: pauses -33 -> -50 dBFS, speech -27.7 -> -30.1 dBFS (both files in
+      `device-logs/denoise/`). CPU: 11 ms per second of audio on the PC, 2755 ms for 15.1 s on the Echo (18 % of one
+      A35 core, only while a pipeline runs). Binary +41 kB. `tests/unit/micdenoise_test.c`, switch and stream in
+      `fake_ha_esphome.py`. Not done: what STT makes of it (the reason to have it), a listening test
+- [~] Arbitration score from the front end (2026-09-30): stock's numbers instead of our own SNR of the mic stream.
+      `wake_pryon.c` inflates the result metadata (stock libz.so) for the keyword's place on the front end's clock,
+      `main.c` hands it over and reads voiceEnergy / ambientEnergy (FINDINGS.md "Listening mode"); score =
+      1000 * log10(voice / ambient), the unit of the old score, which stays as fallback (no marks in the stream, lipc
+      fails, PC build, simulated detection) and is logged beside it. Reading it starts the front end's utterance state
+      and diagnostics: LASP_CMD_NOTIFY_ASR_STREAM_STOPPED when the Echo loses, answers without a pipeline, or the
+      pipeline ends. Checked: metadata parsing under qemu (fake_ha.py --qemu, and pryon_test on a file with a capture's
+      low bits: 8823 / 9559 ms for a 770 ms keyword); the lipc line by hand as the daemon's user on the Echo
+      (`{"voiceEnergy":10690,"ambientEnergy":66408,..}`, 150 ms); fake_ha_arbitration passes (its scores are given).
+      Not done: a spoken wake word on the Echo (the log then shows both scores), two Echos, biscuit and radar (their
+      libasp unread: the fallback applies if the property is missing)
+- [x] Firewall service stuck at boot on the Echo 2 (2026-09-30, found when a push update got "the installer did not
+      answer"): `main.sh firewall` scanned /proc/*/cmdline with `tr` for old lockdown watchers; a process (pid 209)
+      exited between the open and the read, and radar's toybox `tr` (Fire OS 6572) then spun on the read error for ever
+      (state R, ~100 % of a core). The service never reached `lockdown.sh watch` or the installer: **no `hassmic_out`
+      chain for the 7 minutes of that boot** (OUTPUT accepted wlan0; otad, ace_otad, update_engine and PuffinApp were
+      stopped by the satellite service). Killing the `tr` let it run on: 14 rules, first in OUTPUT. Fix: the scan reads
+      with the shell's own `read -r -d ''` (returns on the error; checked on radar and donut). Pushed to both Echos
+      (radar's first push update with the new build: Pryon metadata format the same as donut's under qemu, mixer takes
+      listening mode). The factory copy in /system/hassmic of an installed Echo keeps the old scan until it is
+      installed again; it only runs when no update is installed or one failed three times.
+      Not done: a check at the end of boot that the chain exists
+- [x] First spoken test of the three entries above (2026-09-30, user beside the Echo 2 "Küchen Echo", the Dot 3 further
+      off, both on the new build, wake word "Echo", two commands):
+      | | Echo 2 (radar) | Dot 3 (donut) |
+      | 1: front end voice / ambient -> score (own score) | 870552 / 16962 -> 1710 (2458) | 169 |
+      | 2: the same | 284756 / 26900 -> 1025 (1972) | 77289 / 67210 -> 61 (671) |
+      The Echo 2 answered both times, the Dot 3 stayed quiet ("another Echo answers") and its front end left the
+      utterance state ("Utterance end detected", "AFE Diagnostics stopped"). Front end on the Dot 3 took the times:
+      "WWStartOffset from AFE timestamp:867 ms, WWEndOffset 299 ms, length of WW: 568 ms", "Calling new
+      getSpectralFeatures API which receives WW start and end time offset" (no fallback). So the metadata path works on
+      radar's Pryon and libasp too, and claims cross the two subnets (192.168.100.x / 101.x).
+      Pipeline on the Echo 2: 1 without noise reduction, gain +23.2 dB, transcript "Wie geht es dir so?"; 2 with it,
+      gain +26.4 dB, transcript "Und wie geht es dir so mit Noise Reduction?", 844 ms CPU for 4.3 s of audio (20 %).
+      Both transcripts right; spoken at normal level near the Echo, so no verdict on quiet speech or on noise reduction.
+      `pryon WARN .. {KWS} Bitmask frame indices (currentFrameIdx < wwEndFrameIdx), setting wwEndFrameIdx to
+      currentFrameIdx since its within delta` on the Echo 2 before command 2: nothing new and harmless. The Dot 3's log
+      has it since hassmic 0.1.0: of 235 accepted wake words 99 with this one (keyword end 1..7 frames ahead, delta 8)
+      and 59 with "Invalid bitmask frame indices" (8..21 frames ahead), each followed by the normal accept. It is about
+      the audio fingerprint in the result's metadata (the "FP" of JSON_GZ_AND_FP, which Alexa matched against known
+      recordings of its wake word): its extractor is a few 10 ms frames behind the keyword's end when the result is
+      built. hassmic does not use the fingerprint; the front end's times in the same metadata came through in that
+      very detection (score 1025 from the front end).
+      Not done: quiet speech at a distance with and without noise reduction, HA's recordings of it, a wake word where
+      the two scores disagree about the nearer Echo
+- [~] Noise reduction strengths (2026-09-30): two recordings from HA through the Echo 2, both transcribed right: without,
+      speech -23.7 dBFS (active level) over a floor of -31..-35; with the 18 dB cap, -27.5 over -50, but the weak parts
+      of words down to -35..-45 mid-sentence and artefacts audible to the user. Listening versions of one quiet capture
+      at caps 6 / 9 / 12 / 18 dB (pauses -37 / -40 / -43 / -49 dBFS against -33 without): 18 too many artefacts, the
+      others fine. So the switch became a select: Off, Low (6 dB), Medium (9), High (12); settings field 0..3 (a "1"
+      from the switch reads as Low). Tried for a measure of the artefacts: log-spectral distance to clean espeak speech
+      over the Echo's room noise gets better with every dB of reduction (SNR 6 dB: 10.9 dB at cap 6, 9.9 at 18, input
+      12.3), so it does not show them; and the +24 dB around RNNoise made no difference (0 / 12 / 24 / 36 dB within
+      0.2 dB): removed. Not done: a case where STT fails without noise reduction and succeeds with it
+

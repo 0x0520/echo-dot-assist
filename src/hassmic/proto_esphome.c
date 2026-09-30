@@ -80,7 +80,7 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 /* KEY_NOISE and KEY_MULT: retired entities (noise suppression, mic volume multiplier), kept so the others keep their keys */
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
-       KEY_SS_UNPAIRED };
+       KEY_SS_UNPAIRED, KEY_DENOISE };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -276,8 +276,11 @@ static int key_set(const unsigned char *k, size_t len)
 /* ---------------------------------------------------------------- settings entities
  * Kept in a small file so they survive restarts.  "Mic level" is the speech level the Echo's own gain aims at
  * (micgain.h).  It replaced noise suppression, auto gain and mic volume multiplier (2026-09-29): Home Assistant ignores
- * the audio settings of an ESPHome VoiceAssistantRequest, so they never did anything, and Amazon's front end suppresses
- * noise already. */
+ * the audio settings of an ESPHome VoiceAssistantRequest, so they never did anything.  "Noise reduction" puts RNNoise
+ * ahead of that gain (micdenoise.h), taking the noise down by up to 6, 9 or 12 dB; it sits in the settings file's first
+ * field, which held the old noise suppression level. */
+
+static const char *const denoise_names[] = { "Off", "Low", "Medium", "High" };
 
 static int mic_level = MICGAIN_LEVEL;
 /* The words of the Bluetooth announcements.  Home Assistant speaks them with the satellite's pipeline voice, but tells
@@ -311,7 +314,7 @@ static void settings_load(void)
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
      * which ignored them; unused since). */
     if (fscanf(f, "%d %d %f %d %d %d %d %7s %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt) >= 5) {
-        if (fmt == 2) mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g;
+        if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
     }
@@ -323,7 +326,7 @@ static void settings_save(void)
 {
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
-    fprintf(f, "0 %d 1 %d %d %d %d %s 2\n", mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
+    fprintf(f, "%d %d 1 %d %d %d %d %s 2\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
             bt_langs[bt_lang].code);
     fclose(f);
 }
@@ -339,6 +342,7 @@ static void send_setting(int key)       /* lock held */
     case KEY_BT_PAIRING: if (ble_present()) { pb_uint(&b, 2, a2dp_pairing()); send_state(SWITCH_STATE, &b); } break;
     case KEY_BT_ANNOUNCE: if (ble_present()) { pb_uint(&b, 2, core_bt_announce(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_DND:   pb_uint(&b, 2, core_dnd(-1)); send_state(SWITCH_STATE, &b); break;
+    case KEY_DENOISE: pb_str(&b, 2, denoise_names[core_mic_denoise(-1)]); send_state(SELECT_STATE, &b); break;
     case KEY_BT_LANG: if (ble_present()) { pb_str(&b, 2, bt_langs[bt_lang].name); send_state(SELECT_STATE, &b); } break;
     case KEY_EQ_BASS: case KEY_EQ_MID: case KEY_EQ_TREBLE: pb_float(&b, 2, core_eq(key - KEY_EQ_BASS)); send_state(NUMBER_STATE, &b); break;
     case KEY_ARB_JOIN: if (arb_running()) { pb_uint(&b, 2, arb_join(-1)); send_state(SWITCH_STATE, &b); } break;
@@ -446,6 +450,9 @@ static void send_setting_entities(void)
     /* off (the default): only servers paired with the token above play; on: any Music Assistant on the LAN, unpaired */
     if (core_sendspin_port) { PB(b, 192); pb_str(&b, 1, "sendspin_unpaired_access"); pb_fixed32(&b, 2, KEY_SS_UNPAIRED);
       pb_str(&b, 3, "Music Assistant without pairing"); pb_str(&b, 5, "mdi:lock-open-variant"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
+    { PB(b, 128); pb_str(&b, 1, "noise_reduction"); pb_fixed32(&b, 2, KEY_DENOISE); pb_str(&b, 3, "Noise reduction"); pb_str(&b, 5, "mdi:waveform");
+      for (int i = 0; i < 4; i++) pb_str(&b, 6, denoise_names[i]);
+      pb_uint(&b, 8, 1); send_msg(LIST_SELECT, &b); }
     { PB(b, 128); pb_str(&b, 1, "wake_sound"); pb_fixed32(&b, 2, KEY_WAKE_SOUND); pb_str(&b, 3, "Wake sound"); pb_str(&b, 5, "mdi:bell-ring");
       pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
     if (ble_present()) { PB(b, 128); pb_str(&b, 1, "bluetooth_pairing"); pb_fixed32(&b, 2, KEY_BT_PAIRING); pb_str(&b, 3, "Bluetooth pairing");
@@ -480,7 +487,8 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         else if (f.field == 2 && f.wire == 0) on = f.v != 0;
         else if (f.field == 2 && f.data) pbf_str(&f, opt, sizeof opt);
     }
-    if (type == SELECT_COMMAND && key == KEY_BT_LANG) { for (int i = 0; i < BT_LANGS; i++) if (!strcmp(opt, bt_langs[i].name)) bt_lang = i; }
+    if (type == SELECT_COMMAND && key == KEY_DENOISE) { for (int i = 0; i < 4; i++) if (!strcmp(opt, denoise_names[i])) core_mic_denoise(i); }
+    else if (type == SELECT_COMMAND && key == KEY_BT_LANG) { for (int i = 0; i < BT_LANGS; i++) if (!strcmp(opt, bt_langs[i].name)) bt_lang = i; }
     else if (type == NUMBER_COMMAND && key == KEY_MIC_LEVEL) {
         mic_level = num < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : num > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : (int)lroundf(num);
         core_mic_level(mic_level);
@@ -496,8 +504,8 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         core_set_eq(key - KEY_EQ_BASS, (int)lroundf(num)); send_setting(key); return;
     }
     else return;
-    fprintf(stderr, "settings: mic_level=%d mute=%d wake_sound=%d bt_announce=%d dnd=%d bt_lang=%s\n", mic_level,
-            core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1), bt_langs[bt_lang].code);
+    fprintf(stderr, "settings: mic_level=%d noise_reduction=%s mute=%d wake_sound=%d bt_announce=%d dnd=%d bt_lang=%s\n", mic_level,
+            denoise_names[core_mic_denoise(-1)], core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1), bt_langs[bt_lang].code);
     settings_save(); send_setting(key);
 }
 
@@ -1081,7 +1089,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
     case LIST_ENTITIES_REQ: send_entities(); break;
     case SUBSCRIBE_STATES:
         for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i].fd == reply_fd) clients[i].states = 1;
-        send_mp_state(); send_setting(KEY_MIC_LEVEL); send_setting(KEY_MUTE); send_setting(KEY_WAKE_SOUND); send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_ANNOUNCE); send_setting(KEY_DND);
+        send_mp_state(); send_setting(KEY_MIC_LEVEL); send_setting(KEY_DENOISE); send_setting(KEY_MUTE); send_setting(KEY_WAKE_SOUND); send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_ANNOUNCE); send_setting(KEY_DND);
         send_setting(KEY_BT_LANG);
         for (int k = KEY_EQ_BASS; k <= KEY_EQ_TREBLE; k++) send_setting(k);
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);

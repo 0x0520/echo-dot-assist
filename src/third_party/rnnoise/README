@@ -1,0 +1,5 @@
+RNNoise v0.1.1 (https://github.com/xiph/rnnoise, commit 6cbfd53eb348a8d394e0757b4025c6ded34eb2b6), BSD-3-Clause: COPYING.
+The library's files from src/ and include/rnnoise.h, without rnn_reader.c (models from files) and the training tools.
+Changed, for a build without warnings: the three calloc calls in denoise.c have their arguments in the usual order
+(gcc 14), and the two "*(int*)0=0" for an unknown activation in rnn.c are abort() (clang).
+Used by src/hassmic/micdenoise.c.

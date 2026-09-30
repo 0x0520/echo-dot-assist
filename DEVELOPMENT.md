@@ -25,10 +25,10 @@ rules. `DEVICE` picks one (default `donut`). The adb scripts check it against th
 | Path | What |
 |---|---|
 | `devices/` | one directory per Echo model (`donut`, `biscuit`, `radar`): `device.mk`, `board.c`, `device.conf`, `hassmic.rc`, `sepolicy.rules`, `setup.sh`, install instructions |
-| `src/hassmic/` | the daemon: core (capture, wake word, playback, LEDs, buttons), `proto_esphome.c`, `proto_wyoming.c`, `arb.c` (wake word arbitration between Echos), `micgain.c` (gain of the mic audio sent to the pipeline), `sendspin.c`, `a2dp.c`, `ble.c`, push updates |
+| `src/hassmic/` | the daemon: core (capture, wake word, playback, LEDs, buttons), `proto_esphome.c`, `proto_wyoming.c`, `arb.c` (wake word arbitration between Echos), `micdenoise.c` (RNNoise on the mic audio sent to the pipeline), `micgain.c` (gain of the mic audio sent to the pipeline), `sendspin.c`, `a2dp.c`, `ble.c`, push updates |
 | `src/tools/` | `mixcap`, `mixplay`, `pryon_test`, `latency`, `otatool`, `runas` (AIPC refuses uid 0, the image has no `su`), `curlspy`, `hciscan` (raw HCI on `/dev/stpbt`) |
 | `src/include/` | C headers for the reversed `libmixerAPI.so` and `libpryon.so` |
-| `src/third_party/` | monocypher 4.0.2, `dr_flac.h`, `minimp3.h`, libfreeaptx 0.2.2 (own licences, see README) |
+| `src/third_party/` | monocypher 4.0.2, `dr_flac.h`, `minimp3.h`, libfreeaptx 0.2.2, RNNoise 0.1.1 (own licences, see README) |
 | `scripts/` | PC side: `setup.sh` (guided install), `wakeword.sh` (more wake words on an installed Echo), `deploy.sh`, `probe.sh`, `capture-test.sh`, `wifi-join.sh`, `install-system.sh`, `ota-push.sh`; `lib/device.sh` picks the model, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
 | `scripts/device/`, `scripts/system/` | run on the Echo, reading the model's `device.conf` next to them; boot integration (`boot.sh`, `main.sh`) |
 | `tools/` | OTA payload dumper, Thumb disassembly helpers, `qrun.sh` (device binaries under qemu-arm), `davs-fetch.py` |

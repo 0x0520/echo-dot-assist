@@ -33,7 +33,7 @@ static float wanted(const struct micgain *g)
 
 void micgain_init(struct micgain *g, int level)
 {
-    g->level = level;
+    g->level = level; g->hold = 0;
     g->speech_pow = 1e-5f; g->noise_db = -67.0f;               /* -50 dBFS */
     g->gain_db = wanted(g);
     g->applied = db_to_lin(g->gain_db);
@@ -54,9 +54,10 @@ static void frame(struct micgain *g, const int16_t *in, int16_t *out, size_t n)
     for (size_t i = 0; i < n; i++) { float v = in[i]; sum += v * v; if (fabsf(v) > peak) peak = fabsf(v); }
     float p = sum / n / (32768.0f * 32768.0f), db = 10.0f * log10f(p + 1e-10f), step = (float)n / FRAME;
 
-    if (db < g->noise_db) g->noise_db = db > FLOOR_MIN_DB ? db : FLOOR_MIN_DB;
+    if (g->hold) ;
+    else if (db < g->noise_db) g->noise_db = db > FLOOR_MIN_DB ? db : FLOOR_MIN_DB;
     else g->noise_db += 0.03f * step;
-    if (db > g->noise_db + SPEECH_OVER_FLOOR) {
+    if (!g->hold && db > g->noise_db + SPEECH_OVER_FLOOR) {
         g->speech_pow += (p - g->speech_pow) * LEVEL_AVG * step;
         float w = wanted(g);
         if (w < g->gain_db) g->gain_db = w;

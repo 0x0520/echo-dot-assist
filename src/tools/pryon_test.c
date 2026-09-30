@@ -10,6 +10,7 @@
  * Prints every result callback, so the meaning of detectionType can be learned.
  */
 #include <stdio.h>
+#include <zlib.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -31,6 +32,16 @@ static void on_result(const char *decoderId, PryonEnumeratedResult *r)
            decoderId, r->keyword ? r->keyword : "(null)", r->detectionType,
            (unsigned long long)r->beginSampleIndex, (unsigned long long)r->endSampleIndex,
            r->beginSampleIndex / 16000.0, r->endSampleIndex / 16000.0, r->metadataSize);
+    /* the metadata: a header that starts "JSON_GZ_AND_FP", a gzip stream with JSON, a fingerprint */
+    const unsigned char *m = r->metadata; size_t at = 0;
+    while (m && at + 3 < r->metadataSize && at < 64 && !(m[at] == 0x1f && m[at + 1] == 0x8b && m[at + 2] == 8)) at++;
+    if (m && at < 64 && at + 3 < r->metadataSize) {
+        static char js[1 << 17]; z_stream z; memset(&z, 0, sizeof z);
+        z.next_in = (Bytef *)(m + at); z.avail_in = r->metadataSize - at; z.next_out = (Bytef *)js; z.avail_out = sizeof js - 1;
+        if (inflateInit2(&z, 16 + MAX_WBITS) == Z_OK) { inflate(&z, Z_FINISH); inflateEnd(&z); }
+        js[sizeof js - 1 - z.avail_out] = 0;
+        printf("META header %u bytes, %s\n", (unsigned)at, js);
+    }
     fflush(stdout);
 }
 

@@ -67,6 +67,13 @@ int main(void)
     int peak = 0; for (size_t i = 0; i < t; i++) if (abs(out[i]) > peak) peak = abs(out[i]);
     check(peak <= 29000, "peak, loud talker included", peak);
 
+    micgain_init(&g, MICGAIN_LEVEL); micgain_start(&g, -55);         /* held while our own wake sound is in the stream */
+    float before = g.gain_db;
+    g.hold = 1; micgain_run(&g, in + l0, out, RATE / 2);             /* half a second as loud as the loud talker */
+    check(g.gain_db == before, "gain unchanged by a loud sound while held, dB", g.gain_db - before);
+    g.hold = 0; micgain_run(&g, in + q0 + RATE, out, RATE);
+    check(fabs(active(out, in + q0 + RATE, 0, RATE) - want) < 1.5, "quiet talker right after it, dBFS", active(out, in + q0 + RATE, 0, RATE));
+
     micgain_init(&g, MICGAIN_LEVEL_MIN); micgain_start(&g, -55);     /* another level from the slider */
     run(&g, q1);
     check(fabs(active(out, in, q0 + RATE, q1) - MICGAIN_LEVEL_MIN) < 1.5, "quiet talker at the lowest mic level, dBFS", active(out, in, q0 + RATE, q1));

@@ -80,7 +80,8 @@ Details:
 - **Bluetooth**: the proxy works like an ESPHome `bluetooth_proxy` with `active: true`, up to 3 connections, "Just Works"
   pairing only. While a phone plays, the proxy stops scanning: the radio cannot do both without the music stuttering.
 - **Settings in Home Assistant**: "Mic level" (how loud speech reaches the voice assistant, -35 to -15 dBFS, default
-  -26; the Echo adjusts its gain to it), mute switch, "Do not disturb"
+  -26; the Echo adjusts its gain to it), "Noise reduction" (off by default; low, medium, high: RNNoise on what the voice
+  assistant gets takes the background down by up to 6, 9 or 12 dB), mute switch, "Do not disturb"
   switch (drops announcements, purple pulse when switched on), "Wake sound" switch (covers all local sounds),
   "Bluetooth pairing" switch, "Bluetooth announcements" switch and their language, "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
   only Sendspin servers paired with the token may play), equalizer (bass, mid, treble, −6 to +6 dB, Amazon's own,
@@ -208,8 +209,8 @@ Architecture, repository layout, building for the PC, tests and contribution not
 ## Licence
 
 [MIT](LICENSE), for everything written here. The files in `src/third_party/` keep their own licences, stated in each file:
-monocypher (BSD-2-Clause OR CC0-1.0), `dr_flac.h` (public domain or MIT-0), `minimp3.h` (CC0-1.0), `freeaptx.c`/`.h`
-(LGPL-2.1-or-later; hassmic links it statically, and everything needed to rebuild and relink it is in this repository).
+monocypher (BSD-2-Clause OR CC0-1.0), `dr_flac.h` (public domain or MIT-0), `minimp3.h` (CC0-1.0), `rnnoise/`
+(BSD-3-Clause, `COPYING` beside it), `freeaptx.c`/`.h` (LGPL-2.1-or-later; hassmic links it statically, and everything needed to rebuild and relink it is in this repository).
 
 Nothing of Amazon's is in this repository and nothing of it is covered by this licence: firmware, libraries and wake-word
 models come from your own device and stay Amazon's. Not affiliated with or endorsed by Amazon, Home Assistant or

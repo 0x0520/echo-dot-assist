@@ -90,9 +90,10 @@ dozen daemons phone home within seconds.
 - [x] **(device)** Never-registered device, USB/ADB only → `lockdown.sh` → `scripts/wifi-join.sh`: joined IoT SSID (no-internet VLAN),
       192.168.100.147/22, lock tightened to `192.168.100.0/22`, `ping 1.1.1.1` fails, `lockdown.sh ... watch` running.
       Stock INPUT drops ICMP (PC ping fails) but TCP 16700 is reachable from the PC (VLAN if `enp5s0.2`).
-      adb works over Wi-Fi too: stock init sets `service.adb.tcp.port 5555` and stock `firewall.sh` opens the port (same key
-      authentication as over USB), so `adb connect <ip>:5555` from a PC on the Echo's VLAN is the root shell. Verified 2026-09-22;
-      USB is only needed for TWRP.
+      adb works over Wi-Fi too: stock init sets `service.adb.tcp.port 5555` and stock `firewall.sh` opens the port, so
+      `adb connect <ip>:5555` from a PC on the Echo's VLAN is the root shell. Verified 2026-09-22. Wrong at the time: "same
+      key authentication as over USB". boot-root sets `ro.adb.secure=0` and the idme `fos_flags` say `noadbauth`, so
+      there is no authentication at all (issue #1); closed since 2026-09-30, see "adb over Wi-Fi closed" below.
       Wi-Fi Direct group `p2p-p2p0-0` (left by `oobed`) removed with `wpa_cli -i p2p0 p2p_group_remove`; now in `alexa-off.sh`.
       Do not stop the supplicant: the same `wpa_supplicant` process runs `wlan0`
 - [x] **(router)** Echo is on the user's no-internet IoT VLAN — covers the boot window before `lockdown.sh` runs
@@ -715,6 +716,42 @@ Run in this order. Each step says what it proves.
       Not done: the Dot 3 and the Echo 2 still run the old build (only the Dot 2 was updated); the stock-online
       watcher was not run. Not covered: stock's other rules (what Alexa itself needs in stock-online: Spotify,
       multi-room, Matter ports) can still be lost when a rebuild falls into stock's run, about one per rebuild
+- [x] adb over Wi-Fi closed (2026-09-30, issue #1 comment: root adb open to the whole LAN without authentication,
+      confirmed from another PC). On all three Echos: `ro.adb.secure=0`, `ro.secure=0`, `amazon.fos_flags.noadbauth=1`,
+      no `adb_keys`, adbd listening on `:::5555`, stock's `-A INPUT -p tcp --dport 5555 -j ACCEPT` (firewall.sh adds it
+      when `persist.sys.usb.config` has adb). The stock adbd does have key authentication (`adb_auth_client.cpp`,
+      `/data/misc/adb/adb_keys`) but decides from `ro.adb.secure` (boot ramdisk on radar/biscuit, the system root on
+      donut) and `/proc/idme/fos_flags`: switching it on means a change to what boot-root flashed, through TWRP, not
+      by push update, and a lost key would lock USB out as well (no screen to confirm a new key). Not done.
+      Instead `lockdown.sh` `adb_gate`, every run and every 5 s in both watchers (satellite and stock-online): open
+      while `hassmic.adb.until` (uptime s, a property: survives a watcher restart, not a reboot) is ahead or
+      `hassmic.conf` has `ADB_WIFI=1`, else `service.adb.tcp.port 0` + `ctl.restart adbd` (USB unaffected) and stock's
+      rule taken out (`load_once`/`load_each`) and checked for (`wrong`: "port 5555 (adb) admitted"; `keep` has it only
+      while open). hassmic's switch "Debug access (adb over Wi-Fi)" (`adbwifi.c`, config category) writes
+      `state/adb-request`; the watcher sets 30 min (`ADB_SECS`) or 0 and removes it; `/data/local/hassmic/adb-open`
+      (root's directory, so root never writes through a name the daemon controls) is the answer hassmic reports. The
+      switch reports the request until it is taken, then the file; unanswered after 15 s the request is withdrawn.
+      Opening is refused unless the command came over the keyed connection (before adoption anyone can connect).
+      A request left over from before a reboot is dropped when the watcher starts. `main.sh` makes `hassmic.conf`
+      root:root 644 before sourcing it: it was 666 on the Dot 2 and the Echo 2 (`adb push`), i.e. writable by the
+      daemon, and root runs it.
+      Dot 2 (USB), 0.3.0+1646bc1-dirty pushed: closed at the update, `check` clean, conf 644; request file -> "OPEN"
+      within 9 s, `adb connect` over Wi-Fi gives root; end of window moved to 12 s ahead -> closed, rule gone, connect
+      times out; `ADB_WIFI=1` -> open, a "0" request does not close it, line removed -> closed; rebooted with a stale
+      request and `adb-open`: "closed, USB only (uptime 14s)" before `netwatch: link up`, both files gone, HA back.
+      Over the ESPHome API with the device key (aioesphomeapi, beside HA): switch listed, off; on -> reported on at
+      once, port 5555 and the rule within 9 s; off -> closed within 9 s. `fake_ha_esphome.py`: refused over plaintext,
+      request/answer/expiry and the 15 s withdrawal. Builds for donut/radar/biscuit. Not done: the Dot 3 and the Echo
+      2 (both only reachable over Wi-Fi: they close it at the push, set `ADB_WIFI=1` first to keep working as before);
+      `wakeword.sh` over Wi-Fi (keeps `ADB_WIFI=1 # wakeword.sh` through its two reboots) not run.
+      Gap found the same day: a new Echo that does not get adopted (or loses its key, or runs Wyoming) had no way in
+      but USB, and on donut and radar that is soldered wires the setup says may come off. So the push port also
+      opens it for the holder of the update key: `HMOTA-ADB1` -> 32 random bytes as hex -> EdDSA signature over
+      "HMOTA-ADB1\n" + nonce (never a valid bundle, which starts "HMOTA1\n"; a fresh nonce each time, so a sniffed
+      exchange does not replay) -> same request file -> "OK" once `adb-open` is there. `otatool adb`,
+      `scripts/adb-wifi.sh`. `ota_push_test.sh`: right key opens, other key refused without a request, new nonce each
+      time. Dot 2: `scripts/adb-wifi.sh` -> "OK ... open for 30 min" and root over Wi-Fi in 3.5 s. Left: hassmic not
+      running at all, or the update key lost -> USB only.
 
 - [x] Mute shown inverted on the Echo 2 (2026-09-30, user: button lit and mics cut, no red ring, HA "unmuted", each
       press the wrong way round). radar and biscuit ran with `privacy_latch = 0`: `buttons.c` counted KEY_MUTE from

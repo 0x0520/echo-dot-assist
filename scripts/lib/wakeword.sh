@@ -6,10 +6,13 @@
 # it runs stock Alexa with the updaters cut off (MODE=stock-online) until then, and everything is undone afterwards
 # (registration, the Wi-Fi the Alexa app added, the mode).  Home Assistant then offers every installed model in the
 # Echo's wake word select.  Stopped halfway, a new run finds the Echo in stock-online mode and goes on there.
+# Over Wi-Fi the Echo's adb has to be open (scripts/adb-wifi.sh, or "Debug access" in Home Assistant).  The two reboots of the Amazon way would
+# close it, so for that way it is kept open with ADB_WIFI=1 in hassmic.conf, marked as ours, until the end.
 
 MODELS=device-logs/models
 D=/data/local/hassmic
 MAPDB=/data/ace/kvstorage/map.db
+ADB_OURS="ADB_WIFI=1 # wakeword.sh"
 WW_LOCAL=(connect "Connect" choose "Choose" install "Install")
 WW_AMAZON=(connect "Connect" choose "Choose" online "Online with Amazon" register "Register in the Alexa app"
            fetch "Download from Amazon" install "Install" back "Back to satellite")
@@ -76,7 +79,7 @@ _wakeword_run() {
     if [ -z "$WW_SETUP" ]; then
         pick_serial
         waitfor "Waiting for the Echo on adb|Echo on adb" "adb_is device" \
-            "Nothing? Connect it by USB, or give its address: scripts/wakeword.sh <echo-ip>" 15 || return 1
+            "Nothing? Connect it by USB, or open adb over Wi-Fi (scripts/adb-wifi.sh <echo-ip>) and give its address: scripts/wakeword.sh <echo-ip>" 15 || return 1
         device_load adb
         MODEL_NAME="Wake word · $MODEL_NAME"
     else
@@ -136,6 +139,7 @@ _wakeword_run() {
             # the Alexa app adds its own Wi-Fi network; the ones there now are kept, the rest is removed at the end
             net_ids > $NETS
             ashell "sed -i '/^MODE=/d' $D/hassmic.conf; echo MODE=stock-online >> $D/hassmic.conf"
+            [[ $ANDROID_SERIAL == *:* ]] && ashell "grep -q '^ADB_WIFI=' $D/hassmic.conf || echo '$ADB_OURS' >> $D/hassmic.conf"
             task "Restarting the Echo as a stock Echo" adb reboot || return 1
             sleep 10
         fi
@@ -181,6 +185,7 @@ _wakeword_run() {
         task "Restarting the Echo as a satellite" adb reboot || return 1
         sleep 10
         wait_adb device && satellite_up || return 1
+        ashell "sed -i '/^$ADB_OURS\$/d' $D/hassmic.conf"      # the firewall service closes adb over Wi-Fi within 5 s
         info "The Echo can lose its internet access at the router again."
     else
         ww_stage install

@@ -4,6 +4,16 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-09-30
 
+- **adb over Wi-Fi is closed.** On an unlocked Echo adb is a root shell that asks for no key, and it was open to
+  everyone on the network (issue #1). It is now closed at every boot and opened only on purpose: the new switch
+  **Debug access (adb over Wi-Fi)** in Home Assistant opens it for 30 minutes (it closes by itself, or when you turn
+  it off, or at a reboot). Without Home Assistant (an Echo not adopted yet, one that lost its key, Wyoming),
+  `scripts/adb-wifi.sh <echo-ip>` does the same with the key that signs your updates. `ADB_WIFI=1` in `hassmic.conf`
+  keeps it open. adb over USB works as before. **Keep `secrets/update.key`**: with neither it nor Home Assistant, only
+  USB is left. Update with `scripts/ota-push.sh`; to keep adb over Wi-Fi as it was, add `ADB_WIFI=1` first.
+- **`hassmic.conf` can only be changed by root.** It was writable by every user on some Echos, although the Echo runs
+  what it says as root.
+
 - **Commands no longer fade out after the first second.** Amazon's audio processing has to be told when a command is
   being spoken; otherwise it treats a voice that keeps talking as background noise and removes it after about 1.5
   seconds. The stock Alexa software did that, the Echo as a Home Assistant satellite did not: quietly spoken commands

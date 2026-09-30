@@ -6,9 +6,19 @@
  *
  *   -> "HMOTA-PUSH1 <bundle bytes>\n"  <64 byte signature>  <bundle>
  *   <- one line: "OK <version>" | "FAILED <why>"
+ *
+ * The same key opens adb over Wi-Fi (adbwifi.c) without Home Assistant: the way back in when the Echo is not adopted,
+ * has lost its key, or runs Wyoming, and its USB wires are gone.  Challenge and response, so that a recorded exchange
+ * cannot be played again; what is signed starts differently from every bundle ("HMOTA1\n"), so neither passes for the
+ * other.
+ *   -> "HMOTA-ADB1\n"
+ *   <- "NONCE <64 hex digits>\n"
+ *   -> <64 byte signature over "HMOTA-ADB1\n" + the 32 nonce bytes>
+ *   <- one line: "OK ..." once root's firewall watcher has opened it | "FAILED <why>"
  */
 #include "ota.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +28,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "../third_party/monocypher.h"
+#include "adbwifi.h"
 #include "netio.h"
 
 #define MAX_BUNDLE (16u << 20)
@@ -37,16 +48,44 @@ static int store(const char *dir, const char *name, const void *data, size_t len
     return rename(tmp, path);
 }
 
+static int load_pub(uint8_t pk[32])
+{
+    FILE *f = fopen(pub_path(), "rb");
+    int ok = f && fread(pk, 1, 32, f) == 32;
+    if (f) fclose(f);
+    return ok;
+}
+
+static void adb_open(int fd, const uint8_t pk[32])
+{
+    uint8_t msg[11 + 32], sig[64]; char hex[80]; int r = open("/dev/urandom", O_RDONLY);
+    memcpy(msg, "HMOTA-ADB1\n", 11);
+    if (r < 0 || read(r, msg + 11, 32) != 32) { if (r >= 0) close(r); reply(fd, "FAILED no randomness"); return; }
+    close(r);
+    int n = sprintf(hex, "NONCE ");
+    for (int i = 0; i < 32; i++) n += sprintf(hex + n, "%02x", msg[11 + i]);
+    hex[n++] = '\n';
+    if (write_all(fd, hex, n) || read_full(fd, sig, 64) != 64) { reply(fd, "FAILED no signature"); return; }
+    if (crypto_eddsa_check(sig, pk, msg, sizeof msg)) { reply(fd, "FAILED signature does not verify against this device's update key"); return; }
+    fprintf(stderr, "update: adb over Wi-Fi asked for with the update key\n");
+    adbwifi_ask(1);
+    for (int t = 0; t < 30; t++) {                      /* the firewall watcher looks every 5 s */
+        if (adbwifi_granted()) { reply(fd, "OK adb over Wi-Fi open for 30 min"); return; }
+        usleep(500000);
+    }
+    reply(fd, "FAILED the firewall service did not answer (is hassmic_fw running?)");
+}
+
 static void handle(int fd)
 {
-    char line[64], dir[280], path[300]; size_t i = 0; unsigned long len = 0; uint8_t sig[64], pk[32], *b;
+    char line[64], dir[280], path[300]; size_t i = 0; unsigned long len = 0; uint8_t sig[64], pk[32], *b; FILE *f;
     struct timeval tv = { 30, 0 }; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     while (i < sizeof line - 1 && read(fd, line + i, 1) == 1 && line[i] != '\n') i++;
     line[i] = 0;
-    if (sscanf(line, "HMOTA-PUSH1 %lu", &len) != 1 || !len || len > MAX_BUNDLE) { reply(fd, "FAILED bad request"); return; }
-    FILE *f = fopen(pub_path(), "rb");
-    if (!f || fread(pk, 1, 32, f) != 32) { if (f) fclose(f); reply(fd, "FAILED this device has no update key (install-system.sh installs it)"); return; }
-    fclose(f);
+    int adb = !strcmp(line, "HMOTA-ADB1");
+    if (!adb && (sscanf(line, "HMOTA-PUSH1 %lu", &len) != 1 || !len || len > MAX_BUNDLE)) { reply(fd, "FAILED bad request"); return; }
+    if (!load_pub(pk)) { reply(fd, "FAILED this device has no update key (install-system.sh installs it)"); return; }
+    if (adb) { adb_open(fd, pk); return; }
     if (!(b = malloc(len))) { reply(fd, "FAILED out of memory"); return; }
     if (read_full(fd, sig, 64) != 64 || read_full(fd, b, len) != (ssize_t)len) { reply(fd, "FAILED upload incomplete"); free(b); return; }
     if (crypto_eddsa_check(sig, pk, b, len)) { reply(fd, "FAILED signature does not verify against this device's update key"); free(b); return; }

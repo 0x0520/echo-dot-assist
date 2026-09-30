@@ -23,6 +23,7 @@
  *                    Assistant to run assist_satellite.announce on us (HomeassistantActionRequest, what an ESPHome YAML
  *                    `homeassistant.action` sends).  Home Assistant only runs it with "Allow the device to perform Home
  *                    Assistant actions" ticked in the device's options; otherwise it raises a repair saying so.
+ *   debug access     a switch opens adb over Wi-Fi for 30 min (adbwifi.c); only taken over the connection with the key
  */
 #include <ctype.h>
 #include <errno.h>
@@ -40,6 +41,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "a2dp.h"
+#include "adbwifi.h"
 #include "arb.h"
 #include "ble.h"
 #include "board.h"
@@ -80,7 +82,7 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 /* KEY_NOISE and KEY_MULT: retired entities (noise suppression, mic volume multiplier), kept so the others keep their keys */
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
-       KEY_SS_UNPAIRED, KEY_DENOISE };
+       KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -348,6 +350,7 @@ static void send_setting(int key)       /* lock held */
     case KEY_ARB_JOIN: if (arb_running()) { pb_uint(&b, 2, arb_join(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_ARB_PEERS: if (arb_running()) { pb_float(&b, 2, arb_peers()); send_state(SENSOR_STATE, &b); } break;
     case KEY_SS_UNPAIRED: if (core_sendspin_port) { pb_uint(&b, 2, sendspin_unpaired(-1)); send_state(SWITCH_STATE, &b); } break;
+    case KEY_ADB_WIFI: pb_uint(&b, 2, adbwifi_open()); send_state(SWITCH_STATE, &b); break;
     }
 }
 
@@ -463,6 +466,9 @@ static void send_setting_entities(void)
       pb_str(&b, 3, "Bluetooth announcement language"); pb_str(&b, 5, "mdi:translate");
       for (int i = 0; i < BT_LANGS; i++) pb_str(&b, 6, bt_langs[i].name);
       pb_uint(&b, 8, 1); send_msg(LIST_SELECT, &b); }
+    /* a root shell without a password for the whole network while it is on: closes by itself after 30 min (lockdown.sh) */
+    { PB(b, 160); pb_str(&b, 1, "debug_access_adb"); pb_fixed32(&b, 2, KEY_ADB_WIFI); pb_str(&b, 3, "Debug access (adb over Wi-Fi)");
+      pb_str(&b, 5, "mdi:console-network"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
     if (arb_running()) {
         { PB(b, 160); pb_str(&b, 1, "join_arbitration_network"); pb_fixed32(&b, 2, KEY_ARB_JOIN); pb_str(&b, 3, "Join arbitration network");
           pb_str(&b, 5, "mdi:account-group"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
@@ -500,6 +506,14 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
     else if (type == SWITCH_COMMAND && key == KEY_BT_PAIRING) { a2dp_pair(on); return; }     /* its state follows through bt_changed */
     else if (type == SWITCH_COMMAND && key == KEY_ARB_JOIN && arb_running()) { arb_join(on); send_setting(key); return; }   /* arb.c keeps it */
     else if (type == SWITCH_COMMAND && key == KEY_SS_UNPAIRED && core_sendspin_port) { sendspin_unpaired(on); send_setting(key); return; }  /* sendspin.c keeps it */
+    else if (type == SWITCH_COMMAND && key == KEY_ADB_WIFI) {
+        /* Before Home Assistant has set the key anyone on the network gets a connection: that must not be a way to
+         * a root shell.  Closing it is always fine. */
+        int c = client_of(reply_fd);
+        if (!on || (c >= 0 && clients[c].keyed)) adbwifi_ask(on);
+        else fprintf(stderr, "adb over Wi-Fi: refused, the request did not come over the keyed connection\n");
+        send_setting(key); return;
+    }
     else if (type == NUMBER_COMMAND && key >= KEY_EQ_BASS && key <= KEY_EQ_TREBLE) {           /* the mixer keeps it, not our file */
         core_set_eq(key - KEY_EQ_BASS, (int)lroundf(num)); send_setting(key); return;
     }
@@ -816,6 +830,7 @@ static void ble_unpaired_cb(uint64_t a, int ok, int e) { ble_pair_result(BLE_UNP
 
 /* Bluetooth speaker: the pairing window opened, ran out or ended with a paired device */
 static void bt_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_BT_PAIRING); pthread_mutex_unlock(&core_lock); }
+static void adb_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_ADB_WIFI); pthread_mutex_unlock(&core_lock); }
 
 static const struct ble_handler ble_handler = {
     .adverts = ble_adverts, .scan_changed = ble_changed, .slots_changed = ble_slots, .connection = ble_connection, .services = ble_db,
@@ -1093,7 +1108,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         send_setting(KEY_BT_LANG);
         for (int k = KEY_EQ_BASS; k <= KEY_EQ_TREBLE; k++) send_setting(k);
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
-        send_setting(KEY_SS_UNPAIRED);
+        send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
         send_token_state(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: on_setting(type, p, end); break;
     case SUBSCRIBE_HA_ACTIONS: if (c >= 0) clients[c].actions = 1; break;
@@ -1215,6 +1230,7 @@ static void serve(int fd)
     if (!buf || !pt) { free(buf); free(pt); return; }
     pthread_mutex_lock(&core_lock);
     { static int loaded; if (!loaded) { loaded = 1; settings_load(); key_load(); pthread_t t; pthread_create(&t, NULL, diag_thread, NULL); pthread_detach(t);
+                                       adbwifi_start(adb_changed);
                                        if (core_bluetooth(-1)) { ble_start(&ble_handler); a2dp_start(bt_changed); } } }
     for (int i = 0; i < MAX_CLIENTS; i++) { if (clients[i].fd < 0 && slot < 0) slot = i; n += clients[i].fd >= 0; }
     if (slot >= 0) { clients[slot].fd = fd; clients[slot].states = clients[slot].enc = clients[slot].keyed = clients[slot].ble = clients[slot].ble_free = clients[slot].ble_user = clients[slot].actions = 0; if (!n) core_link(1, 0); }

@@ -45,12 +45,17 @@ There is no single-test selector: run one unit test by building/running its line
 
 ## Device workflow
 
-- adb over Wi-Fi works (`adb connect <echo-ip>:5555`); adb shell is root. USB only needed for TWRP.
+- adb shell is root, without authentication. Over Wi-Fi it is closed on an installed Echo (`lockdown.sh` `adb_gate`):
+  opened for 30 min by the HA switch "Debug access (adb over Wi-Fi)" (hassmic writes `state/adb-request`, the firewall
+  watcher opens it and marks it with `/data/local/hassmic/adb-open`), by `scripts/adb-wifi.sh [host]` (signs a challenge
+  on the push port with `secrets/update.key`; no HA needed), or kept open by `ADB_WIFI=1` in `hassmic.conf`. Then
+  `adb connect <echo-ip>:5555`. USB always works.
 - `scripts/deploy.sh`: build + push to `/data/local/hassmic` for trial runs (`adb shell sh /data/local/hassmic/run.sh`).
 - `scripts/ota-push.sh [host]`: build, sign with `secrets/update.key`, push bundle to TCP 28929 on an installed Echo.
   The Echo verifies against the public key on its system partition and falls back if the new build does not stay up.
 - `scripts/install-system.sh`: writes `/system/hassmic/`, init rc and patched SELinux policy via TWRP. `--uninstall` reverts.
-- Logs: `/data/local/hassmic/boot.log`. Config: `/data/local/hassmic/hassmic.conf` (`NAME`, `PROTO`, `ARGS`, `MODE`).
+- Logs: `/data/local/hassmic/boot.log`. Config: `/data/local/hassmic/hassmic.conf` (`NAME`, `PROTO`, `ARGS`, `MODE`,
+  `ADB_WIFI`; root-owned, 644: root sources it).
   State (API key, BLE bonds, BT keys, Sendspin, settings): `/data/local/hassmic/state/`.
 - `kill -TTIN $(pidof hassmic)` toggles recording of the processed mic stream to `state/capture.raw`. `mixcap` cannot
   capture while hassmic runs: the mixer feeds the mic stream to one client only.
@@ -104,6 +109,8 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
   loaded with dlopen, aptX/aptX HD via `freeaptx`) with AVRCP. Only one music source plays at a time (newest wins).
 - **Bluetooth**: `ble.c`/`ble_crypto.c` talk raw HCI (`hci.h`) to the controller for the HA Bluetooth proxy (scan, GATT,
   Just Works pairing); Amazon's `btmanagerd` is stopped. A2DP shares the controller; scanning pauses while a phone plays.
+- **adb over Wi-Fi** (`adbwifi.c`): the HA switch only writes a request for root's firewall watcher, as `ota.c` does
+  for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key.
 - **Push updates**: `ota.c` receives bundles on the device; `src/tools/otatool.c` is the same code for pack/sign (PC)
   and verify/unpack (device), with monocypher.
 - `src/include/`: headers for the reversed Amazon libraries (`mixer_api.h`, `pryon_api.h`) and `netio.h`.

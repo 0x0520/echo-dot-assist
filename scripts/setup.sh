@@ -5,8 +5,8 @@
 #   scripts/setup.sh [codename] [--dry-run] [--restart]
 #     --dry-run   go through all steps and show the commands, run none of them (file checks still happen)
 #     --restart   forget the progress, e.g. for the next Echo of the same model
-# Only the Echo on USB is worked on, whatever else is on adb over Wi-Fi; to finish the last steps without the USB
-# cable, name it: ANDROID_SERIAL=<echo-ip>:5555 scripts/setup.sh.
+# Only the Echo on USB is worked on, whatever else is on adb over Wi-Fi.  Keep the cable in to the end: the installed
+# Echo closes adb over Wi-Fi at its first boot.
 # The written instructions are the same steps: devices/<codename>/README.md.
 cd "$(dirname "$0")/.."
 . scripts/lib/device.sh

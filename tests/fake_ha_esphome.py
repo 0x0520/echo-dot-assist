@@ -47,7 +47,8 @@ async def main():
     with open(settings, "w") as f: f.write("3 9 4.00 0 1 1 0 en\n")         # from before the mic level: gain values for HA
     env = dict(os.environ, HASSMIC_STATE=state, HASSMIC_SETTINGS=settings, HASSMIC_CAP=f"{ROOT}/testdata/alexa_espeak.raw", HASSMIC_PLAY=play,
                HASSMIC_MDNS_FILE=mdns, HASSMIC_ARB_ADDR="127.255.255.255",      # arbitration beacons stay on this PC
-               HASSMIC_MODELS=os.path.join(state, "models"))
+               HASSMIC_MODELS=os.path.join(state, "models"),
+               HASSMIC_ADB_OPEN=os.path.join(state, "adb-open.root"))          # on the Echo: in a directory only root writes
     for m in ("echo-de", "computer-en-US"):             # installed wake word models (the PC build loads none of them)
         os.makedirs(os.path.join(state, "models", m)); open(os.path.join(state, "models", m, "pryon.manifest"), "w").close()
     with open(mdns, "w") as f:                          # what main.sh does at boot
@@ -278,6 +279,13 @@ async def main():
         check(not started.is_set(), "mute switch blocks triggers")
         cli.switch_command(by["mute"].key, False); await asyncio.sleep(0.3)
 
+        # Debug access: no key set yet, so this connection could be anyone's.  It must not open adb.
+        adb = by.get("debug_access_adb"); adb_req = os.path.join(state, "adb-request")
+        def adb_state(sts): return [x.state for x in sts if isinstance(x, SwitchState) and x.key == adb.key][-1:]
+        check(isinstance(adb, SwitchInfo) and int(adb.entity_category) == 1 and adb_state(states) == [False], "debug access (adb over Wi-Fi) switch listed, off")
+        cli.switch_command(adb.key, True); await asyncio.sleep(0.5)
+        check(not os.path.exists(adb_req) and adb_state(states) == [False], "debug access refused without the key: nothing asked, still off")
+
         cli.send_voice_assistant_timer_event(Tm.VOICE_ASSISTANT_TIMER_FINISHED, "t1", "tea", 60, 0, False)
         await asyncio.sleep(0.5)
         proc.send_signal(signal.SIGUSR1)                                           # button press silences the alarm, no pipeline
@@ -341,6 +349,18 @@ async def main():
         before = os.path.getsize(play)
         res = await enc.send_voice_assistant_announcement_await_response(f"http://127.0.0.1:{HTTP_PORT}/a.wav", 15, "x")
         check(res.success and os.path.getsize(play) - before == 48000, "encrypted: announcement played")
+
+        # Debug access over the keyed connection.  This test is the root side (lockdown.sh): it takes the request and
+        # answers with adb-open for as long as the port is open.
+        st2 = []; enc.subscribe_states(st2.append); await asyncio.sleep(0.3)
+        enc.switch_command(adb.key, True); await asyncio.sleep(0.5)
+        check(os.path.exists(adb_req) and open(adb_req).read() == "1\n" and adb_state(st2) == [True], "debug access with the key: request written, switch on")
+        open(env["HASSMIC_ADB_OPEN"], "w").close(); os.unlink(adb_req); await asyncio.sleep(3)
+        check(adb_state(st2) == [True], "stays on once the firewall service has opened it")
+        os.unlink(env["HASSMIC_ADB_OPEN"]); await asyncio.sleep(3)
+        check(adb_state(st2) == [False], "switch goes off when the window has run out")
+        enc.switch_command(adb.key, True); await asyncio.sleep(19)
+        check(adb_state(st2) == [False] and not os.path.exists(adb_req), "no answer within 15 s: request withdrawn, switch off again")
         check(await asyncio.wait_for(enc.noise_encryption_set_key(b""), 5) is True and not os.path.exists(os.path.join(state, "api_key")),
               "empty key from the keyed connection clears it (Home Assistant deleting the device)")
         check("api_encryption_supported=" in open(mdns).read(), "mDNS back to api_encryption_supported")

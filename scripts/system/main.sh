@@ -10,6 +10,8 @@
 #   ARGS=""                     optional extra hassmic arguments
 #   MODE=stock-online           optional: stock Alexa with internet, e.g. to let it fetch a wake-word model.  hassmic stays
 #                               off, nothing is stopped or blocked except firmware updates (lockdown.sh ota-only)
+#   ADB_WIFI=1                  optional: leave adb over Wi-Fi open (root shell for the whole network, no password; read
+#                               by lockdown.sh).  Without it: closed, opened for 30 min by a switch in Home Assistant
 umask 022                                   # init gives us 077; what we create must be readable by the daemon's user
 D=${HASSMIC_DIR:-/system/hassmic}
 SYS=${HASSMIC_SYS:-/system/hassmic}
@@ -24,6 +26,9 @@ if [ ! -f $D/device.conf ]; then
     exit 1
 fi
 . $D/device.conf
+# Root runs what this file says, and ADB_WIFI in it opens a root shell: nobody else may write it.  "adb push" leaves it
+# writable for everyone (seen on two of three Echos), and hassmic faces the network.
+chown root:root $CONF; chmod 644 $CONF
 . $CONF
 NAME=${NAME:-$DEFAULT_NAME}
 

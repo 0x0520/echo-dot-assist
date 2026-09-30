@@ -28,7 +28,7 @@ install|Install
 wakeword|Wake word
 "
 NOTES=(
-    "adb works over Wi-Fi (adb connect <echo-ip>:5555)."
+    "adb over Wi-Fi is closed: scripts/adb-wifi.sh <echo-ip> (or \"Debug access\" in Home Assistant) opens it for 30 min."
     "Updates: git pull, then scripts/ota-push.sh <echo-ip>."
     "More wake words later: scripts/wakeword.sh <echo-ip>"
     "Music Assistant, Bluetooth speaker: $DDIR/README.md"

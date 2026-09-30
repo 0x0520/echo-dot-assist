@@ -15,6 +15,7 @@
 #                        ace_otad) lose all network access; UPDATE_ONDEMAND (update_engine, root) is kept stopped.
 # Besides its own chain the script keeps what the satellite needs of stock's firewall (see keep below): stock's rules can
 # be missing after a boot, and then the Echo is cut off with everything on it running.
+# It also closes adb over Wi-Fi (see adb_gate below): in every mode, and on every run except "services" and "check".
 # hassmic itself may connect anywhere: it creates its outgoing sockets with filesystem group NET_GID (runas -r in main.sh
 # and run.sh, setfsgid in net.c; the owner match checks that group) and only fetches what Home
 # Assistant (encrypted, paired connection) or Music Assistant send it.  That can be a public host name, a Tailscale address
@@ -77,20 +78,70 @@ keep() {
         for p in udp tcp; do echo "-A INPUT -i $WLAN -p $p -m $p --dport 16384:32767 -j ACCEPT"; done
         echo "-A INPUT -i $WLAN -p udp -m udp --dport 5353 -j ACCEPT"      # mDNS: how Home Assistant finds the Echo
         echo "-A INPUT -p icmp -m state --state RELATED,ESTABLISHED -j ACCEPT"
-        # adb over Wi-Fi, on stock's own condition.  Stock's rule, not ours: from any address, no authentication.
-        if [ -n "$ADB" ]; then echo "-A INPUT -p tcp -m tcp --dport 5555 -j ACCEPT"; fi
+        if [ -n "$ADB" ]; then echo "-A $ADB_IN"; fi                       # only while adb over Wi-Fi is open (adb_gate)
     else
         echo "-A INPUT -p icmpv6 -j ACCEPT"                                # neighbour discovery: no IPv6 without it
         echo "-A INPUT -i $WLAN -p udp -m udp --dport 546 -j ACCEPT"       # DHCPv6
     fi
 }
-ADB=; case "$(getprop persist.sys.usb.config)" in *adb*) ADB=1;; esac
 # Those of them that the listing $2 ("iptables -S") does not have
 missing() { keep $1 | while read -r r; do case "$NL$2$NL" in *"$NL$r$NL"*) ;; *) echo "$r";; esac; done; }
 
+# adb over Wi-Fi.  Stock leaves it open to everyone: init sets service.adb.tcp.port 5555 at "on boot", firewall.sh admits
+# the port from any address, and the root that the unlock gives (ro.adb.secure=0, fos_flags noadbauth) asks for no key:
+# a root shell for whoever reaches the Echo on the network (issue #1).  So it is closed twice over: adbd runs without
+# its TCP listener (USB is not touched), and stock's INPUT rule is taken out and kept out.  It is open only
+#   - for ADB_SECS after hassmic asked for it (state/adb-request = 1), which it does for the switch in Home Assistant
+#     (only over the connection with the key) and for whoever signs its challenge with the update key
+#     (scripts/adb-wifi.sh: the way in without Home Assistant); 0 closes it again, or
+#   - while hassmic.conf has ADB_WIFI=1: for development, and the only way with Wyoming or MODE=stock-online.
+# The end of the window is a property (uptime in seconds): every run of this script sees it, a restarted watcher goes
+# on with it, and a reboot forgets it, so every boot starts closed.  While it is open, the file adb-open exists next to
+# hassmic.conf: that is what hassmic reports back.  Not in state/: that directory is the daemon's, and root writing
+# through a name in there writes wherever a link points.
+# adbd takes the port from the property at its start, hence the restart.  ctl.restart and not stop + start: run from
+# an adb shell this script dies with adbd, and it would be between the two.  Dot 2, 2026-09-30: port 0 + restart, USB
+# back within 8 s, nothing listening on 5555, connect refused from the PC; 5555 + restart, listening again.
+HCONF=/data/local/hassmic/hassmic.conf
+ADB_REQ=/data/local/hassmic/state/adb-request
+ADB_OPEN=/data/local/hassmic/adb-open
+ADB_SECS=1800
+ADB_IN="INPUT -p tcp -m tcp --dport 5555 -j ACCEPT"          # stock's rule, as "iptables -S" prints it
+up() { read -r upt _ < /proc/uptime; echo ${upt%.*}; }
+# ADB=1 if it is to be open now, ADB_WHY says on whose account
+adb_state() {
+    ADB=; ADB_WHY=
+    if grep -q -e '^ADB_WIFI=1' -e '^ADB_WIFI="1' $HCONF 2>/dev/null; then ADB=1; ADB_WHY="ADB_WIFI=1 in hassmic.conf"; return; fi
+    u=$(getprop hassmic.adb.until)
+    if [ "${u:-0}" -gt "$(up)" ] 2>/dev/null; then ADB=1; ADB_WHY="asked for through hassmic, $(( (u - $(up) + 59) / 60 )) min left"; fi
+}
+# Take a request, then make adbd what it has to be.  True if that changed (the rules then have to follow).
+adb_gate() {
+    req=; got=
+    if [ -f $ADB_REQ ] && [ ! -L $ADB_REQ ]; then
+        got=1; read -r req < $ADB_REQ
+        if [ "$req" = 1 ]; then setprop hassmic.adb.until $(($(up) + ADB_SECS)); else setprop hassmic.adb.until 0; fi
+    fi
+    adb_state
+    port=$(getprop service.adb.tcp.port); changed=1
+    # an adbd that stock has not started is left that way; it reads the port if it ever starts
+    run=; [ "$(getprop init.svc.adbd)" = running ] && run="setprop ctl.restart adbd"
+    if [ -n "$ADB" ] && [ "$port" != 5555 ]; then
+        setprop service.adb.tcp.port 5555; $run; changed=0
+        echo "adb over Wi-Fi OPEN: a root shell for everyone on the network, no password ($ADB_WHY)"
+    elif [ -z "$ADB" ] && [ "$port" = 5555 ]; then
+        setprop service.adb.tcp.port 0; $run; changed=0
+        echo "adb over Wi-Fi closed, USB only (uptime $(up)s)"
+    fi
+    # the answer hassmic reads, then the request: gone means answered
+    if [ -n "$ADB" ]; then [ -f $ADB_OPEN ] || : > $ADB_OPEN; else rm -f $ADB_OPEN; fi
+    [ -z "$got" ] || rm -f $ADB_REQ
+    return $changed
+}
+
 # Everything in one iptables-restore call: the chain (declared again = emptied), the jump to it once and first, those
-# of stock's rules that are missing, INPUT policy DROP (stock's too: without it every open port of Amazon's daemons is
-# reachable).  One commit, so the chain is never half built, and two holds of the xtables lock (a listing, the call)
+# of stock's rules that are missing, stock's adb rule out while adb over Wi-Fi is closed, INPUT policy DROP (stock's
+# too: without it every open port of Amazon's daemons is reachable).  One commit, so the chain is never half built, and two holds of the xtables lock (a listing, the call)
 # instead of some thirty: each is a moment for a call of stock's firewall.sh to fail (see keep).  Dot 2, 2026-09-30,
 # beside a loop of appends without -w: 0.95 of those failed per load this way and a load took 0.3 s, against 6.3 and
 # 4.7 s rule by rule (-w waits in steps of 1 s).  A line that is refused fails the whole call and leaves everything
@@ -105,6 +156,7 @@ load_once() {
         echo "$all" | while read -r r; do [ "$r" = "-A OUTPUT -j hassmic_out" ] && echo "-D OUTPUT -j hassmic_out"; done
         echo "-I OUTPUT 1 -j hassmic_out"
         missing $1 "$all"
+        [ -n "$ADB" ] || echo "$all" | while read -r r; do [ "$r" = "-A $ADB_IN" ] && echo "-D $ADB_IN"; done
         echo COMMIT
     )
     echo "$in" | $1-restore -w --noflush
@@ -124,6 +176,7 @@ load_each() {
     while $1 -w -D OUTPUT -j hassmic_out 2>/dev/null; do :; done
     $1 -w -I OUTPUT 1 -j hassmic_out
     missing $1 "$($1 -w -S)" | while read -r r; do $1 -w $r || echo "!! rule not loaded ($1): $r"; done
+    [ -n "$ADB" ] || while $1 -w -D $ADB_IN 2>/dev/null; do :; done
     $1 -w -P INPUT DROP
 }
 load() { load_once $1 2>/dev/null || load_once $1 || { echo "!! $1-restore failed twice: loading rule by rule"; load_each $1; }; }
@@ -135,7 +188,8 @@ apply() {
 
 # What is wrong with the rules, in words, and false; nothing and true when all is as it has to be.  Three listings per
 # table and hardly another process (this runs every 5 s): every rule of the chain and their order, the jump to it
-# first in OUTPUT, INPUT policy DROP, each of stock's rules we need; without ip6tables, IPv6 off on every interface.
+# first in OUTPUT, INPUT policy DROP, each of stock's rules we need, the adb port not admitted unless it is open; without
+# ip6tables, IPv6 off on every interface.
 wrong() {
     for t in iptables ${HAVE6:+ip6tables}; do
         [ "$($t -w -S hassmic_out 2>/dev/null)" = "-N hassmic_out$NL$(rules $t)" ] || { echo "$t: hassmic_out is not as loaded"; return 1; }
@@ -144,6 +198,7 @@ wrong() {
         all=$($t -w -S 2>/dev/null)
         case "$NL$all" in *"$NL-P INPUT DROP$NL"*) ;; *) echo "$t: INPUT policy is not DROP"; return 1;; esac
         m=$(missing $t "$all"); [ -z "$m" ] || { echo "$t: missing:" $m; return 1; }
+        [ -n "$ADB" ] || case "$NL$all$NL" in *"$NL-A $ADB_IN$NL"*) echo "$t: port 5555 (adb) admitted"; return 1;; esac
     done
     [ -n "$HAVE6" ] || for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
         v=; { read v < $f; } 2>/dev/null; [ "$v" = 1 ] || { echo "IPv6 is on (${f%/*})"; return 1; }
@@ -153,17 +208,23 @@ wrong() {
 ota_off() { for s in $UPDATE_SERVICES $UPDATE_ONDEMAND; do stop $s 2>/dev/null; done; }
 
 OTA_ONLY=; [ "$1" = ota-only ] && { OTA_ONLY=1; shift; }
-[ "$1" = check ] && { DNS=$(resolvers); wrong; exit; }
+[ "$1" = check ] && { DNS=$(resolvers); adb_state; wrong; exit; }
+# A request left from before a reboot is not one: the window would open at boot with nobody asking.
+[ "$1" = watch ] && rm -f $ADB_REQ
 
 if [ -n "$OTA_ONLY" ]; then
-    apply; ota_off
+    adb_gate; apply; ota_off
     echo "stock-online: only the updaters are cut off"; iptables -w -S hassmic_out
     # update_engine is started on demand, and "start" undoes a "stop": keep at it.
-    [ "$1" = watch ] && while sleep 5; do [ -n "$HAVE6" ] || v6off; w=$(wrong) || { apply; echo "OTA guard re-applied ($w)"; }; ota_off; done
+    [ "$1" = watch ] && while sleep 5; do
+        [ -n "$HAVE6" ] || v6off
+        if adb_gate; then apply; elif ! w=$(wrong); then apply; echo "OTA guard re-applied ($w)"; fi
+        ota_off
+    done
     exit 0
 fi
 
-[ "$1" = services ] || apply
+[ "$1" = services ] || { adb_gate; apply; }
 # Everything that phones home.  mixer, shmd, ledcontroller, acebuttond, netmgrd, wifisvc stay.
 # perfmonitord stays too: every new micAsr stream makes the mixer connect to it over AIPC and wait up to 20 s for it
 # before opening the mic, so without it each hassmic (re)start was 20 s deaf.  Anything it sends out is dropped by the egress lock.
@@ -175,7 +236,8 @@ echo "egress limited to local addresses$([ -n "$HAVE6" ] || echo ", IPv6 off (no
 # Re-apply as well when the resolvers change (other network, new DHCP lease).
 [ "$1" = watch ] && while sleep 5; do
     [ -n "$HAVE6" ] || v6off                        # an interface that comes up later starts with IPv6 on
-    if [ "$(resolvers)" != "$DNS" ]; then apply; echo "lockdown re-applied, resolvers:" $DNS
+    if adb_gate; then apply                         # says so itself
+    elif [ "$(resolvers)" != "$DNS" ]; then apply; echo "lockdown re-applied, resolvers:" $DNS
     elif ! w=$(wrong); then apply; echo "lockdown re-applied ($w)"; fi
 done
 exit 0

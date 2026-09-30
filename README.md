@@ -85,7 +85,8 @@ Details:
   switch (drops announcements, purple pulse when switched on), "Wake sound" switch (covers all local sounds),
   "Bluetooth pairing" switch, "Bluetooth announcements" switch and their language, "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
   only Sendspin servers paired with the token may play), equalizer (bass, mid, treble, −6 to +6 dB, Amazon's own,
-  applied to everything the Echo plays). Diagnostics, off by default: SoC temperature, CPU usage.
+  applied to everything the Echo plays), "Debug access (adb over Wi-Fi)" switch (see [Configuration](#configuration)).
+  Diagnostics, off by default: SoC temperature, CPU usage.
 - **No cloud**: Alexa client, updater and telemetry are stopped at every boot; a firewall drops everything that is not
   going to a local address. Only hassmic itself may go further, to fetch replies and music from where Home Assistant or
   Music Assistant point it. See [Security](#security).
@@ -138,6 +139,7 @@ NAME="Kitchen Echo"         # device name in Home Assistant
 PROTO=esphome               # or wyoming (port 16700)
 ARGS=""                     # extra options, below
 #MODE=stock-online          # temporary: stock Alexa online without updates, see the model's install page
+#ADB_WIFI=1                 # leave adb over Wi-Fi open, see below
 ```
 
 | `ARGS` option | Effect |
@@ -151,11 +153,26 @@ ARGS=""                     # extra options, below
 | `-a 0` | no arbitration with other Echos (UDP 28930) |
 | `-p <port>` | another port (the firewall only admits inbound TCP 16384–32767) |
 
-adb also works over Wi-Fi: `adb connect <echo-ip>:5555`. The cable is only needed for TWRP.
+**adb over Wi-Fi is closed.** adb on an unlocked Echo is a root shell that asks for no key, so an open port 5555
+would give it to everyone on the network. Over USB adb always works. Over Wi-Fi:
+
+- turn on **Debug access (adb over Wi-Fi)** in Home Assistant (the Echo's device page, Configuration), then
+  `adb connect <echo-ip>:5555`. It closes by itself after 30 minutes, when you turn the switch off, and at every
+  reboot. The switch only works once Home Assistant has set the encryption key (it does so when you add the Echo).
+- or run `scripts/adb-wifi.sh <echo-ip>` on the PC you installed from: the same 30 minutes, proven with the key that
+  signs your updates (`secrets/update.key`) instead of Home Assistant. This is the way in when Home Assistant cannot
+  be: the Echo is not adopted yet, has lost its key, runs `PROTO=wyoming`, or Home Assistant is down. It needs hassmic
+  running (like `scripts/ota-push.sh`).
+- or put `ADB_WIFI=1` into `hassmic.conf`: open for good, until you take the line out (no reboot needed either way).
+  For development, and the only way with `MODE=stock-online` (no hassmic running there).
+
+Nothing else opens it; `boot.log` says when it opens and closes. If hassmic itself does not run, or the update key is
+lost, only USB is left.
 
 ## Troubleshooting
 
-Log: `adb shell tail -30 /data/local/hassmic/boot.log`.
+Log: `adb shell tail -30 /data/local/hassmic/boot.log` (over USB, or over Wi-Fi after the "Debug access" switch or
+`scripts/adb-wifi.sh <echo-ip>`).
 
 **Wake word and button do nothing.** Most likely no connection to Home Assistant; the Echo does not signal that (known
 gap). In the log, `wake: ALEXA type=2` means it heard you, `client connected` / `voice assistant: subscribed` means Home
@@ -169,7 +186,7 @@ address; on a network without internet that means a URL inside your network. The
 (`net: cannot ...`). If not even button sounds play, check the volume.
 
 **"Invalid encryption key" in Home Assistant** (Echo reset, or something else set a key first):
-`adb shell rm /data/local/hassmic/state/api_key`, restart hassmic (or reboot), delete the device in Home Assistant, add it
+`scripts/adb-wifi.sh <echo-ip>`, `adb shell rm /data/local/hassmic/state/api_key`, restart hassmic (or reboot), delete the device in Home Assistant, add it
 again.
 
 Open issues and measurements: [PLAN.md](PLAN.md).
@@ -193,13 +210,19 @@ Open issues and measurements: [PLAN.md](PLAN.md).
   layer.
 - **Inbound**: TCP 16384–32767 only (26053 ESPHome, 16700 Wyoming, 28928 Sendspin, 28929 updates), UDP 16384–32767
   (28930 arbitration between Echos).
+- **adb**: a root shell without authentication (the unlock turns adbd's key check off). Over Wi-Fi it is closed: adbd
+  runs without its network listener and the firewall drops port 5555. Opened only by the "Debug access" switch (30
+  minutes; taken only over the encrypted connection with Home Assistant's key), by `scripts/adb-wifi.sh` (30 minutes;
+  a fresh challenge signed with your update key, so a recorded exchange does not work twice) or by `ADB_WIFI=1` in
+  `hassmic.conf`; while it is open, anyone on the network has root. USB always works: physical access is root access anyway.
+  Without `hassmic.conf` (stock behaviour, or before the install) it is open, as stock leaves it.
 - **Arbitration between Echos**: an Echo takes the network key only from Home Assistant, over its encrypted API link,
   as a call of its own action `esphome.<node>_arbitration_key`; a member hands it over by asking Home Assistant to run
   that action, which needs "Allow the device to perform Home Assistant actions". So only devices you adopted into Home
   Assistant and allowed to act take part; the key travels encrypted to the receiving Echo, so it is not readable in
   Home Assistant's traces or logbook. Rounds are authenticated with the key and cannot be replayed. The keys are in
   `state/arb_key` and `state/arbitration`.
-- **Updates**: only bundles signed with your `secrets/update.key` are installed.
+- **Updates**: only bundles signed with your `secrets/update.key` are installed. The same key opens adb over Wi-Fi.
 - **Bluetooth**: keys in `state/ble_bonds` (proxy) and `state/bt_keys` (speaker), both under `/data/local/hassmic/`.
 
 ## Development

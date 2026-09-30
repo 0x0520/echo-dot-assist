@@ -6,6 +6,7 @@
  *   otatool verify  PUBLIC BUNDLE SIG                   exit 0 if the signature is good; prints the version
  *   otatool install PUBLIC BUNDLE SIG DESTDIR           verify, then unpack into DESTDIR (must not exist yet)
  *   otatool push    HOST PORT BUNDLE SIG                send to a running hassmic, print its answer (exit 0 on "OK ...")
+ *   otatool adb     HOST PORT SECRET                    open adb over Wi-Fi on it for 30 min (sign its challenge)
  *
  * The device runs "install" as root from the read-only system partition, with the public key from there, so whatever
  * downloaded the bundle (an unprivileged, network-facing process) cannot get anything installed that the owner of
@@ -115,19 +116,53 @@ static int verify_install(const char *pubpath, const char *bundle, const char *s
     return 0;
 }
 
+static int connect_to(const char *host, const char *port)
+{
+    struct addrinfo hints = { 0 }, *ai;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port, &hints, &ai)) { fprintf(stderr, "otatool: cannot resolve %s\n", host); return -1; }
+    int fd = socket(ai->ai_family, SOCK_STREAM, 0);
+    if (fd < 0 || connect(fd, ai->ai_addr, ai->ai_addrlen)) { fprintf(stderr, "otatool: cannot connect to %s:%s: %s\n", host, port, strerror(errno)); return -1; }
+    return fd;
+}
+
+static size_t read_line(int fd, char *line, size_t cap)
+{
+    size_t n = 0;
+    while (n < cap - 1 && read(fd, line + n, 1) == 1 && line[n] != '\n') n++;
+    line[n] = 0;
+    return n;
+}
+
 static int push(const char *host, const char *port, const char *bundle, const char *sigpath)
 {
-    size_t bl, sl; uint8_t *b = slurp(bundle, &bl), *sig = slurp(sigpath, &sl); struct addrinfo hints = { 0 }, *ai; char line[300]; size_t n = 0;
+    size_t bl, sl; uint8_t *b = slurp(bundle, &bl), *sig = slurp(sigpath, &sl); char line[300];
     if (!b || !sig || sl != 64) return 1;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, port, &hints, &ai)) { fprintf(stderr, "otatool: cannot resolve %s\n", host); return 1; }
-    int fd = socket(ai->ai_family, SOCK_STREAM, 0);
-    if (fd < 0 || connect(fd, ai->ai_addr, ai->ai_addrlen)) { fprintf(stderr, "otatool: cannot connect to %s:%s: %s\n", host, port, strerror(errno)); return 1; }
+    int fd = connect_to(host, port);
+    if (fd < 0) return 1;
     int hl = snprintf(line, sizeof line, "HMOTA-PUSH1 %zu\n", bl);
     if (write(fd, line, hl) != hl || write(fd, sig, 64) != 64) return 1;
     for (size_t off = 0; off < bl; ) { ssize_t w = write(fd, b + off, bl - off); if (w <= 0) { fprintf(stderr, "otatool: upload failed\n"); return 1; } off += w; }
-    while (n < sizeof line - 1 && read(fd, line + n, 1) == 1 && line[n] != '\n') n++;
-    line[n] = 0; close(fd);
+    size_t n = read_line(fd, line, sizeof line); close(fd);
+    printf("%s\n", n ? line : "FAILED no answer");
+    return strncmp(line, "OK", 2) != 0;
+}
+
+/* The protocol is described in src/hassmic/ota.c. */
+static int adb(const char *host, const char *port, const char *secret)
+{
+    size_t skl; uint8_t *sk = slurp(secret, &skl), msg[11 + 32], sig[64]; char line[300]; unsigned x;
+    if (!sk || skl != 64) { fprintf(stderr, "otatool: bad secret key\n"); return 1; }
+    int fd = connect_to(host, port);
+    if (fd < 0 || write(fd, "HMOTA-ADB1\n", 11) != 11) return 1;
+    if (!read_line(fd, line, sizeof line) || strncmp(line, "NONCE ", 6) || strlen(line) != 6 + 64) {
+        printf("%s\n", line[0] ? line : "FAILED no challenge (an older hassmic?)"); return 1;
+    }
+    memcpy(msg, "HMOTA-ADB1\n", 11);
+    for (int i = 0; i < 32; i++) { if (sscanf(line + 6 + 2 * i, "%2x", &x) != 1) return 1; msg[11 + i] = x; }
+    crypto_eddsa_sign(sig, sk, msg, sizeof msg);
+    if (write(fd, sig, 64) != 64) return 1;
+    size_t n = read_line(fd, line, sizeof line); close(fd);
     printf("%s\n", n ? line : "FAILED no answer");
     return strncmp(line, "OK", 2) != 0;
 }
@@ -139,6 +174,7 @@ int main(int argc, char **argv)
     if (argc == 5 && !strcmp(argv[1], "verify")) return verify_install(argv[2], argv[3], argv[4], NULL);
     if (argc == 6 && !strcmp(argv[1], "push")) return push(argv[2], argv[3], argv[4], argv[5]);
     if (argc == 6 && !strcmp(argv[1], "install")) return verify_install(argv[2], argv[3], argv[4], argv[5]);
-    fprintf(stderr, "usage: otatool keygen SECRET PUBLIC | push HOST PORT BUNDLE SIG | pack SECRET VERSION OUT FILE[:MODE]... | verify PUBLIC BUNDLE SIG | install PUBLIC BUNDLE SIG DESTDIR\n");
+    if (argc == 5 && !strcmp(argv[1], "adb")) return adb(argv[2], argv[3], argv[4]);
+    fprintf(stderr, "usage: otatool keygen SECRET PUBLIC | push HOST PORT BUNDLE SIG | adb HOST PORT SECRET | pack SECRET VERSION OUT FILE[:MODE]... | verify PUBLIC BUNDLE SIG | install PUBLIC BUNDLE SIG DESTDIR\n");
     return 2;
 }

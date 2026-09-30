@@ -215,7 +215,9 @@ Echo boots silent and dark, locks itself down, and is a satellite about a minute
 Home Assistant must reach TCP 26053 on the Echo; the Echo must reach Home Assistant's port 8123. The log is
 `/data/local/hassmic/boot.log`.
 
-**Back up `secrets/update.key`**, created by the installer: it signs your updates. The USB wires can come off now.
+**Back up `secrets/update.key`**, created by the installer: it signs your updates, and it is how you get adb over Wi-Fi
+without Home Assistant (`scripts/adb-wifi.sh <echo-ip>`: 30 minutes; adb over Wi-Fi is closed otherwise, see the
+README's Configuration). The USB wires can come off now.
 
 ### 6. Optional: Music Assistant
 

@@ -651,4 +651,6 @@ Run in this order. Each step says what it proves.
       captures of that entry it finds the sentences (4.3..7.2 s, 4.5..8.7 s) and gives the hand-measured numbers
       (micAsr rest 2.1 dB without, 6.1 dB with listening mode). Run against the Dot 3 and the Echo 2 (mixcap from the
       installed update's directory); the Echo 2 was muted: it says "digital silence" instead of numbers
+- [x] Pryon's two fingerprint warnings ("Bitmask frame indices", "Invalid bitmask frame indices", see the spoken test
+      above) no longer go to boot.log (2026-09-30): `on_log` in `wake_pryon.c` drops them. Other Pryon warnings still show
 

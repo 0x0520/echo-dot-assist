@@ -2,7 +2,7 @@
 # The updatable part of the boot logic; started by /system/hassmic/boot.sh (root, su domain), which picks the factory copy
 # or a signed update and exports HASSMIC_DIR (where this script and its neighbours are) and HASSMIC_SYS.
 #   main.sh firewall    egress lock + re-assert loop, and the root side of push updates; started at "on boot"
-#   main.sh satellite   Alexa off, then keep hassmic running
+#   main.sh satellite   Alexa off, then keep hassmic running, and check that the firewall service keeps its rules right
 # Model: device.conf next to this script (devices/<codename>/device.conf: service names, the daemon's user).
 # Config: /data/local/hassmic/hassmic.conf (shell syntax).  No config = do nothing = stock behaviour.
 #   NAME="Echo Dot"             optional, default DEFAULT_NAME from device.conf
@@ -43,10 +43,29 @@ rotate_log() {
     cp $LOG $LOG.1 && : > $LOG && echo "== log rotated, previous part in $LOG.1"
 }
 
+# The firewall rules belong to the firewall service (hassmic_fw: "lockdown.sh watch" loads them and checks them every
+# 5 s).  That service can fail without anyone noticing: on the Echo 2 it hung at its start and there was no lock for the
+# whole boot (2026-09-30, see the scan below).  So this service looks too, every 10 s, with the same check ("lockdown.sh
+# check": every rule of the chain, the chain first in OUTPUT, INPUT policy DROP, each of stock's rules the satellite
+# needs, IPv6 off where it cannot be filtered): wrong twice in a row means the watcher is not doing its job.  Then say so, stop that service (two runs building the chain at once interleave their
+# rules), load the rules from here, and start the service again.
+fwmiss=0
+fwcheck() {
+    if fwwrong=$(sh $D/lockdown.sh check); then fwmiss=0; return; fi
+    fwmiss=$((fwmiss + 1))
+    [ $fwmiss -ge 2 ] || return
+    echo "== firewall rules wrong on two looks 10 s apart ($fwwrong; uptime $(cut -d. -f1 /proc/uptime)s): the firewall service is not doing its job; rules loaded from here, service restarted"
+    stop hassmic_fw
+    sh $D/lockdown.sh > /dev/null
+    start hassmic_fw
+    fwmiss=0
+}
+
 netwatch() {
     miss=0
     while :; do
         rotate_log
+        fwcheck
         if ifconfig $WLAN 2>/dev/null | grep -q "inet addr"; then
             miss=0
             [ "$(getprop init.svc.$WIFI_SERVICE)" = running ] && { sleep 5; stop $WIFI_SERVICE; echo "netwatch: link up, $WIFI_SERVICE stopped"; }

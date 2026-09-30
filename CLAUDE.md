@@ -112,13 +112,18 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 
 Boot integration (`scripts/system/`, rc in `devices/<codename>/`): `hassmic.rc` (init) starts `boot.sh` (fixed, on /system), which picks the factory
 copy or a verified update and runs `main.sh` (updatable): `main.sh firewall` (egress lock re-asserted in a loop, root side
-of push updates) and `main.sh satellite` (stops Alexa/updater/telemetry, keeps hassmic running). No `hassmic.conf` =
+of push updates) and `main.sh satellite` (stops Alexa/updater/telemetry, keeps hassmic running, and every 10 s runs
+`lockdown.sh check`, as the firewall service does every 5 s: every rule of `hassmic_out`, the chain first in OUTPUT, INPUT
+policy DROP, and the stock rules the satellite needs (`keep` in `lockdown.sh`; stock `firewall.sh` can lose any of its
+rules at boot); wrong twice in a row, it loads the rules itself and restarts that service; loading is one
+`iptables-restore -w --noflush` call, rule by rule only as fallback). No `hassmic.conf` =
 stock behaviour. `scripts/device/` holds on-device helpers (`lockdown.sh` firewall, `alexa-off/on.sh`, `wifi-join.sh`).
 
 Firewall invariant: Amazon's daemons may only reach local addresses; hassmic itself may reach any address (it fetches
 TTS/media URLs from HA/MA). `otad`/`ace_otad` (firmware updates) must never get out. Inbound TCP and UDP are only admitted on
 16384–32767, so every listening port (26053 ESPHome, 16700 Wyoming, 28928 Sendspin, 28929 OTA, UDP 28930 arbitration)
-must stay in that range.
+must stay in that range. A stock rule hassmic comes to depend on (INPUT or OUTPUT) goes into `keep`, worded as `iptables -S`
+prints it.
 
 `tools/` is PC-side reverse-engineering and firmware tooling (`payload_dump.py`, Thumb disassembly helpers,
 `davs-fetch.py` for extra wake word models).

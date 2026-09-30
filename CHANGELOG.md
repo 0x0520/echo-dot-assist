@@ -19,6 +19,19 @@ What changed for people using the Echo, newest first. Details and measurements a
   its start (a quirk of the Echo 2's system tools), and then the rule that keeps Amazon's software from reaching the
   internet was missing until the next boot, and push updates were not installed. Alexa and the firmware updaters
   were stopped all the same. Fixed; update the Echo 2 (`scripts/ota-push.sh`).
+- **The firewall is now watched from a second place.** Should the firewall service ever fail again, the Echo notices
+  within 20 seconds, puts the rule back itself, restarts the service and writes it into its log.
+- **An Echo could be "unavailable" in Home Assistant after a boot while everything on it was running.** The Echo
+  relies on a handful of Amazon's own firewall rules: the one that lets its traffic out, the ones that let Home
+  Assistant, Music Assistant and answers in. Amazon's firewall script can lose any of its rules at boot, and nothing
+  noticed: with the wrong one missing the Echo was cut off until the next boot
+  ([issue #1](https://github.com/Gamer92000/echo-dot-assist/issues/1)). The Echo now checks all of its firewall
+  every 5 seconds, not only that its own rule comes first: each of its own rules and their order, each of Amazon's
+  rules it needs, that everything else inbound is still refused, and on models that cannot filter IPv6 that IPv6 is
+  still off. What is missing or changed is put back within seconds, with a log line naming it. The Echo also loads
+  its rules in one step now instead of some thirty: there is no moment in which they are half there, and it gets in
+  the way of Amazon's script far less (about seven times fewer of its rules lost). Update with
+  `scripts/ota-push.sh`.
 - **Several Echos: better pick of the one that answers.** The Echos now compare the measurement Amazon's audio
   processing itself takes of each wake word (the one Alexa's cloud used), instead of one taken from the finished
   microphone stream. Echos on an older version still take part.

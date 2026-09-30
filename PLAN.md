@@ -612,7 +612,7 @@ Run in this order. Each step says what it proves.
       (radar's first push update with the new build: Pryon metadata format the same as donut's under qemu, mixer takes
       listening mode). The factory copy in /system/hassmic of an installed Echo keeps the old scan until it is
       installed again; it only runs when no update is installed or one failed three times.
-      Not done: a check at the end of boot that the chain exists
+      Not done: a check at the end of boot that the chain exists (done the same day, next entries)
 - [x] First spoken test of the three entries above (2026-09-30, user beside the Echo 2 "Küchen Echo", the Dot 3 further
       off, both on the new build, wake word "Echo", two commands):
       | | Echo 2 (radar) | Dot 3 (donut) |
@@ -653,4 +653,65 @@ Run in this order. Each step says what it proves.
       installed update's directory); the Echo 2 was muted: it says "digital silence" instead of numbers
 - [x] Pryon's two fingerprint warnings ("Bitmask frame indices", "Invalid bitmask frame indices", see the spoken test
       above) no longer go to boot.log (2026-09-30): `on_log` in `wake_pryon.c` drops them. Other Pryon warnings still show
-
+- [x] Firewall check from the satellite service (2026-09-30): its 10 s loop in `main.sh` looks whether `hassmic_out` is
+      first in OUTPUT; missing on two looks in a row it logs "== no egress lock ..", stops `hassmic_fw`, applies
+      `lockdown.sh` once itself and starts the service again. On the Dot 3: firewall service stopped and the chain
+      removed by hand -> lock back after 19 s (14 rules, first in OUTPUT), service running, one log line; a jump
+      removed with the watcher running comes back through the watcher within 7 s without the check firing; no alarm in
+      normal running on the Dot 3 and the Echo 2. Not covered: MODE=stock-online (no satellite service there; the
+      firewall service's own scan no longer hangs), and the seconds before the satellite service starts at boot
+- [x] Firewall check covers every rule (2026-09-30, issue #1 comment, Dot 3: stock's `-A OUTPUT -o wlan0 -j ACCEPT`
+      missing after one boot; `hassmic_out` was first and only RETURNs, policy DROP, so nothing left the Echo: HA
+      "unavailable", hassmic running, adb still up through the `--sport 5555` rule. Both checks only looked at the
+      jump). `lockdown.sh`: the chain is one list (`rules`, worded as `iptables -S` prints it), loaded from it and
+      compared with it. `keep` is the second list: stock's rules the satellite needs, same wording. OUTPUT: `-o wlan0`
+      and `-o lo` ACCEPT. INPUT: `-i lo`; on wlan0 RELATED,ESTABLISHED tcp and udp, 16384:32767 udp and tcp, mDNS
+      5353 (avahi announces the Echo to HA); icmp RELATED,ESTABLISHED; adb 5555 on stock's own condition
+      (`persist.sys.usb.config` has adb). ip6tables: the lo, wlan0-out and RELATED rules, icmpv6, DHCPv6 546 (hassmic
+      listens on IPv4 only but connects out over either). `load` appends those that are missing and sets INPUT policy
+      DROP after them. `wrong` names what is off: a rule of the chain missing, changed, added or out of order; the
+      jump not first in OUTPUT; INPUT policy not DROP; which of the kept rules are missing; without ip6tables, an
+      interface with IPv6 on. The watcher applies again on any of these and logs which; `lockdown.sh check` is the
+      same check without changing anything, and `fwcheck` in `main.sh` calls it. MODE=stock-online: same check, its
+      own two-rule chain.
+      How a stock rule gets lost: stock `firewall.sh` calls iptables without `-w`. Dot 3, two writers side by side:
+      2 of 100 appends without `-w` failed with "Another app is currently holding the xtables lock" and were simply
+      not there (the 100 with `-w`: all there). At `sys.boot_completed` its run takes 4.4 s on the Dot 2 (logcat
+      `Firewall`), so a look of our watcher always falls into it, and the rebuild that follows is such a second
+      writer. Seen on the first boot with this build (Dot 2): stock's `-A INPUT -i br0 -p udp --dport 1900` was
+      missing afterwards (127 of its 128 rules there). Not proven to be what happened on the reporter's Echo.
+      Checked: `check` on the Dot 3 (with ip6tables), the Echo 2 and the Dot 2 against the rules of a normal boot:
+      nothing wrong, 0.23 / 0.16 / 0.15 s a look (cutting the OUTPUT rules out of the whole listing with `${x#*..}`
+      took mksh 0.9 s: a listing of its own instead). On the Dot 2 (USB), by hand: each of the nine kept rules
+      removed, INPUT policy ACCEPT, IPv6 on for p2p0, and earlier a chain rule removed, one added, DROP moved up: each
+      named, exit 1. The new watcher in place of the installed one: two INPUT rules, the policy, the way out, the
+      chain's DROP each back within 7 s with its log line, no duplicates. `fwcheck` with no watcher running: second
+      look logs "== firewall rules wrong .. (iptables: missing: -A INPUT -i wlan0 -p tcp -m tcp --dport 16384:32767
+      -j ACCEPT ..)", rule back, service started. Dot 3: rules loaded once by hand with the new script, then ip6tables
+      rules removed (icmpv6, wlan0 out, 546, a chain rule, policy): named, back after the next load. `-S` wording of
+      the stock-online rule read from a scratch chain (`--uid-owner 5008`).
+      Pushed to the Dot 2 (0.3.0+65cb60d-dirty) and rebooted: the rules go up at "on boot" with INPUT already DROP,
+      Wi-Fi and the address come up behind them, stock's run falls into our first load ("re-applied .. not first in
+      OUTPUT" when its `ahe_out` went in front, then the resolvers), HA connected, `check` clean at 87 s. Four of
+      the kept rules are there twice on that boot (lo in and out, icmp, 5555: ours went in before stock reached
+      them); harmless.
+      Loading in one call (same day): `load_once` puts the whole change into one `iptables-restore -w --noflush`
+      (chain declared again = emptied, its rules, the old jumps out and one in at 1, the missing kept rules, `:INPUT
+      DROP`), after one listing; `load` tries it twice, then falls back to the rule-by-rule loader (`load_each`), which
+      still loads what it can when the kernel refuses a rule. Here `iptables-restore` is the iptables binary, takes the
+      xtables lock and knows `-w` (all three models; `ip6tables-restore` on the Dot 3). A refused line commits nothing
+      (rc 2). The input has to be complete before the call: with the listing inside the pipe the restore held the lock
+      while the listing waited for it, for ever (first try, Dot 2). Dot 2, beside a loop of stock-style appends
+      (no `-w`): 57 of them failed during 60 loads of 0.3 s (0.95 a load); rule by rule 38 during 6 loads of 4.7 s
+      (6.3 a load; `-w` waits in 1 s steps, and once a `-w` append of ours failed as well). So about seven times
+      fewer of stock's rules lost per rebuild, not none, and the chain is never half built.
+      Checked on the Dot 2: plain load 0.7 s for the whole script; second jump + another rule in front + kept rules
+      gone + policy ACCEPT + chain changed -> one jump, first, check clean; no restore tool (name changed in a copy)
+      -> "!! iptables-restore failed twice: loading rule by rule", check clean; a group that does not exist -> restore
+      refuses, rule by rule loads the rest with "!! hassmic limited to local addresses", DROP last. Dot 3: both
+      tables loaded by hand through the restore tools, ip6tables rules removed and back. Pushed to the Dot 2 and
+      rebooted: no fallback line, HA connected, `check` clean at 92 s, every one of stock's 128 rules there on this
+      boot; seven kept rules twice (our first load fell into stock's 4.6 s run).
+      Not done: the Dot 3 and the Echo 2 still run the old build (only the Dot 2 was updated); the stock-online
+      watcher was not run. Not covered: stock's other rules (what Alexa itself needs in stock-online: Spotify,
+      multi-room, Matter ports) can still be lost when a rebuild falls into stock's run, about one per rebuild

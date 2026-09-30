@@ -124,6 +124,7 @@ static void set_pairing(int on)
     pair_until = on ? ms() + A2DP_PAIR_SECONDS * 1000LL : 0;
     if (atomic_exchange(&pairing_on, on) != on) {
         fprintf(stderr, "a2dp: pairing %s\n", on ? "on" : "off");
+        core_bt_pairing(on);
         if (notify) notify();
     }
 }

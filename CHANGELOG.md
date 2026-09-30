@@ -4,6 +4,9 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-09-30
 
+- **The light ring shows when the Echo is ready to pair.** While the "Bluetooth pairing" switch is on, the ring runs
+  Amazon's blue chaser, the one the stock Echo shows while it searches for devices. It stops when a phone has paired,
+  when the two minutes are up or when you switch it off.
 - **Updates now ask you to try them, then renew the Echo's fallback copy.** The copy on the system partition, which the
   Echo falls back to when an update does not come up, was the one from the day it was installed; changing it took USB
   and a trip through TWRP. `scripts/ota-push.sh` now pushes the update as before, asks you to try it, and when you say

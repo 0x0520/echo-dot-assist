@@ -372,7 +372,8 @@ Run in this order. Each step says what it proves.
 - [x] Bluetooth speaker (2026-09-24, `a2dp.c` + `sbc.c`): A2DP sink on BR/EDR beside the LE proxy, same controller thread
       (`hci.h`: a2dp.c gets the non-LE events and ACL links, sends its commands from `upkeep()`). BR/EDR buffers apart
       from LE: 8 x 1021 (READ_BUFFER). Class 0x240414, EIR with name + AudioSink UUID, SSP NoInputNoOutput / PIN 0000,
-      both only inside the pairing window (HA switch "Bluetooth pairing", 120 s, closes after one pairing); page scan
+      both only inside the pairing window (HA switch "Bluetooth pairing", 120 s, closes after one pairing; the ring runs
+      `scone-setup` meanwhile: stock "discovery-in-progress", same frames as the unlisted `btpair-setup`); page scan
       only once a key exists. SDP: one A2DP sink 1.3 record. AVDTP: one SBC SEP, 44.1/48 kHz, bitpool 2..53, delay
       reporting (reports 280 ms). SBC decoder written from the spec (float synthesis); checked against libsbc's `sbcdec`
       in every mode sbcenc offers (`tests/unit/sbc_ref.sh`, part of `make unit`): ~80 dB, <= 9 LSB apart, which is

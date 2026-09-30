@@ -83,7 +83,7 @@ Details:
   -26; the Echo adjusts its gain to it), "Noise reduction" (off by default; low, medium, high: RNNoise on what the voice
   assistant gets takes the background down by up to 6, 9 or 12 dB), mute switch, "Do not disturb"
   switch (drops announcements, purple pulse when switched on), "Wake sound" switch (covers all local sounds),
-  "Bluetooth pairing" switch, "Bluetooth announcements" switch and their language, "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
+  "Bluetooth pairing" switch (blue chaser on the ring while it is on), "Bluetooth announcements" switch and their language, "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
   only Sendspin servers paired with the token may play), equalizer (bass, mid, treble, −6 to +6 dB, Amazon's own,
   applied to everything the Echo plays), "Debug access (adb over Wi-Fi)" switch (see [Configuration](#configuration)).
   Diagnostics, off by default: SoC temperature, CPU usage.

@@ -335,6 +335,16 @@ void core_bt_device(const char *name, int on)
     pthread_mutex_unlock(&core_lock);
 }
 
+/* While the Echo is discoverable the ring runs Amazon's blue device search chaser: `scone-setup` (stock's
+ * "discovery-in-progress"), frame for frame the same as `btpair-setup` but listed in layer_config_common.json (layer 4,
+ * below listening/thinking/talking, so a voice command still shows on top).  It loops until unset. */
+void core_bt_pairing(int on)
+{
+    pthread_mutex_lock(&core_lock);
+    led(on ? "-s" : "-u", "scone-setup");
+    pthread_mutex_unlock(&core_lock);
+}
+
 /* Do not disturb, like stock: announcements from Home Assistant are dropped, while the wake word, replies, timers, music
  * and Bluetooth connection messages carry on.  Switching it on shows Amazon's single purple pulse (do_not_disturb: 2 s
  * fade in and out, layer 2, nothing after its `loop` marker); switching it off shows nothing. */
@@ -1042,6 +1052,7 @@ int main(int argc, char **argv)
     if (print_mdns) { proto->print_mdns(); return 0; }
     signal(SIGPIPE, SIG_IGN); signal(SIGCHLD, SIG_IGN); signal(SIGUSR1, on_usr1); signal(SIGUSR2, on_usr2); signal(SIGHUP, on_hup); signal(SIGTTIN, on_ttin);
     if (access("/system/bin/ledctrl", X_OK)) use_led = 0;
+    led("-u", "scone-setup");           /* a restart inside the pairing window: the window is gone, its chaser would loop on */
 
     if (cap_open() < 0) { fprintf(stderr, "cannot open capture (is PuffinApp still running?)\n"); return 1; }
     pthread_mutex_lock(&core_lock); listening(0); pthread_mutex_unlock(&core_lock);

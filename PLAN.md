@@ -824,3 +824,23 @@ Run in this order. Each step says what it proves.
       off, file `0 60`; auto on → 74, 51, 26, 13 over 4 s (engine restarts from 98 and ramps); fixed 40, then
       `ledctrl -a on` as at boot (13) and hassmic killed: 40 again once HA reconnected. Echo Dot 2 over USB: 40 lx,
       auto 9, same sequence. Echo 2: builds, not tried. Left at auto on all Echos.
+- [ ] Sound detection (Alexa Guard) as Home Assistant events (found 2026-10-01, nothing tried yet). The firmware ships
+      Amazon's acoustic event detector on all three models (`/system/local/models/AED/` + `/system/lib/libAED.so` on
+      donut, radar and biscuit): 12 sounds with their thresholds in `AED.json` (`score_detection_threshold`, near miss,
+      `energy_threshold` 108 for humanPresence, 82 for the rest): humanPresence 0.79, smokeAlarm 0.825, glassBreak 0.80,
+      dogBark 0.991, babyCry 0.955, snore 0.964, cough 0.982, waterSounds 0.901, beepingAppliance 0.953, smokeSiren
+      0.825, carbonMonoxideSiren 0.825, runningWater 0.982. The model is a Pryon model set like the wake word
+      (`pryon.manifest` -> `pryon.config`: LFBE front end, 16 kHz, 25/10 ms frames; `model_gcmvn.cpu.v1.q.mlp`, 830 KB),
+      so `libpryon.so` probably runs it through the API already reversed for `wake_pryon.c` (`docs/re-pryon.md`) —
+      unverified. `libAED.so` is only the AVS-SDK wrapper (`alexaClientSDK::aed::AbstractAcousticEventDetector`, reads an
+      SDS stream, notifies observers); PuffinApp creates a `PryonAcousticEventManager` (strings `AED_Model_Path`,
+      `AcousticEventDetected`, `ACOUSTICEVENTDETECTION_NEAR_MISS`, `aed_ecids`). Also `/system/vendor/lib/libaed.so`
+      (not looked at) and LED animations `aed_enabled`/`aed_detected`. Next: find in PuffinApp.asm how
+      `PryonAcousticEventManager` creates the decoder (model set, class-to-name mapping, which mic stream: micAsr like the
+      wake word?), then try the model with `pryon_test` under qemu (`tools/qrun.sh`) on test audio (a smoke alarm beep, a
+      dog bark). In HA: ESPHome event entity (or binary sensors) per sound, a switch to turn detection on; CPU cost
+      beside the wake word to be measured on the Echo.
+- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): the Echo as a Bluetooth
+      *source* to a speaker (a2dp.c is sink only); Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
+      way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
+      Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

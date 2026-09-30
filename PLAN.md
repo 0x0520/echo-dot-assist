@@ -729,4 +729,18 @@ Run in this order. Each step says what it proves.
       counting, with a log line. Builds for donut/radar/biscuit, `fake_ha_esphome.py` all good.
       Pushed to the Echo 2 with the latch still on: "mic mute button: 1" and the mics-off sound at start, before HA
       connected (the old build said 0 there); the user then pressed the button both ways: ring and HA follow.
-      Not done: a biscuit (path unconfirmed there, not pushed)
+      Echo Dot 2 (biscuit) the same day: pushed 0.3.0+58b9b63 (its boot.log after the restart and after a reboot:
+      from `ota/current`, HA connected, Bluetooth controller and A2DP up, Sendspin session, `tries` back to 0 after a
+      minute). The file is there, world-readable, 0 with the mics on, no "counting presses" line. The reboot was not
+      planned: `cat` on every file in `amz_privacy/` reached `power_button_state`, whose show function takes the
+      kernel down (`gpiod_get_raw_value` on a NULL gpio from `get_power_button_state`, watchdog reset, last_kmsg);
+      only `state` may be read. Rest of `board.c`/`device.conf` checked there: event1 `mtk-kpd` (KEY_HELP, KEY_MUTE,
+      volume down), event2 `keys` (volume ±), `mtktscpu` = thermal_zone1, 30 `volume_step` animations, product
+      `biscuit_puffin`, slot `_a`, hassmic as puffin with all ten groups, `probe.sh`: the five stock files identical
+      to the pinned firmware (its `head -c` does not exist in the image's toybox, on donut neither: now `dd`).
+      Live: `kill -USR1` (simulated wake word) → arbitration "this Echo answers", listening, wake sound, HA answers
+      `stt-no-text-recognized`, idle; `kill -USR2` (action button) the same with the touch sound. micAsr dump, 28 s
+      in a quiet room: -73 dBFS, -45 dBFS in the second of the wake sound (speaker and mics work, the canceller
+      leaves that much).
+      Not done on the biscuit: the button pressed with this build (latch 1, red ring, HA), a spoken wake word and
+      command, a phone on A2DP

@@ -8,7 +8,7 @@ sec services;   getprop | grep init.svc
 sec props;      getprop | grep -iE "puffin|audio|mixer|oobe|wha|ota"
 sec processes;  ps | grep -iE "mixer|puffin|shmd|ledcontroller|uxeventd|dacd|otad|BTSink|quantum"
 sec mixer dirs; ls -la /data/mixer_streams /data/mixer_meta 2>&1
-sec streams;    for f in /data/mixer_streams/*; do echo "--- $f"; cat "$f" 2>/dev/null | head -c 600; echo; done
+sec streams;    for f in /data/mixer_streams/*; do echo "--- $f"; dd if="$f" bs=600 count=1 2>/dev/null; echo; done    # the image's head has no -c
 sec alsa;       cat /proc/asound/cards /proc/asound/pcm 2>&1
 sec volume;     for p in MainVolume TTSVolume Mute AllowMic SilenceMic LPMState; do echo "$p = $(audio_manager_get_prop $p 2>&1 | tail -1)"; done
 sec privacy;    cat /sys/devices/platform/gpio-privacy/state 2>&1

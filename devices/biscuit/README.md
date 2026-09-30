@@ -1,8 +1,8 @@
 # Echo Dot 2nd gen, 2016 (`biscuit`)
 
 Model RS03QR. **Tested on a real Echo Dot 2** (2026-09-28): install through `scripts/setup.sh biscuit`. Identity, build
-config and the audio-stack facts below are checked against the pinned firmware; on-device values not looked at yet are
-still marked "verify" in `board.c` and `device.conf`. Porting guide: [devices/README.md](../README.md).
+config and the audio-stack facts below are checked against the pinned firmware, the values in `board.c` and
+`device.conf` on the running Echo (2026-09-30). Porting guide: [devices/README.md](../README.md).
 
 ## What the firmware says (checked 2026-09-28)
 
@@ -23,6 +23,11 @@ no `brhgptpl`/NAND layout like `crumpet`). Against `donut`'s NS65741 image:
 | Bluetooth (on the Echo, 2026-09-28) | `/dev/stpbt` (MediaTek WMT, H4, `bluetooth:net_bt_stack 0660`), powered on by opening it, like donut. The chip refuses LE Set Event Mask with the 4.2 bits (P-256, DHKey: status 0x20); hassmic retries with the 4.0 set, then: ACL 4 x 1021 (no separate LE buffers), legacy pairing only, A2DP sink and scanning up |
 | IPv6 (on the Echo) | no `ip6tables` in the image: `lockdown.sh` switches IPv6 off instead of filtering it |
 | `ip` (on the Echo) | missing; toybox `ifconfig` is there |
+| input devices (on the Echo, 2026-09-30) | event1 `mtk-kpd`: KEY_HELP (action), KEY_MUTE, KEY_VOLUMEDOWN; event2 `keys`: volume ±; event0 `ACCDET` (jack) |
+| thermal zones (on the Echo) | `mtktswmt`, `mtktscpu` (zone 1, the one hassmic reads), `mtkts1`, `mtkts5`, `mtkts3`, `mtkts4`, `mtktspmic`, `tmp103` |
+| mute latch (on the Echo) | `/sys/devices/soc/10010000.keypad/amz_privacy/state`, world-readable, 0 with the mics on. **Do not `cat` the other files there**: reading `power_button_state` crashes the kernel (NULL gpio in `get_power_button_state`), the watchdog reboots the Echo |
+| puffin service (on the Echo) | `/init.project.rc`: user `puffin`, groups `aipc davs dbus inet ace_kvstore ace_group drmrpc system audio keystore cache shell ace_maplite` |
+| A/B (on the Echo) | `ro.boot.slot_suffix=_a`; no `bcbtool` in the running image |
 
 Hardware: MediaTek **MT8163**, quad Cortex-A53 @ 1.5 GHz, 512 MB RAM (64-bit kernel, 32-bit userspace), micro-USB with
 data. Reference project: [EchoMuse](https://github.com/wilbowes/EchoMuse) (same idea for this model, but it replaces the
@@ -54,15 +59,16 @@ firmware flash: it gives root adb, as on donut.
 1. Keep it offline (no Wi-Fi, no registration) until the pinned firmware is flashed.
 2. Micro-USB into the PC; run the unlock following the XDA thread. No soldering anywhere.
 3. After unlock and the pinned flash: `adb shell getprop` — check `PRODUCT`/`FIRMWARE_ID` against `device.conf`, then
-   work the "verify" marks: `getevent -il` (keypad, mute latch), `/sys/class/thermal/thermal_zone*/type`,
-   `/proc/idme/bt_mac_addr`, the puffin service's user and groups in its rc file, `bcbtool get_active` (A/B).
+   compare with the table above: `getevent -il` (keypad), `/sys/class/thermal/thermal_zone*/type`,
+   `/proc/idme/bt_mac_addr`, the puffin service's user and groups in `/init.project.rc`, `getprop ro.boot.slot_suffix`.
 4. Try it without installing: `scripts/probe.sh`, `scripts/deploy.sh`, `adb shell sh /data/local/hassmic/run.sh`.
 
 ## Open questions
 
-- Keypad/mute-latch input nodes, thermal zone, volume steps (marked in `board.c`). Mute latch: `board.c` names
-  `/sys/devices/soc/10010000.keypad/amz_privacy/state` as on radar (from the firmware's init rc); `cat` it with the
-  mics on and off to confirm. If the file is missing, the log says so and key presses are counted.
+- Mute latch: the file is there and reads 0 with the mics on (2026-09-30); not yet read with the button lit, nor the
+  ring and Home Assistant watched over a press with the build that reads it.
+- A spoken wake word and a spoken command with the current build (a simulated wake word runs the pipeline through Home
+  Assistant; the microphone stream is alive and hears the Echo's own wake sound).
 - A2DP with a phone and BLE pairing not tried yet (the controller comes up; see the table).
 
 `INSTALL=twrp-ab` and the policy patch (`magiskpolicy32` from donut's boot-root zip) worked unchanged on the first biscuit (2026-09-28):

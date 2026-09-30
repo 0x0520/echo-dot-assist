@@ -1,5 +1,5 @@
-/* Echo Dot 2nd gen 2016 (biscuit), Fire OS 6574.1.  Values checked on the running Echo (probe 2026-09-28) except where
- * noted; device facts: docs/re-platform.md shows what each field is for (as found on donut). */
+/* Echo Dot 2nd gen 2016 (biscuit), Fire OS 6574.1.  Values checked on the running Echo (2026-09-28, the rest
+ * 2026-09-30); device facts: docs/re-platform.md shows what each field is for (as found on donut). */
 #include "board.h"
 #include <stddef.h>
 
@@ -9,11 +9,12 @@ const struct board board = {
     .product = "Echo Dot 2 (hassmic)",
     .default_name = "Echo Dot",
 
-    /* mtk-kpd: action (•) = KEY_HELP, mic mute = KEY_MUTE; gpio-keys: volume ± */
+    /* event1 "mtk-kpd": action (•) = KEY_HELP, mic mute = KEY_MUTE, volume down; event2 "keys": volume ± (getevent -il) */
     .keypad = "/dev/input/event1",
     .keypad2 = "/dev/input/event2",
-    /* Mute latch kept by the keypad driver, as on radar (same SoC, same line in init.mt8163_amazon.rc).  Path from the
-     * firmware's init rc, not yet read on a running biscuit: if it is missing, hassmic counts key presses instead. */
+    /* Mute latch kept by the keypad driver, as on radar (same SoC, same line in init.mt8163_amazon.rc).  On the Echo:
+     * world-readable, 0 with the mics on; not yet read with the button lit.  Read only this file of the directory:
+     * power_button_state beside it takes the kernel down (NULL gpio in get_power_button_state, watchdog reboot). */
     .privacy_state = "/sys/devices/soc/10010000.keypad/amz_privacy/state",
     .privacy_input = NULL,
     .privacy_latch = 1,
@@ -25,6 +26,6 @@ const struct board board = {
     .wake_id = "alexa",
     .wake_manifest = "/system/local/models/keyword/en-US/ALEXA/pryon.manifest",   /* confirmed on the Echo */
     .earcon_dir = "/system/local/share/earcon/base/",
-    .thermal_type = "mtktscpu",                                     /* among the Echo's thermal zones */
-    .volume_steps = 30,                                             /* volume_step-01..30 in led-resources */
+    .thermal_type = "mtktscpu",                                     /* thermal_zone1 on the Echo */
+    .volume_steps = 30,                                             /* /system/etc/led-resources/volume_step-01..30 */
 };

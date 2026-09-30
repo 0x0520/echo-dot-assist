@@ -18,8 +18,8 @@ struct board {
     const char *keypad2;            /* second input device with more keys; NULL if one is enough */
     const char *privacy_state;      /* sysfs file, '1' = mics muted by the hardware latch; NULL if there is no latch */
     const char *privacy_input;      /* input device that reports changes of that latch; NULL if the keypad does */
-    int privacy_latch;              /* 1: hardware latch, the sysfs state is the truth; 0: mute is a key on the keypad,
-                                       toggled in software (no sysfs to read) */
+    int privacy_latch;              /* 1: the sysfs state is the truth (read at start, on the mute key and once a second);
+                                       0: nothing to read, presses of the keypad's mute key are counted from "unmuted" */
 
     /* Bluetooth: raw HCI (H4) character device, the init service that owns it in stock, where the address is stored */
     const char *bt_dev;

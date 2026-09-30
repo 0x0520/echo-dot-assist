@@ -10,12 +10,22 @@
 #define SHORT_PRESS_MS 1000            /* longer holds belong to acebuttond: 5 s setup mode, 21 s factory reset */
 
 static struct button_handler handler;
-static int muted_state;                /* boards without a hardware latch: the software toggle */
+static int muted_state;                /* latch: what was last reported; no latch: the software toggle */
 static pthread_mutex_t muted_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* 1 if the kernel tells the mute state (board.privacy_state).  Without that file the mute key can only be counted, and
+ * the count is wrong as soon as the latch moved while nobody counted: radar was run that way, and a daemon restarted
+ * with the mics off showed unmuted from then on, every press the wrong way round. */
+static int have_latch(void)
+{
+    static int have = -1;
+    if (have < 0) have = board.privacy_latch && board.privacy_state && access(board.privacy_state, R_OK) == 0;
+    return have;
+}
 
 int buttons_muted(void)
 {
-    if (!board.privacy_latch) {        /* no sysfs truth: what we last toggled to */
+    if (!have_latch()) {               /* no sysfs truth: what we last toggled to */
         pthread_mutex_lock(&muted_lock);
         int m = muted_state;
         pthread_mutex_unlock(&muted_lock);
@@ -26,6 +36,27 @@ int buttons_muted(void)
     if (read(f, &c, 1) != 1) c = '0';
     close(f);
     return c == '1';
+}
+
+/* Reports the latch when it is not what was last reported.  Input events only say when to look, and latch_poll looks
+ * without one, so a lost or early event (the state read before the driver changed it) is put right a second later. */
+static void latch_check(void)
+{
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;   /* reports leave in the order the state was read */
+    pthread_mutex_lock(&lock);
+    int now = buttons_muted();
+    if (now != muted_state) {
+        muted_state = now;
+        if (handler.mute_changed) handler.mute_changed(now);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+static void *latch_poll(void *arg)
+{
+    (void)arg;
+    for (;;) { sleep(1); latch_check(); }
+    return NULL;
 }
 
 static long long now_ms(void)
@@ -47,7 +78,7 @@ static void *reader(void *arg)
             break;
         case KEY_MUTE:
             if (ev.value == 0 && handler.mute_changed) {
-                if (board.privacy_latch) { usleep(100000); handler.mute_changed(buttons_muted()); }
+                if (have_latch()) { usleep(100000); latch_check(); }
                 else {                  /* a plain key: toggle and report */
                     pthread_mutex_lock(&muted_lock);
                     muted_state = !muted_state;
@@ -71,13 +102,11 @@ static void *reader(void *arg)
  * its own input device.  Whatever event arrives there, the truth is the sysfs state. */
 static void *privacy_reader(void *arg)
 {
-    struct input_event ev; int pfd = (int)(long)arg, last = buttons_muted();
+    struct input_event ev; int pfd = (int)(long)arg;
     while (read(pfd, &ev, sizeof ev) == sizeof ev) {
         if (ev.type == EV_SYN) continue;
         usleep(50000);
-        int now = buttons_muted();
-        if (now != last && handler.mute_changed) handler.mute_changed(now);
-        last = now;
+        latch_check();
     }
     fprintf(stderr, "buttons: privacy reader stopped\n");
     return NULL;
@@ -94,6 +123,12 @@ int buttons_start(const char *device, const struct button_handler *h)
         else pthread_detach(t);
     } else if (board.keypad2) {
         fprintf(stderr, "buttons: %s not available, its keys go unnoticed\n", board.keypad2);
+    }
+    if (have_latch()) {
+        muted_state = buttons_muted();                  /* the caller asks for the state at start itself */
+        if (!pthread_create(&t, NULL, latch_poll, NULL)) pthread_detach(t);
+    } else if (board.privacy_latch) {
+        fprintf(stderr, "buttons: %s not readable, counting presses of the mute key instead\n", board.privacy_state);
     }
     if (!board.privacy_input) pfd = -1;
     else if ((pfd = open(board.privacy_input, O_RDONLY)) < 0) fprintf(stderr, "buttons: %s not available, mute button changes go unnoticed\n", board.privacy_input);

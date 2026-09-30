@@ -13,10 +13,12 @@ const struct board board = {
      * not exist here, so no button worked) */
     .keypad = "/dev/input/event1",
     .keypad2 = "/dev/input/event2",
-    /* no gpio-privacy device: the mute is a key, toggled in software */
-    .privacy_state = NULL,
+    /* No gpio-privacy device as on donut, but the keypad driver keeps the mute latch: amz_privacy/state, the file init
+     * hands to ace_button_mgr (init.mt8163_amazon.rc).  Read 1 with the button lit and the mics cut (2026-09-30).
+     * Changes arrive as KEY_MUTE on the keypad. */
+    .privacy_state = "/sys/devices/soc/10010000.keypad/amz_privacy/state",
     .privacy_input = NULL,
-    .privacy_latch = 0,
+    .privacy_latch = 1,
 
     .bt_dev = "/dev/stpbt",                                         /* MediaTek combo, bluetooth:net_bt_stack */
     .bt_service = "btmanagerd",

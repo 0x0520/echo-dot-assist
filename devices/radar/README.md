@@ -78,6 +78,9 @@ build than the pin below is fetched and flashed, re-pin: unpack, re-check the au
 ## Open questions
 
 - Input devices (answered 2026-09-28, on the Echo): as on `biscuit`, `mtk-kpd` (event1: action = KEY_HELP, mute =
-  KEY_MUTE, volume down) and `keys` (event2: volume ±); no mute latch in sysfs, so the mute is toggled in software.
+  KEY_MUTE, volume down) and `keys` (event2: volume ±). No `gpio-privacy` device, but the keypad driver keeps the mute
+  latch: `/sys/devices/soc/10010000.keypad/amz_privacy/state` (1 = mics off, button lit; found 2026-09-30). hassmic
+  reads that; until then it counted key presses and showed the mute the wrong way round after a restart with the
+  mics off.
 - Whether amonet-radar's TWRP exposes the same A/B/lptools layout as donut's (`INSTALL=twrp-ab` assumption).
 - The 7-mic array: does the mixer expose the same post-AEC `micAsr` stream?

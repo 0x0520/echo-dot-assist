@@ -715,3 +715,18 @@ Run in this order. Each step says what it proves.
       Not done: the Dot 3 and the Echo 2 still run the old build (only the Dot 2 was updated); the stock-online
       watcher was not run. Not covered: stock's other rules (what Alexa itself needs in stock-online: Spotify,
       multi-room, Matter ports) can still be lost when a rebuild falls into stock's run, about one per rebuild
+
+- [x] Mute shown inverted on the Echo 2 (2026-09-30, user: button lit and mics cut, no red ring, HA "unmuted", each
+      press the wrong way round). radar and biscuit ran with `privacy_latch = 0`: `buttons.c` counted KEY_MUTE from
+      "unmuted", so a daemon started with the latch on (push update, restart) was wrong from then on (boot.log: two
+      "mic mute button: 1" in a row = a restart between them). The state is there after all, not under
+      `gpio-privacy` but in the keypad driver: `/sys/devices/soc/10010000.keypad/amz_privacy/state` (world-readable;
+      read 1 on the Echo 2 with the button lit while hassmic said 0; `privacy_state` beside it read 1 too; DT
+      `amz_privacy/hw_latch` = 0). Both boards now name it with `privacy_latch = 1`; same path in biscuit's
+      `init.mt8163_amazon.rc`, not read on a biscuit. `buttons.c`: one `latch_check()` for every model (reports when
+      sysfs differs from what was last reported), called on KEY_MUTE / the gpio-privacy event and once a second, so a
+      lost event or a read before the driver switched heals itself; a named file that is missing falls back to
+      counting, with a log line. Builds for donut/radar/biscuit, `fake_ha_esphome.py` all good.
+      Pushed to the Echo 2 with the latch still on: "mic mute button: 1" and the mics-off sound at start, before HA
+      connected (the old build said 0 there); the user then pressed the button both ways: ring and HA follow.
+      Not done: a biscuit (path unconfirmed there, not pushed)

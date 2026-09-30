@@ -60,7 +60,9 @@ firmware flash: it gives root adb, as on donut.
 
 ## Open questions
 
-- Keypad/mute-latch input nodes, thermal zone, volume steps (marked in `board.c`).
+- Keypad/mute-latch input nodes, thermal zone, volume steps (marked in `board.c`). Mute latch: `board.c` names
+  `/sys/devices/soc/10010000.keypad/amz_privacy/state` as on radar (from the firmware's init rc); `cat` it with the
+  mics on and off to confirm. If the file is missing, the log says so and key presses are counted.
 - A2DP with a phone and BLE pairing not tried yet (the controller comes up; see the table).
 
 `INSTALL=twrp-ab` and the policy patch (`magiskpolicy32` from donut's boot-root zip) worked unchanged on the first biscuit (2026-09-28):

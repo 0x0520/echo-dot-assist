@@ -12,10 +12,11 @@ const struct board board = {
     /* mtk-kpd: action (•) = KEY_HELP, mic mute = KEY_MUTE; gpio-keys: volume ± */
     .keypad = "/dev/input/event1",
     .keypad2 = "/dev/input/event2",
-    /* no hardware latch with a sysfs state on this model: the mute is a key, toggled in software */
-    .privacy_state = NULL,
+    /* Mute latch kept by the keypad driver, as on radar (same SoC, same line in init.mt8163_amazon.rc).  Path from the
+     * firmware's init rc, not yet read on a running biscuit: if it is missing, hassmic counts key presses instead. */
+    .privacy_state = "/sys/devices/soc/10010000.keypad/amz_privacy/state",
     .privacy_input = NULL,
-    .privacy_latch = 0,
+    .privacy_latch = 1,
 
     .bt_dev = "/dev/stpbt",                                         /* bluetooth:net_bt_stack on the Echo */
     .bt_service = "btmanagerd",

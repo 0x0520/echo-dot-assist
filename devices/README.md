@@ -62,7 +62,9 @@ Rough order. Each step is safe to stop at.
    - `device.conf`: `PRODUCT` and `FIRMWARE_ID` from `getprop ro.product.device` and `ro.build.display.id`. Stock
      service names from the init rc files (`/init.*.rc`, `/system/etc/init/`). The user and groups of the stock Alexa
      client (AIPC refuses uid 0).
-   - `board.c`: `getevent -il` shows the keypad and the mute latch. Also look in `/sys/devices/platform/*privacy*`,
+   - `board.c`: `getevent -il` shows the keypad and the mute latch. Also look for the latch's state file (`find /sys -name "*privacy*"`:
+     `/sys/devices/platform/gpio-privacy/state` on donut, `…keypad/amz_privacy/state` on radar; counting presses of a mute
+     key is a last resort, it goes wrong when the latch moves while hassmic is not running),
      `/sys/class/thermal/thermal_zone*/type` and the Bluetooth device node and its owner. Check the wake word manifest
      and the earcons in the firmware.
    - `device.mk`: API level from `ro.build.version.sdk`. If the model has Amazon's `mixer` (`libmixerAPI.so`) and

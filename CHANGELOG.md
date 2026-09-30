@@ -15,6 +15,11 @@ What changed for people using the Echo, newest first. Details and measurements a
   is being heard.
 - **The wake sound no longer makes the command quieter.** The Echo's own wake sound is still faintly in what the
   microphones pick up; the volume control took it for a loud talker and turned the command after it down.
+- **Echo 2 and Echo Dot 2: the mute could show the wrong way round.** On these models the Echo only counted presses of
+  the mute button. If it restarted (an update, for example) while the microphones were off, it started from "on":
+  button lit and microphones cut, but no red ring and "unmuted" in Home Assistant, and every press wrong from then
+  on. The Echo now reads the real state of the mute circuit, at start, on every press and once a second besides.
+  Update with `scripts/ota-push.sh`. (Read on an Echo 2; on the Dot 2 the same file is expected but not yet seen.)
 - **Echo 2: the firewall could fail to come up after a boot.** A helper of the firewall service could hang right at
   its start (a quirk of the Echo 2's system tools), and then the rule that keeps Amazon's software from reaching the
   internet was missing until the next boot, and push updates were not installed. Alexa and the firmware updaters

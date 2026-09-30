@@ -2,6 +2,13 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-10-01
+
+- **The Echo's light sensor in Home Assistant.** A new "Illuminance" sensor reports the room's light in lux, the
+  reading the stock Echo uses to dim its light ring. The ring keeps dimming with the room as before (that is Amazon's
+  own code on the Echo, on by default); the new "LED brightness" slider holds it at a level of your choice instead, and
+  "LED auto brightness" hands it back to the light sensor. Both are kept across restarts.
+
 ## 2026-09-30
 
 - **The light ring shows when the Echo is ready to pair.** While the "Bluetooth pairing" switch is on, the ring runs

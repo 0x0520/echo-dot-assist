@@ -18,7 +18,7 @@ and refuse a mismatch.
 | File | Used by | What |
 |---|---|---|
 | `device.mk` | `Makefile` | compiler target (NDK API level), audio and wake word backends, stock libraries to link against |
-| `board.c` | `hassmic` (linked in) | `struct board` from `src/hassmic/board.h`: identity towards Home Assistant, input devices, mute latch, Bluetooth device node and address, stock wake word and earcon paths, thermal zone, LED volume steps |
+| `board.c` | `hassmic` (linked in) | `struct board` from `src/hassmic/board.h`: identity towards Home Assistant, input devices, mute latch, Bluetooth device node and address, stock wake word and earcon paths, thermal zone, light sensor, LED volume steps |
 | `device.conf` | PC scripts (`scripts/lib/device.sh`) and, shipped next to them, the scripts on the Echo | product and firmware id, firmware file and checksum, files to compare in `probe.sh`, install method, the daemon's user and groups, names of the stock services to stop |
 | `hassmic.rc` | `install-system.sh` → `/system/etc/init/` | init services, and the trigger that starts the satellite once the audio stack is up |
 | `sepolicy.rules` | `install-system.sh` | allow rules added to the stock policy so init can start the scripts |
@@ -66,7 +66,8 @@ Rough order. Each step is safe to stop at.
      `/sys/devices/platform/gpio-privacy/state` on donut, `…keypad/amz_privacy/state` on radar; counting presses of a mute
      key is a last resort, it goes wrong when the latch moves while hassmic is not running),
      `/sys/class/thermal/thermal_zone*/type` and the Bluetooth device node and its owner. Check the wake word manifest
-     and the earcons in the firmware.
+     and the earcons in the firmware. `light_sensor`: the lux files in `strings` of
+     `/system/lib/libacehal_ambientLightSensor.so`, in its order, and `cat` the one that exists on the Echo.
    - `device.mk`: API level from `ro.build.version.sdk`. If the model has Amazon's `mixer` (`libmixerAPI.so`) and
      `libpryon.so`, the existing backends should work once `probe.sh`, `mixcap` and `pryon_test` agree. If not, write a
      new `audio_*.c` or `wake_*.c` behind `audio.h` / `wake.h` and name it here.

@@ -20,5 +20,6 @@ const struct board board = {
     .wake_manifest = "/system/local/models/keyword/en-US/ALEXA/pryon.manifest",
     .earcon_dir = "/system/local/share/earcon/base/",
     .thermal_type = "mtktscpu",
+    .light_sensor = { "/sys/bus/i2c/devices/0-0039/iio:device0/calibrated_lux" },  /* TSL2572 (IIO), als_donut_puffin_facade */
     .volume_steps = 30,
 };

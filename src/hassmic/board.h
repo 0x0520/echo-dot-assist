@@ -31,6 +31,7 @@ struct board {
     const char *wake_manifest;
     const char *earcon_dir;         /* with trailing slash */
     const char *thermal_type;       /* thermal zone reported as SoC temperature */
+    const char *light_sensor[3];    /* files the stock light sensor HAL reads lux from, first that opens; {NULL}: none */
     int volume_steps;               /* volume_step-NN animations of ledcontroller */
 };
 

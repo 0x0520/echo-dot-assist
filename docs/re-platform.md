@@ -86,7 +86,30 @@ lipc-send-event com.amazon.puffin set_animation -s active-talking
 - `uxeventd` starts the orange `setup-mode` spinner on an unregistered device (`uxconfig.json`: `state-boot-up-oobe`,
   `oobe-setup-mode-on`, groupId 5). `ledctrl -c` does **not** clear it; `ledctrl -u setup-mode` does. While it runs it hides
   other patterns (`mics-off_on` was not visible), and `ledcontroller` first looks for `<pattern>-setup-mode`.
-- `ledctrl -l` reports `Current brightness = 0` although patterns are visible (auto brightness; lux sensor "data not valid yet").
+- `ledctrl -l` reports `Current brightness = 0` although patterns are visible: auto brightness in a dark room (level 0 is
+  the dimmest step, not off; see "Auto brightness").
+
+### Auto brightness (disassembly of donut's `ledcontroller`, device 2026-10-01)
+
+- All of it is in `ledcontroller`: `AutoBrightnessManager` with an `EchoAmbientEngineHal` over
+  `libacehal_ambientLightSensor.so`. PuffinApp has no part in it (`changeAdaptiveBrightnessState` in libPuffinUtils is
+  a demo-mode event name). Binder slots 0x2c/0x30 of the Controller (`ledctrl -a on|off`) start and stop it; no static
+  call to the start was found, yet it runs after every boot (Echo Dot 2: auto off, level 50, reboot: 9 again at 40 lx).
+  The on/off flag is not saved anywhere.
+- Engine config, hardcoded (`Config(3, 20, 100, 0, 100)` at 0xd704): response time 3 s, 20 Hz, brightness cap 100,
+  lux range replaced by the HAL's `getMinLux`/`getMaxLux` = 0..400. Curve coefficients -43, 1053, 0, 0 (0xc6f0).
+- Per sample (0xca38): lux clamped to 0..400, exponential average with a = 1 - 0.01^(1/(3 s × rate)) (99 % in 3 s),
+  t = avg/400, level = clamp((-43 + 1053 t) / 1000, 0.005, 1) → on donut 0.26 × lux - 4.3, full at ~400 lx.
+- Loop (0x20a60): 20 Hz while the target is more than 0.005 away, 1 Hz once settled; each step moves 1/60 of the range
+  (half that when brightening in the dark, target < 0.2), so full range in ~3 s. `start` begins from 1.0: switching it
+  on ramps down from 98. Each step goes through `Controller::setBrightness`, which writes
+  `persist.ledbrightness.bootup` (restored at boot; 80 when unset).
+- A manual level (`ledctrl -b`, AIPC `set_brightness`) does not stop it; the engine overwrites it once the light
+  changes by more than half a step. `ledctrl -a off -b N` in one call applies in that order.
+- HAL lux on donut (`als_donut_puffin_facade`): `atof` of `/sys/bus/i2c/devices/0-0039/iio:device0/calibrated_lux`
+  (computed by the kernel driver from ch0/ch1, the DT coefficients and idme `alscal`). radar and biscuit facades name
+  `0-0029/iio:device0/calibrated_lux` (TSL2584, no driver bound on our units) and `0-0039/als_calibrated_lux` (TSL2540).
+- `set_brightness_table` is ignored; the brightness-table symlinks point at files donut does not have.
 
 ### Open questions
 

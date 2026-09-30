@@ -65,6 +65,9 @@ int  core_wake_words(const struct core_wake_word **list);  /* count */
 int  core_wake_word(int set);                    /* index of the active one; set >= 0 switches to it and keeps it, -1 reads */
 int  core_eq(int band);                          /* speaker equalizer, 0 bass / 1 mid / 2 treble: -6..+6 dB */
 void core_set_eq(int band, int db);              /* the mixer keeps it across reboots */
+int  core_led_auto(int set);                     /* LED ring follows the light sensor (stock's own engine, the default); -1 reads */
+int  core_led_brightness(int set);               /* 0..100; set >= 0 fixes the level (auto off); -1 reads what the ring shows */
+float core_lux(void);                            /* light sensor in lux as stock reads it (no lock needed); NAN: none */
 
 /* no lock needed */
 void   core_tts_begin(unsigned rate, unsigned channels);   /* lock held for this one: switches to SPEAKING */

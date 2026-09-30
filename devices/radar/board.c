@@ -28,5 +28,8 @@ const struct board board = {
     .wake_manifest = "/system/local/models/keyword/en-US/ALEXA/pryon.manifest",   /* shipped in this build */
     .earcon_dir = "/system/local/share/earcon/base/",               /* same layout as donut */
     .thermal_type = "mtktscpu",                                     /* thermal_zone1 */
+    /* TSL2540 at 0-0039 on this Echo; the HAL (als_radar_puffin_facade) first tries a TSL2584 at 0-0029, which is on the
+     * bus but has no driver bound here: another hardware revision */
+    .light_sensor = { "/sys/bus/i2c/devices/0-0029/iio:device0/calibrated_lux", "/sys/bus/i2c/devices/0-0039/als_calibrated_lux" },
     .volume_steps = 30,                                             /* volume_step-01..30 in led-resources */
 };

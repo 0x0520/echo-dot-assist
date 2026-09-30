@@ -3,7 +3,7 @@
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
 import asyncio, base64, io, math, os, signal, struct, subprocess, sys, tempfile, threading, wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo
+from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
 from aioesphomeapi import ZERO_NOISE_PSK
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
@@ -48,7 +48,9 @@ async def main():
     env = dict(os.environ, HASSMIC_STATE=state, HASSMIC_SETTINGS=settings, HASSMIC_CAP=f"{ROOT}/testdata/alexa_espeak.raw", HASSMIC_PLAY=play,
                HASSMIC_MDNS_FILE=mdns, HASSMIC_ARB_ADDR="127.255.255.255",      # arbitration beacons stay on this PC
                HASSMIC_MODELS=os.path.join(state, "models"),
-               HASSMIC_ADB_OPEN=os.path.join(state, "adb-open.root"))          # on the Echo: in a directory only root writes
+               HASSMIC_ADB_OPEN=os.path.join(state, "adb-open.root"),          # on the Echo: in a directory only root writes
+               HASSMIC_LUX=os.path.join(state, "calibrated_lux"))              # the light sensor's sysfs file
+    with open(env["HASSMIC_LUX"], "w") as f: f.write("67\n")
     for m in ("echo-de", "computer-en-US"):             # installed wake word models (the PC build loads none of them)
         os.makedirs(os.path.join(state, "models", m)); open(os.path.join(state, "models", m, "pryon.manifest"), "w").close()
     with open(mdns, "w") as f:                          # what main.sh does at boot
@@ -94,6 +96,14 @@ async def main():
         check(any(isinstance(x, NumberState) and x.key == eqs[0].key and x.state == 4 for x in states)
               and any(isinstance(x, NumberState) and x.key == eqs[2].key and x.state == -6 for x in states), "equalizer commands reflected, clamped to -6..+6")
         check(any(isinstance(x, SelectState) and x.key == by["noise_reduction"].key and x.state == "Off" for x in states), "noise reduction off by default")
+        lux, lauto, lbright = by.get("illuminance"), by.get("led_auto_brightness"), by.get("led_brightness")
+        check(isinstance(lux, SensorInfo) and lux.device_class == "illuminance" and lux.unit_of_measurement == "lx" and int(lux.state_class) == 1
+              and isinstance(lauto, SwitchInfo) and isinstance(lbright, NumberInfo) and (lbright.min_value, lbright.max_value) == (0, 100),
+              "light sensor and LED brightness entities listed")
+        last = lambda k, t: ([x.state for x in states if isinstance(x, t) and x.key == k] or [None])[-1]
+        check(last(lux.key, SensorState) == 67 and last(lauto.key, SwitchState) is True and last(lbright.key, NumberState) == 80,
+              f"illuminance from the sensor file, auto brightness on as in stock: {last(lux.key, SensorState)} lx, "
+              f"auto {last(lauto.key, SwitchState)}, level {last(lbright.key, NumberState)}")
         cli.number_command(by["mic_level"].key, -20)
         await asyncio.sleep(0.5)
         check(any(isinstance(x, NumberState) and x.key == by["mic_level"].key and x.state == -20 for x in states),
@@ -367,6 +377,21 @@ async def main():
         await enc.disconnect()
         c = APIClient("127.0.0.1", PORT, None); await asyncio.wait_for(c.connect(login=True), 5)
         check((await c.device_info()).api_encryption_provisionable, "plaintext accepted again, provisionable again")
+        st3 = []; c.subscribe_states(st3.append); await asyncio.sleep(0.3)    # here: the sleeps would move the mic checks' place in the capture loop
+        last3 = lambda k, t: ([x.state for x in st3 if isinstance(x, t) and x.key == k] or [None])[-1]
+        with open(env["HASSMIC_LUX"], "w") as f: f.write("68\n")                # flicker: not sent
+        await asyncio.sleep(1.5)
+        with open(env["HASSMIC_LUX"], "w") as f: f.write("150\n")
+        await asyncio.sleep(1.5)
+        sent = [x.state for x in st3 if isinstance(x, SensorState) and x.key == lux.key]
+        check(sent == [67, 150], f"illuminance sent on a real change, not on flicker: {sent}")
+        c.number_command(lbright.key, 30)
+        await asyncio.sleep(0.5)
+        check(last3(lbright.key, NumberState) == 30 and last3(lauto.key, SwitchState) is False, "a fixed LED level switches auto brightness off")
+        check(open(settings).read().split()[-2:] == ["0", "30"], f"LED brightness kept in the settings file: {open(settings).read().strip()!r}")
+        c.switch_command(lauto.key, True)
+        await asyncio.sleep(0.5)
+        check(last3(lauto.key, SwitchState) is True and open(settings).read().split()[-2] == "1", "auto brightness switched on again")
         await c.disconnect()
     finally:
         proc.terminate(); httpd.shutdown()

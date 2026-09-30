@@ -82,7 +82,7 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 /* KEY_NOISE and KEY_MULT: retired entities (noise suppression, mic volume multiplier), kept so the others keep their keys */
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
-       KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI };
+       KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -305,20 +305,22 @@ static const struct bt_lang { const char *code, *name, *on, *off, *on_any, *off_
 };
 #define BT_LANGS (int)(sizeof bt_langs / sizeof bt_langs[0])
 static int bt_lang;                     /* lock held: index into bt_langs */
+static int have_light;                  /* a light sensor answered at start: illuminance and auto brightness are listed */
 
 static const char *settings_path(void) { const char *p = getenv("HASSMIC_SETTINGS"); return p ? p : "/data/local/hassmic/state/settings"; }
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0, fmt = 0; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
+    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
     if (!f) { core_mic_level(mic_level); return; }
     /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
-     * which ignored them; unused since). */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt) >= 5) {
+     * which ignored them; unused since), 9 (before LED brightness: auto, as stock). */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb) >= 5) {
         if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
+        if (!la) { if (lb >= 0) core_led_brightness(lb); else core_led_auto(0); }  /* ledcontroller started its auto at boot */
     }
     fclose(f);
     core_mic_level(mic_level);
@@ -328,8 +330,8 @@ static void settings_save(void)
 {
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
-    fprintf(f, "%d %d 1 %d %d %d %d %s 2\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
-            bt_langs[bt_lang].code);
+    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
+            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1));
     fclose(f);
 }
 
@@ -351,6 +353,8 @@ static void send_setting(int key)       /* lock held */
     case KEY_ARB_PEERS: if (arb_running()) { pb_float(&b, 2, arb_peers()); send_state(SENSOR_STATE, &b); } break;
     case KEY_SS_UNPAIRED: if (core_sendspin_port) { pb_uint(&b, 2, sendspin_unpaired(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_ADB_WIFI: pb_uint(&b, 2, adbwifi_open()); send_state(SWITCH_STATE, &b); break;
+    case KEY_LED_AUTO: if (have_light) { pb_uint(&b, 2, core_led_auto(-1)); send_state(SWITCH_STATE, &b); } break;
+    case KEY_LED_BRIGHTNESS: { int v = core_led_brightness(-1); if (v >= 0) { pb_float(&b, 2, v); send_state(NUMBER_STATE, &b); } } break;
     }
 }
 
@@ -425,6 +429,54 @@ static void *diag_thread(void *arg)
     return NULL;
 }
 
+/* ---------------------------------------------------------------- light sensor and LED brightness
+ * Illuminance as stock reads it (core_lux) and the level the LED ring shows, which follows it while auto brightness is on
+ * (core_led_brightness).  Polled every second, stock's rate once its engine has settled.  The sensor's integer lux flicker
+ * by one or two, so a reading goes out when it is 10 % (at least 1 lx) off the last one sent, or after a minute for any
+ * change; the LED level whenever it changes (auto ramps in 3 s: a few states). */
+static float sent_lux = NAN; static int sent_level = -1; static time_t sent_at;     /* lock held */
+
+static void *light_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        sleep(1);
+        float lux = core_lux(); time_t now = time(NULL);
+        pthread_mutex_lock(&core_lock);
+        int any = 0, level = core_led_brightness(-1);
+        for (int i = 0; i < MAX_CLIENTS; i++) any |= clients[i].fd >= 0 && clients[i].states;
+        if (any) {                                              /* a new subscriber gets them from send_light_states */
+            float d = fabsf(lux - sent_lux);
+            if (!isnan(lux) && (isnan(sent_lux) || d >= fmaxf(1, sent_lux / 10) || (d > 0 && now - sent_at >= 60))) {
+                send_sensor(KEY_LUX, lux); sent_lux = lux; sent_at = now;
+            }
+            if (level >= 0 && level != sent_level) { send_setting(KEY_LED_BRIGHTNESS); sent_level = level; }
+        }
+        pthread_mutex_unlock(&core_lock);
+    }
+    return NULL;
+}
+
+static void send_light_states(void)     /* lock held */
+{
+    if (have_light) { sent_lux = core_lux(); sent_at = time(NULL); send_sensor(KEY_LUX, sent_lux); }
+    sent_level = core_led_brightness(-1);
+    send_setting(KEY_LED_AUTO); send_setting(KEY_LED_BRIGHTNESS);
+}
+
+static void send_light_entities(void)
+{
+    if (have_light) {
+        { PB(b, 192); pb_str(&b, 1, "illuminance"); pb_fixed32(&b, 2, KEY_LUX); pb_str(&b, 3, "Illuminance"); pb_str(&b, 6, "lx");
+          pb_uint(&b, 7, 0); pb_str(&b, 9, "illuminance"); pb_uint(&b, 10, 1); send_msg(LIST_SENSOR, &b); }
+        { PB(b, 160); pb_str(&b, 1, "led_auto_brightness"); pb_fixed32(&b, 2, KEY_LED_AUTO); pb_str(&b, 3, "LED auto brightness");
+          pb_str(&b, 5, "mdi:brightness-auto"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
+    }
+    { PB(b, 160); pb_str(&b, 1, "led_brightness"); pb_fixed32(&b, 2, KEY_LED_BRIGHTNESS); pb_str(&b, 3, "LED brightness");
+      pb_str(&b, 5, "mdi:brightness-6"); pb_float(&b, 6, 0); pb_float(&b, 7, 100); pb_float(&b, 8, 1); pb_uint(&b, 10, 1);
+      pb_str(&b, 11, "%"); pb_uint(&b, 12, 2); send_msg(LIST_NUMBER, &b); }
+}
+
 static void send_diag_entities(void)
 {
     { PB(b, 192); pb_str(&b, 1, "soc_temperature"); pb_fixed32(&b, 2, KEY_SOC_TEMP); pb_str(&b, 3, "SoC temperature");
@@ -481,6 +533,7 @@ static void send_setting_entities(void)
         { PB(b, 128); pb_str(&b, 1, "arbitration_peers"); pb_fixed32(&b, 2, KEY_ARB_PEERS); pb_str(&b, 3, "Arbitration peers");
           pb_str(&b, 5, "mdi:access-point-network"); pb_uint(&b, 13, 2); send_msg(LIST_SENSOR, &b); }
     }
+    send_light_entities();
     send_diag_entities();
 }
 
@@ -513,6 +566,12 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         if (!on || (c >= 0 && clients[c].keyed)) adbwifi_ask(on);
         else fprintf(stderr, "adb over Wi-Fi: refused, the request did not come over the keyed connection\n");
         send_setting(key); return;
+    }
+    else if (type == SWITCH_COMMAND && key == KEY_LED_AUTO && have_light) {
+        core_led_auto(on); settings_save(); send_setting(key); return;              /* the level follows through light_thread */
+    }
+    else if (type == NUMBER_COMMAND && key == KEY_LED_BRIGHTNESS) {                  /* a level of its own: auto off, or it moves */
+        core_led_brightness(num < 0 ? 0 : (int)lroundf(num)); settings_save(); send_setting(KEY_LED_AUTO); send_setting(key); return;
     }
     else if (type == NUMBER_COMMAND && key >= KEY_EQ_BASS && key <= KEY_EQ_TREBLE) {           /* the mixer keeps it, not our file */
         core_set_eq(key - KEY_EQ_BASS, (int)lroundf(num)); send_setting(key); return;
@@ -1109,7 +1168,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         for (int k = KEY_EQ_BASS; k <= KEY_EQ_TREBLE; k++) send_setting(k);
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
-        send_token_state(); send_diag_states(); break;
+        send_token_state(); send_light_states(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: on_setting(type, p, end); break;
     case SUBSCRIBE_HA_ACTIONS: if (c >= 0) clients[c].actions = 1; break;
     case EXECUTE_SERVICE: {
@@ -1229,7 +1288,9 @@ static void serve(int fd)
     unsigned char *buf = malloc(1 << 16), *pt = malloc(1 << 16), pre; uint32_t len, type, cap = 1 << 16; int slot = -1, n = 0, enc = 0;
     if (!buf || !pt) { free(buf); free(pt); return; }
     pthread_mutex_lock(&core_lock);
-    { static int loaded; if (!loaded) { loaded = 1; settings_load(); key_load(); pthread_t t; pthread_create(&t, NULL, diag_thread, NULL); pthread_detach(t);
+    { static int loaded; if (!loaded) { loaded = 1; have_light = !isnan(core_lux()); settings_load(); key_load();
+                                       pthread_t t; pthread_create(&t, NULL, diag_thread, NULL); pthread_detach(t);
+                                       pthread_create(&t, NULL, light_thread, NULL); pthread_detach(t);
                                        adbwifi_start(adb_changed);
                                        if (core_bluetooth(-1)) { ble_start(&ble_handler); a2dp_start(bt_changed); } } }
     for (int i = 0; i < MAX_CLIENTS; i++) { if (clients[i].fd < 0 && slot < 0) slot = i; n += clients[i].fd >= 0; }

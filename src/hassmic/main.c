@@ -30,6 +30,9 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 #include "audio.h"
 #include "a2dp.h"
 #include "arb.h"
@@ -900,6 +903,60 @@ void core_set_eq(int band, int db)
     char *argv[] = { "/system/bin/lipc-set-prop", "-s", "com.doppler.lasp", "LASP_CMD_SET_USER_EQ_INFO", json, NULL };
     run_argv(argv);
     fprintf(stderr, "equalizer: bass %d, mid %d, treble %d\n", eq[0], eq[1], eq[2]);
+}
+
+/* LED brightness.  Stock's auto brightness is ledcontroller's, not the Alexa client's, and it starts it by itself at boot
+ * (Echo Dot 2 set to 50 with auto off and rebooted: 9 again, for 40 lux; 2026-10-01).  It polls the light sensor through
+ * the same HAL file as core_lux() (1 Hz when settled, 20 Hz while moving), smooths it over 3 s and maps 0..400 lux on a
+ * straight line to 0..100 (donut: 0.26 per lux - 4, at least 0), ramping there in 3 s.  So "auto" here is ledcontroller
+ * left alone, and a fixed level is ledctrl -a off -b N in one call: two calls could land in either order, and the running
+ * engine would overwrite a level that came first.  Neither ledcontroller nor anything stock keeps the auto flag: our
+ * settings file does (proto_esphome.c), and it is applied again at every start.  ledcontroller writes each level it shows
+ * to persist.ledbrightness.bootup (auto steps too) and restores it at boot, so that property is what the ring shows. */
+static int led_auto = 1, led_level = 80;            /* 80: ledcontroller's first-boot level */
+
+int core_led_auto(int set)
+{
+    if (set >= 0 && set != led_auto) {
+        if (!set) led_level = core_led_brightness(-1);
+        led_auto = set;
+        if (use_led) run("/system/bin/ledctrl", "-a", set ? "on" : "off");     /* off: the level stays where auto left it */
+        fprintf(stderr, "LED brightness: %s\n", set ? "auto" : "fixed");
+    }
+    return led_auto;
+}
+
+int core_led_brightness(int set)
+{
+    if (set >= 0) {
+        char n[8]; snprintf(n, sizeof n, "%d", set > 100 ? 100 : set);
+        char *argv[] = { "/system/bin/ledctrl", "-a", "off", "-b", n, NULL };
+        if (use_led) run_argv(argv);
+        led_auto = 0; led_level = atoi(n);
+        fprintf(stderr, "LED brightness: fixed at %d\n", led_level);
+    }
+#ifdef __ANDROID__
+    char v[PROP_VALUE_MAX] = "";                   /* fixed: ours, the property may not have it yet (ledctrl runs apart) */
+    if (led_auto && use_led && __system_property_get("persist.ledbrightness.bootup", v) > 0) return atoi(v);
+#endif
+    return led_level;
+}
+
+/* The light sensor as stock's HAL (libacehal_ambientLightSensor.so, its per-model "facade") reads it: a sysfs file the
+ * kernel driver fills with calibrated lux, parsed with atof.  0..400 is all stock uses of it. */
+float core_lux(void)
+{
+    const char *e = getenv("HASSMIC_LUX");         /* tests */
+    const char *const *p = e ? (const char *const[]){ e, NULL } : board.light_sensor;
+    for (; p && *p; p++) {
+        char buf[32]; int fd = open(*p, O_RDONLY); ssize_t n;
+        if (fd < 0) continue;
+        n = read(fd, buf, sizeof buf - 1); close(fd);
+        if (n <= 0) continue;
+        buf[n] = 0;
+        return (float)atof(buf);
+    }
+    return NAN;
 }
 
 /* Anything may move MainVolume behind our back (audio_manager_set_prop, a stock daemon, the stock keys when -V), and

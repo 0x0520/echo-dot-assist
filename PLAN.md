@@ -806,3 +806,21 @@ Run in this order. Each step says what it proves.
       key, another key, shell characters in the version, a bad signature. `install-system.sh "Echo Dot 2"` live: policy already
       patched, 0 files changed, stale `latency`/`VERSION` removed, rebooted into the factory copy, `/` ro.
       Not tried on a device: the live policy write (only when the policy changes) and live `--uninstall`.
+- [x] Light sensor and LED brightness in Home Assistant (2026-10-01). Stock's auto brightness is `ledcontroller`'s own
+      (AutoBrightnessManager, `docs/re-platform.md` §1), not PuffinApp's, and it starts at boot without anyone asking:
+      Echo Dot 2 with `ledctrl -a off -b 50`, rebooted, showed 9 again at 40 lx; radar and biscuit kept rewriting
+      `persist.ledbrightness.bootup` under hassmic. So hassmic already had stock's behaviour and leaves it running.
+      New: sensor "Illuminance" (the file the stock HAL reads: donut `0-0039/iio:device0/calibrated_lux`, TSL2572;
+      radar/biscuit `0-0039/als_calibrated_lux`, TSL2540, after a `0-0029` TSL2584 path for another revision:
+      `board.light_sensor`), switch "LED auto brightness" (default on), number "LED brightness" 0..100 (a level of its
+      own switches auto off: the engine would overwrite it at the next change in light). Fixed level = one
+      `ledctrl -a off -b N` (in that order within one call; two calls race). Nothing stock keeps the auto flag, so the
+      settings file does (two more fields) and a fixed level is applied again at start. Level shown =
+      `persist.ledbrightness.bootup`, which ledcontroller writes on every change, auto steps included; polled 1 s,
+      lux sent at 10 % (≥ 1 lx) change or after a minute. `fake_ha_esphome.py`: entities, flicker not sent, fixed
+      level turns auto off, settings kept (at the end of the test: its sleeps moved the mic checks' place in the 8.4 s
+      capture loop and they failed).
+      Echo Dot 3 (pushed, not approved): 67-68 lx in HA = sysfs, auto 13 (engine: 0.26 × 67 − 4.3); 60 → ring 60, auto
+      off, file `0 60`; auto on → 74, 51, 26, 13 over 4 s (engine restarts from 98 and ramps); fixed 40, then
+      `ledctrl -a on` as at boot (13) and hassmic killed: 40 again once HA reconnected. Echo Dot 2 over USB: 40 lx,
+      auto 9, same sequence. Echo 2: builds, not tried. Left at auto on all Echos.

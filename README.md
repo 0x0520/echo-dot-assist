@@ -52,6 +52,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Mute state and audio settings in HA           | ❌                      | ✅                                           | ❌                       |
 | Do not disturb                                | ✅ (Alexa app)          | ✅ switch in HA                              | ❌                       |
 | Equalizer (bass, mid, treble)                 | ✅ (Alexa app)          | ✅ sliders in HA                             | ❌                       |
+| Light ring follows the room's light           | ✅                      | ✅ same, or a fixed level from HA; illuminance sensor | ❌ (stock's automatic only) |
 | Encrypted link to Home Assistant              | –                       | ✅ key set by Home Assistant                 | ❌ plain TCP             |
 | Talks to Amazon                               | always                  | never (firewalled)                           | never (firewalled)       |
 | Updates                                       | automatic, from Amazon  | signed, pushed from your PC                  | signed, pushed from your PC |
@@ -86,6 +87,9 @@ Details:
   "Bluetooth pairing" switch (blue chaser on the ring while it is on), "Bluetooth announcements" switch and their language, "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
   only Sendspin servers paired with the token may play), equalizer (bass, mid, treble, −6 to +6 dB, Amazon's own,
   applied to everything the Echo plays), "Debug access (adb over Wi-Fi)" switch (see [Configuration](#configuration)).
+  "LED auto brightness" switch and "LED brightness" slider: the ring dims with the room as on a stock Echo (Amazon's
+  own logic, on by default); setting a level holds it there and switches the automatic off. "Illuminance": the Echo's
+  light sensor in lux, as Amazon reads it, for automations.
   Diagnostics, off by default: SoC temperature, CPU usage.
 - **No cloud**: Alexa client, updater and telemetry are stopped at every boot; a firewall drops everything that is not
   going to a local address. Only hassmic itself may go further, to fetch replies and music from where Home Assistant or

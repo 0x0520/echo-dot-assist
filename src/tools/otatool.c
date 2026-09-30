@@ -7,6 +7,8 @@
  *   otatool install PUBLIC BUNDLE SIG DESTDIR           verify, then unpack into DESTDIR (must not exist yet)
  *   otatool push    HOST PORT BUNDLE SIG                send to a running hassmic, print its answer (exit 0 on "OK ...")
  *   otatool adb     HOST PORT SECRET                    open adb over Wi-Fi on it for 30 min (sign its challenge)
+ *   otatool factory HOST PORT SECRET VERSION            make its installed update VERSION the factory copy (approve it)
+ *   otatool remount rw|ro PATH                          remount the file system PATH lives on (device, root)
  *
  * The device runs "install" as root from the read-only system partition, with the public key from there, so whatever
  * downloaded the bundle (an unprivileged, network-facing process) cannot get anything installed that the owner of
@@ -22,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -148,23 +151,48 @@ static int push(const char *host, const char *port, const char *bundle, const ch
     return strncmp(line, "OK", 2) != 0;
 }
 
-/* The protocol is described in src/hassmic/ota.c. */
-static int adb(const char *host, const char *port, const char *secret)
+/* Send REQ (one line, with its \n), sign "REQ" + the nonce the Echo answers with, print its verdict.
+ * The protocol is described in src/hassmic/ota.c. */
+static int challenge(const char *host, const char *port, const char *secret, const char *req)
 {
-    size_t skl; uint8_t *sk = slurp(secret, &skl), msg[11 + 32], sig[64]; char line[300]; unsigned x;
+    size_t skl, rl = strlen(req); uint8_t *sk = slurp(secret, &skl), msg[160], sig[64]; char line[300]; unsigned x;
     if (!sk || skl != 64) { fprintf(stderr, "otatool: bad secret key\n"); return 1; }
+    if (rl + 32 > sizeof msg) { fprintf(stderr, "otatool: request too long\n"); return 1; }
     int fd = connect_to(host, port);
-    if (fd < 0 || write(fd, "HMOTA-ADB1\n", 11) != 11) return 1;
+    if (fd < 0 || write(fd, req, rl) != (ssize_t)rl) return 1;
     if (!read_line(fd, line, sizeof line) || strncmp(line, "NONCE ", 6) || strlen(line) != 6 + 64) {
         printf("%s\n", line[0] ? line : "FAILED no challenge (an older hassmic?)"); return 1;
     }
-    memcpy(msg, "HMOTA-ADB1\n", 11);
-    for (int i = 0; i < 32; i++) { if (sscanf(line + 6 + 2 * i, "%2x", &x) != 1) return 1; msg[11 + i] = x; }
-    crypto_eddsa_sign(sig, sk, msg, sizeof msg);
+    memcpy(msg, req, rl);
+    for (int i = 0; i < 32; i++) { if (sscanf(line + 6 + 2 * i, "%2x", &x) != 1) return 1; msg[rl + i] = x; }
+    crypto_eddsa_sign(sig, sk, msg, rl + 32);
     if (write(fd, sig, 64) != 64) return 1;
     size_t n = read_line(fd, line, sizeof line); close(fd);
     printf("%s\n", n ? line : "FAILED no answer");
     return strncmp(line, "OK", 2) != 0;
+}
+
+/* The system partition is mounted read-only at boot, and toybox cannot remount it: /proc/mounts names the device
+ * /dev/root, which does not exist on these Echos, and naming dm-0 instead it finds no "/" in the table.  The kernel
+ * needs neither for a remount, only the mount point: found here by walking up from PATH to where the device changes
+ * (system-as-root on the supported Echos, so "/" for /system/hassmic).  Writable once remounted because boot-root
+ * turned dm-verity off: dm-0 "system" maps the whole active slot, ro=0, ro.boot.veritymode=disabled (all three models). */
+static int remount(const char *how, const char *path)
+{
+    char dir[512], up[512]; struct stat st, pst; int ro = !strcmp(how, "ro");
+    if (!ro && strcmp(how, "rw")) { fprintf(stderr, "otatool: remount rw or ro\n"); return 2; }
+    if (!realpath(path, dir) || stat(dir, &st)) { fprintf(stderr, "otatool: %s: %s\n", path, strerror(errno)); return 1; }
+    while (strcmp(dir, "/")) {
+        snprintf(up, sizeof up, "%s", dir);
+        char *slash = strrchr(up, '/'); if (slash == up) slash[1] = 0; else *slash = 0;
+        if (stat(up, &pst) || pst.st_dev != st.st_dev) break;
+        memcpy(dir, up, sizeof dir);
+    }
+    if (mount(NULL, dir, NULL, MS_REMOUNT | (ro ? MS_RDONLY : 0), NULL)) {
+        fprintf(stderr, "otatool: remount %s %s: %s\n", how, dir, strerror(errno)); return 1;
+    }
+    printf("%s\n", dir);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -174,7 +202,13 @@ int main(int argc, char **argv)
     if (argc == 5 && !strcmp(argv[1], "verify")) return verify_install(argv[2], argv[3], argv[4], NULL);
     if (argc == 6 && !strcmp(argv[1], "push")) return push(argv[2], argv[3], argv[4], argv[5]);
     if (argc == 6 && !strcmp(argv[1], "install")) return verify_install(argv[2], argv[3], argv[4], argv[5]);
-    if (argc == 5 && !strcmp(argv[1], "adb")) return adb(argv[2], argv[3], argv[4]);
-    fprintf(stderr, "usage: otatool keygen SECRET PUBLIC | push HOST PORT BUNDLE SIG | adb HOST PORT SECRET | pack SECRET VERSION OUT FILE[:MODE]... | verify PUBLIC BUNDLE SIG | install PUBLIC BUNDLE SIG DESTDIR\n");
+    if (argc == 5 && !strcmp(argv[1], "adb")) return challenge(argv[2], argv[3], argv[4], "HMOTA-ADB1\n");
+    if (argc == 6 && !strcmp(argv[1], "factory")) {
+        char req[100];
+        if (snprintf(req, sizeof req, "HMOTA-FACTORY1 %s\n", argv[5]) >= (int)sizeof req) { fprintf(stderr, "otatool: version too long\n"); return 2; }
+        return challenge(argv[2], argv[3], argv[4], req);
+    }
+    if (argc == 4 && !strcmp(argv[1], "remount")) return remount(argv[2], argv[3]);
+    fprintf(stderr, "usage: otatool keygen SECRET PUBLIC | push HOST PORT BUNDLE SIG | adb HOST PORT SECRET | factory HOST PORT SECRET VERSION | pack SECRET VERSION OUT FILE[:MODE]... | verify PUBLIC BUNDLE SIG | install PUBLIC BUNDLE SIG DESTDIR | remount rw|ro PATH\n");
     return 2;
 }

@@ -35,5 +35,22 @@ r=$($O adb 127.0.0.1 16972 $T/evil.sec); echo "$r" | grep -q "^FAILED signature"
 # a recorded answer does not work again: the challenge differs each time
 n1=$(printf 'HMOTA-ADB1\n' | timeout 3 nc -q2 127.0.0.1 16972 | head -1); n2=$(printf 'HMOTA-ADB1\n' | timeout 3 nc -q2 127.0.0.1 16972 | head -1)
 echo "$n1" | grep -qE '^NONCE [0-9a-f]{64}$' && [ "$n1" != "$n2" ]; ok $? "a new challenge every time"
+# Approving an installed update as the factory copy.  This script is the installer loop: it takes the version asked for.
+approver() {
+    for i in $(seq 1 40); do [ -f $T/state/ota/factory ] && break; sleep 0.25; done
+    [ -f $T/state/ota/factory ] || return
+    echo "OK $(cat $T/state/ota/factory) is now the factory copy" > $T/state/ota/factory-result; rm -f $T/state/ota/factory
+}
+approver & r=$($O factory 127.0.0.1 16972 $T/k.sec 9.9.9+test); wait $!
+[ "$r" = "OK 9.9.9+test is now the factory copy" ]; ok $? "update key approves a version, the installer gets exactly that one: $r"
+r=$($O factory 127.0.0.1 16972 $T/evil.sec 9.9.9+test); echo "$r" | grep -q "^FAILED signature" && [ ! -f $T/state/ota/factory ]; ok $? "another key does not, and asks for nothing: $r"
+r=$(printf 'HMOTA-FACTORY1 1;reboot\n' | timeout 3 nc -q1 127.0.0.1 16972 2>/dev/null || true); echo "$r" | grep -q "^FAILED bad request"; ok $? "a version with shell characters is refused: $r"
+# a wrong signature approves nothing
+r=$(python3 - "$T/k.sec" <<'PY'
+import socket, sys
+s = socket.create_connection(("127.0.0.1", 16972)); s.sendall(b"HMOTA-FACTORY1 9.9.9+test\n")
+line = s.makefile("rb").readline(); s.sendall(b"\0" * 64); print(s.makefile("rb").readline().decode().strip())
+PY
+); echo "$r" | grep -q "^FAILED signature" && [ ! -f $T/state/ota/factory ]; ok $? "a wrong signature approves nothing: $r"
 kill $PID; rm -rf $T
 [ $fail = 0 ] && echo "all good" || { echo FAILED; exit 1; }

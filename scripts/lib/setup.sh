@@ -302,7 +302,7 @@ install_satellite() {
     local name ip tok
     prompt name "Name for this Echo in Home Assistant" "$DEFAULT_NAME"
     wait_adb device || return 1
-    task "Installing (the Echo reboots twice)" scripts/install-system.sh "$name" || return 1
+    task "Installing (the Echo reboots)" scripts/install-system.sh "$name" || return 1
     [ -n "$DRY" ] || sleep 10
     wait_adb device || return 1
     # main.sh restarts a hassmic that dies, so it has to be seen twice, 10 s apart, to not be a crash loop

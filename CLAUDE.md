@@ -51,9 +51,15 @@ There is no single-test selector: run one unit test by building/running its line
   on the push port with `secrets/update.key`; no HA needed), or kept open by `ADB_WIFI=1` in `hassmic.conf`. Then
   `adb connect <echo-ip>:5555`. USB always works.
 - `scripts/deploy.sh`: build + push to `/data/local/hassmic` for trial runs (`adb shell sh /data/local/hassmic/run.sh`).
-- `scripts/ota-push.sh [host]`: build, sign with `secrets/update.key`, push bundle to TCP 28929 on an installed Echo.
+- `scripts/ota-push.sh [--approve] [host]`: build, sign with `secrets/update.key`, push bundle to TCP 28929 on an installed Echo.
   The Echo verifies against the public key on its system partition and falls back if the new build does not stay up.
-- `scripts/install-system.sh`: writes `/system/hassmic/`, init rc and patched SELinux policy via TWRP. `--uninstall` reverts.
+  Then it asks the user to try it; on "y" (or `--approve` later) a signed `HMOTA-FACTORY1 <version>` makes `main.sh`
+  (`factory()`, only if that version is installed and its hassmic is what runs) have `sysinstall.sh` write it to
+  `/system/hassmic` as the factory copy, bootstrap included (`boot.sh`, `otatool`, `hassmic.rc`; never `update.pub` or
+  `/sepolicy`). Works from older installs: the pushed update brings the code. No terminal: no prompt, not approved.
+- `scripts/install-system.sh`: writes `/system/hassmic/`, init rc and patched SELinux policy from the running OS
+  (`sysinstall.sh install`; `otatool remount rw` since toybox cannot: `/dev/root` does not exist). `--twrp` the old way.
+  `--uninstall` reverts.
 - Logs: `/data/local/hassmic/boot.log`. Config: `/data/local/hassmic/hassmic.conf` (`NAME`, `PROTO`, `ARGS`, `MODE`,
   `ADB_WIFI`; root-owned, 644: root sources it).
   State (API key, BLE bonds, BT keys, Sendspin, settings): `/data/local/hassmic/state/`.

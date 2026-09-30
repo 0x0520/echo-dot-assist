@@ -2,5 +2,6 @@
 #ifndef OTA_H
 #define OTA_H
 int ota_start(int port);        /* listener thread; does nothing useful without /system/hassmic/update.pub.  Also
-                                   opens adb over Wi-Fi for whoever holds the update key (ota.c) */        /* listener thread; does nothing useful without /system/hassmic/update.pub */
+                                   opens adb over Wi-Fi, and makes an approved update the factory copy, for whoever
+                                   holds the update key (ota.c) */
 #endif

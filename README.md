@@ -130,6 +130,11 @@ scripts/ota-push.sh <echo-ip>        # remembers the address
 Builds, signs, pushes over Wi-Fi (TCP 28929). The Echo installs only what verifies against your key, restarts hassmic,
 and falls back to the installed copy by itself if the new one does not stay up. What changed: [CHANGELOG.md](CHANGELOG.md).
 
+Then it asks you to try it. Once you say yes, the Echo makes it the installed copy (the fallback), start script and
+update checker included; answer no if something is off, and the old fallback stays. To approve later:
+`scripts/ota-push.sh --approve <echo-ip>` (the version last pushed there from this PC; the Echo refuses unless that
+version is the one running).
+
 ## Configuration
 
 One file on the Echo, `/data/local/hassmic/hassmic.conf`, read at boot (edit over adb, reboot):

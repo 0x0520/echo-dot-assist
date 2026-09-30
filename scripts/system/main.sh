@@ -88,9 +88,31 @@ netwatch() {
 # model (its device.conf names the product this Echo reports).  This runs in the firewall service so that it can restart
 # the satellite service.
 rejected() { echo "== update rejected: $1"; rm -rf $new; echo "FAILED $1" > $IN/result.tmp; }
+# The owner tried the installed update and approved it (ota-push.sh asks; the approval is signed with the update key,
+# for this version, see ota.c): it becomes the factory copy on the system partition, bootstrap included.  Only if it is
+# the update installed now and the hassmic running is its binary, i.e. what the owner tried is what gets written: not
+# after a fall back to the factory copy, not with a test binary from deploy.sh in /data.
+factory() {
+    want=$1 cur=$(readlink $OTA/current)
+    have=$(cat $cur/VERSION 2>/dev/null)
+    running=
+    for p in $(pidof hassmic); do [ "$(readlink /proc/$p/exe)" = "$cur/hassmic" ] && running=1; done
+    if [ -z "$cur" ] || [ "$have" != "$want" ]; then echo "FAILED $want is not the installed update (that is ${have:-none}); nothing written"
+    elif [ -z "$running" ]; then echo "FAILED $want is installed but not what runs now (fell back to the factory copy?); nothing written"
+    elif cmp -s $cur/VERSION $SYS/VERSION; then echo "OK $want is the factory copy already"
+    elif out=$(sh $cur/sysinstall.sh factory $cur 2>&1); then echo "$out" >&2; echo "OK $want is now the factory copy"
+    else echo "$out" >&2; echo "FAILED $(echo "$out" | tail -1)"
+    fi
+}
 ota_watch() {
     IN=/data/local/hassmic/state/ota
     while sleep 2; do
+        if [ -f $IN/factory ]; then
+            want=$(cat $IN/factory); rm -f $IN/factory
+            case "$want" in *[!A-Za-z0-9.+_-]*|"") r="FAILED bad version";; *) r=$(factory "$want");; esac    # its stderr: the log
+            echo "== factory copy: $r"
+            echo "$r" > $IN/factory-result.tmp; chown $DAEMON_USER $IN/factory-result.tmp; mv $IN/factory-result.tmp $IN/factory-result
+        fi
         [ -f $IN/request ] || continue
         rm -f $IN/request $IN/result
         new=$OTA/v$(cut -d. -f1 /proc/uptime)-$$
@@ -101,6 +123,10 @@ ota_watch() {
             rejected "version $ver is built for ${prod:-an unknown model}, this Echo is $(getprop ro.product.device); not installed"
         elif ! { chmod 755 $new && [ -f $new/main.sh ] && $new/runas $DAEMON_USER shell $new/hassmic -T > /dev/null 2>&1; }; then  # the daemon's user can really run it
             rejected "version $ver does not run as the daemon's user (self-check failed), not installed"
+        elif [ -f $new/otatool ] && ! $new/otatool verify $SYS/update.pub $IN/bundle $IN/bundle.sig > /dev/null 2>&1; then
+            # Approved, its otatool becomes the one on the system partition that checks every later update: so it must
+            # pass that check itself.
+            rejected "version $ver brings an otatool that does not verify it; not installed"
         else
             old=$(readlink $OTA/current)
             ln -sfn $new $OTA/current                   # toybox: replaces the link itself (checked on the device); no mv -T there

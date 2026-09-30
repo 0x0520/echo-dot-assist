@@ -203,7 +203,7 @@ Run in this order. Each step says what it proves.
 
 - [x] init service for `hassmic`; keep `puffin`, `puffinmrmd`, `dacd`, `smarthomed` off across reboots.
       Written, **not installed**: `scripts/system/{hassmic.rc,boot.sh,sepolicy.rules}` + `scripts/install-system.sh <lan-cidr>` (via TWRP;
-      `/` is dm-0 and cannot be remounted rw live). Services run with `seclabel u:r:su:s0`; needs `allow init su process transition`
+      `/` is dm-0 and cannot be remounted rw live: wrong, only toybox cannot, see the live system writes below). Services run with `seclabel u:r:su:s0`; needs `allow init su process transition`
       in `/sepolicy` (that file is the active policy; boot-root's vendor path does not exist here). Patched copy was test-loaded
       live with `magiskpolicy --live`: kernel accepts it. Kill switch: delete `/data/local/hassmic/hassmic.conf`.
       **Installed 2026-09-21 by the user; verified after reboot:** `hassmic` + `hassmic_fw` running from init in `u:r:su:s0`, hassmic as
@@ -781,3 +781,27 @@ Run in this order. Each step says what it proves.
       leaves that much).
       Not done on the biscuit: the button pressed with this build (latch 1, red ring, HA), a spoken wake word and
       command, a phone on A2DP
+- [x] System partition written from the running OS, no TWRP (2026-09-30, from issue #1: toybox `mount -o remount,rw /`
+      fails because `/proc/mounts` names `/dev/root`, which does not exist, while `mount(2)` with MS_REMOUNT works).
+      On all three models: `dm-0` named `system` spans the whole active slot (donut `system_b` = mmcblk0p14, radar
+      and biscuit `system_a` = mmcblk0p13, same size), `ro=0`, `ro.boot.veritymode=disabled` (boot-root). `otatool
+      remount rw|ro PATH` (walks up to the mount point: `/`, system-as-root) tried rw then ro on each, nothing written.
+      `scripts/system/sysinstall.sh` does the writing: every script `sh -n`, product checked, each file staged as
+      `.new` then renamed (boot.sh last), unchanged files skipped, remount ro on exit. `install-system.sh` uses it when
+      the OS is up (`--twrp` the old way). Every bundle now also carries `boot.sh`, `otatool`, `sysinstall.sh`,
+      `hassmic.rc`, `pryon_test`; `ota_watch` first has the bundle's own otatool verify it (it may become the one on
+      /system). `ota-push.sh` pushes, asks the user to try it, and on "y" (or `--approve [host]` later: the version in
+      `build/<model>/pushed-<host>`) sends `HMOTA-FACTORY1 <version>`: nonce challenge as for adb, the signature covers
+      the version. hassmic drops `state/ota/factory`; `ota_watch` promotes `ota/current` only if its VERSION is that one
+      and a running hassmic's `/proc/<pid>/exe` is its binary (not after a fallback, not a deploy.sh test binary).
+      First version made it the factory copy automatically after a minute of running (`--factory`); the user wanted the
+      approval step instead. Older installs get there with one push: the old `ota_watch` installs the bundle, its new
+      `main.sh` handles the approval.
+      On biscuit over `adb forward` to the push port: install by 0.3.0+1646bc1's ota_watch, then (automatic version) "sysinstall factory: 9 files written, factory copy is 0.3.0+aa353bb-dirty", `/` back ro, no `.new` left; with
+      `tries` = 3 and a reboot it ran from `/system/hassmic` (lock up, HA/MA reconnected). Approval version: push without
+      a terminal → "not the factory copy yet"; `otatool factory` for 0.0.1+nope → "FAILED … is not the installed update";
+      `--approve` → "OK … is now the factory copy" (6 changed files), again → "already"; after a forced fallback
+      (tries = 3, reboot) → "FAILED … installed but not what runs now". `tests/ota_push_test.sh`: approval with the
+      key, another key, shell characters in the version, a bad signature. `install-system.sh "Echo Dot 2"` live: policy already
+      patched, 0 files changed, stale `latency`/`VERSION` removed, rebooted into the factory copy, `/` ro.
+      Not tried on a device: the live policy write (only when the policy changes) and live `--uninstall`.

@@ -6,7 +6,8 @@ Model D9N29T, MediaTek MT8516, `ro.product.device` = `donut_puffin`. Supported w
 - **Unlock and root**: `kamakiri-donut` (bootrom exploit through test pads on the board, then TWRP), then `boot-root`
   for root adb and a permissive `su` SELinux domain. Steps and files are in the root [README](../../README.md#install).
 - **Install**: `INSTALL=twrp-ab`. `scripts/install-system.sh` patches `/sepolicy` with `boot-root`'s magiskpolicy
-  under the running OS. It then writes the active A/B slot (`bcbtool get_active`) from TWRP.
+  under the running OS, then writes the running system partition (`/` is dm-0 over the active slot, verity off; remounted
+  writable by `otatool remount`). `--twrp`: the active A/B slot (`bcbtool get_active`) from TWRP, as before.
 - **Audio**: Amazon's `mixer` daemon and `libmixerAPI.so` (`micAsr` 16 kHz post-AEC capture; TTS, Music and Earcon
   streams). Wake word: `libpryon.so` with the stock `en-US/ALEXA` model, plus models fetched from Amazon.
 - **Hardware**:
@@ -203,8 +204,9 @@ scripts/wifi-join.sh                                     # refuses to run withou
 scripts/install-system.sh "Kitchen Echo"         # the name Home Assistant will show
 ```
 
-Patches the SELinux policy, reboots into TWRP, writes `/system/hassmic/`, an init file and the policy into the active slot
-(old policy kept as `/sepolicy.pre-hassmic`), reboots. Refuses to write if anything is not as expected. From now on the
+Patches the SELinux policy, writes `/system/hassmic/`, an init file and the policy into the active slot while the Echo runs
+(no TWRP: the system partition is remounted writable, which boot-root's disabled dm-verity allows; old policy kept as
+`/sepolicy.pre-hassmic`), reboots. `--twrp` writes it from TWRP instead, e.g. for an Echo that no longer starts. Refuses to write if anything is not as expected. From now on the
 Echo boots silent and dark, locks itself down, and is a satellite about a minute after power-up.
 
 1. Home Assistant shows a discovered ESPHome device with that name under Settings → Devices & services. Otherwise add it

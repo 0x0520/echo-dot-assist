@@ -4,6 +4,14 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-09-30
 
+- **Updates now ask you to try them, then renew the Echo's fallback copy.** The copy on the system partition, which the
+  Echo falls back to when an update does not come up, was the one from the day it was installed; changing it took USB
+  and a trip through TWRP. `scripts/ota-push.sh` now pushes the update as before, asks you to try it, and when you say
+  yes the Echo writes it over that copy, together with its start script and the tool that checks updates. Say no (or
+  run it without a terminal) and it stays an update only; `scripts/ota-push.sh --approve <echo-ip>` approves it later.
+  Echos installed before this change get there the same way, over Wi-Fi.
+- **Installing no longer goes through TWRP.** `scripts/install-system.sh` writes the system partition while the Echo
+  runs normally (one reboot instead of two); `--twrp` does it the old way, e.g. for an Echo that no longer starts.
 - **adb over Wi-Fi is closed.** On an unlocked Echo adb is a root shell that asks for no key, and it was open to
   everyone on the network (issue #1). It is now closed at every boot and opened only on purpose: the new switch
   **Debug access (adb over Wi-Fi)** in Home Assistant opens it for 30 minutes (it closes by itself, or when you turn

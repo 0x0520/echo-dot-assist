@@ -33,16 +33,23 @@ if [ "$MODE" != uninstall ]; then
     [ "$MODE" = factory ] || [ -s "$SRC/update.pub" ] || [ -s $H/update.pub ] || { say "no update.pub, nothing written"; exit 1; }
 fi
 
-"$SRC/otatool" remount rw $H > /dev/null || exit 1
-trap '"$SRC/otatool" remount ro $H > /dev/null || say "partition still writable, the next boot mounts it read-only"' EXIT
+# /system, not $H: otatool resolves the path it is given, and $H does not exist before the first install or after uninstall
+"$SRC/otatool" remount rw /system > /dev/null || exit 1
+trap '"$SRC/otatool" remount ro /system > /dev/null || say "partition still writable, the next boot mounts it read-only"' EXIT
 
-# new DEST from FILE with MODE OWNER LABEL: written beside DEST as DEST.new; nothing if DEST already has that content
+# new DEST from FILE with MODE OWNER LABEL: written beside DEST as DEST.new; nothing if DEST already has that content.
+# A file for / is made in /system and renamed to /: created in / it would get the label of /, rootfs, and SELinux
+# refuses that on this ext4 partition (no "rootfs labeledfs:filesystem associate"; checked for the file's label, so the
+# permissive su domain does not help; issue #2).  The rename keeps /system's label; relabelling to rootfs is refused the
+# same way, so files in / end up system_file, as TWRP's install has left /sepolicy.pre-hassmic.
 staged=
 new() {
     cmp -s "$2" "$1" && [ "$(stat -c %a:%u:%g "$1")" = "$3:$4" ] && return 0
-    rm -f "$1.new"
-    cp "$2" "$1.new" && chown "$4" "$1.new" && chmod "$3" "$1.new" && chcon "$5" "$1.new" ||
-        { say "cannot write $1.new"; rm -f "$1.new"; exit 1; }
+    tmp=$1.new; [ -n "${1%/*}" ] || tmp=/system$1.new
+    rm -f "$1.new" "$tmp"
+    cp "$2" "$tmp" && chown "$4" "$tmp" && chmod "$3" "$tmp" && chcon "$5" "$tmp" &&
+        { [ "$tmp" = "$1.new" ] || mv "$tmp" "$1.new"; } ||
+        { say "cannot write $1.new"; rm -f "$1.new" "$tmp"; exit 1; }
     staged="$staged $1"
 }
 commit() {
@@ -54,8 +61,7 @@ commit() {
 
 if [ "$MODE" = uninstall ]; then
     if [ -f /sepolicy.pre-hassmic ]; then
-        lbl=$(ls -Zd /sepolicy | grep -o 'u:object_r:[^ ]*')
-        new /sepolicy /sepolicy.pre-hassmic 644 0:0 "$lbl"; commit; rm /sepolicy.pre-hassmic
+        new /sepolicy /sepolicy.pre-hassmic 644 0:0 $SYSLABEL; commit; rm /sepolicy.pre-hassmic
     fi
     rm -rf $H $RC; sync
     say "hassmic removed from the system partition"
@@ -75,11 +81,10 @@ for f in "$SRC"/*; do
 done
 new $RC "$SRC/hassmic.rc" 644 0:0 $SYSLABEL
 if [ "$MODE" = install ] && [ -f "$SRC/sepolicy" ]; then
-    # The policy as boot-root left it stays beside it, for --uninstall.  Label: the one the policy file has now.
-    [ -f /sepolicy.pre-hassmic ] || cp -p /sepolicy /sepolicy.pre-hassmic
-    lbl=$(ls -Zd /sepolicy | grep -o 'u:object_r:[^ ]*')
-    chcon "$lbl" /sepolicy.pre-hassmic
-    new /sepolicy "$SRC/sepolicy" 644 0:0 "$lbl"
+    # The policy as boot-root left it stays beside it, for --uninstall; staged first, so commit() renames it into place
+    # before the new policy.  Init loads /sepolicy before any policy is in force: its label does not matter.
+    [ -f /sepolicy.pre-hassmic ] || new /sepolicy.pre-hassmic /sepolicy 644 0:0 $SYSLABEL
+    new /sepolicy "$SRC/sepolicy" 644 0:0 $SYSLABEL
 fi
 commit
 if [ "$MODE" = install ]; then

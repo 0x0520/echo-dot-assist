@@ -67,6 +67,12 @@ step_usb() {
 
 step_unlock() {
     [ -z "$DRY" ] && adb_is recovery && { ok "TWRP is running already"; return 0; }
+    # Fire OS on adb: unlocked before (stock has no adb), and the unlock left TWRP on the recovery partition
+    if [ -z "$DRY" ] && adb_is device; then
+        ok "unlocked already"
+        task "Restarting into TWRP" adb reboot recovery || return 1
+        wait_adb recovery; return
+    fi
     [ -d $FW/amonet ] || task "Unpacking amonet" unzip -q $FW/$AMONET -d $FW/amonet || return 1
     tell "Put the Echo into fastboot mode" "Hold the action button (•) and plug the power in." \
         "Keep holding until the ring shows a green light."
@@ -123,6 +129,8 @@ step_network() {
     local ssid pass new=
     wait_adb device || return 1
     task "Copying hassmic to the Echo" scripts/deploy.sh || return 1
+    # adb can drop out for a moment here, shortly after the boot (seen on an Echo Dot 2, issue #2)
+    wait_adb device || return 1
     task "Locking down the Echo's internet access" sh -c 'adb shell sh /data/local/hassmic/lockdown.sh &&
         adb shell iptables -S hassmic_out | grep -q -- "-j DROP"' || return 1
     if [ ! -f secrets/wifi.conf ]; then

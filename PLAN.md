@@ -805,7 +805,8 @@ Run in this order. Each step says what it proves.
       (tries = 3, reboot) → "FAILED … installed but not what runs now". `tests/ota_push_test.sh`: approval with the
       key, another key, shell characters in the version, a bad signature. `install-system.sh "Echo Dot 2"` live: policy already
       patched, 0 files changed, stale `latency`/`VERSION` removed, rebooted into the factory copy, `/` ro.
-      Not tried on a device: the live policy write (only when the policy changes) and live `--uninstall`.
+      Not tried on a device then: the live policy write (only when the policy changes) and live `--uninstall`; both
+      failed on a first install, fixed below (issue #2).
 - [x] Light sensor and LED brightness in Home Assistant (2026-10-01). Stock's auto brightness is `ledcontroller`'s own
       (AutoBrightnessManager, `docs/re-platform.md` §1), not PuffinApp's, and it starts at boot without anyone asking:
       Echo Dot 2 with `ledctrl -a off -b 50`, rebooted, showed 9 again at 40 lx; radar and biscuit kept rewriting
@@ -880,6 +881,23 @@ Run in this order. Each step says what it proves.
       speaker elsewhere (the wake word through loud music); choosing among several speakers (an ESPHome select's
       options reach Home Assistant only on connect, `manager.py` `device_info_and_list_entities`, so it would need a
       reconnect: kept as "strongest in pairing mode"); `BTUnpair` (line out) only switches playing on the speaker off.
+- [x] First install from the running OS fixed (2026-10-01, issue #2: an Echo Dot 2 set up by someone else, guided
+      setup). Four faults on the way, all first-install only: `firmware/<model>/images` was never created
+      (`payload_dump.py` makes it now); adb gone for a moment between `deploy.sh` and the lockdown (now `wait_adb`);
+      `otatool remount rw /system/hassmic` before that directory exists (realpath fails; also after `--uninstall`, so
+      `/` stayed rw until the reboot: both now `/system`); and no new file can be made in `/` under the running OS.
+      `/` is labelled `rootfs` on the ext4 system partition, a new file inherits that, and the policy has `file_type
+      labeledfs` and `rootfs rootfs` associate but not `rootfs labeledfs`: biscuit `touch /hm-direct` → "avc: denied {
+      associate } scontext=u:object_r:rootfs:s0 tcontext=u:object_r:labeledfs:s0", although `su` is permissive (the
+      check's source is the file's label). Relabelling to `rootfs` is refused the same way. A file made in `/system`
+      (`system_file`) and renamed into `/` keeps its label, also over an existing file (tried). `sysinstall.sh` stages
+      files for `/` that way; `/sepolicy` and `/sepolicy.pre-hassmic` end up `system_file`, as TWRP's install left the
+      backup. On biscuit: live `sysinstall uninstall` (base policy back, md5 = `device-logs/backup`, `/system/hassmic`
+      gone, `/` ro), then `install-system.sh` with neither `/system/hassmic` nor the backup: 17 files, policy written,
+      rebooted Enforcing with the patched policy from a `system_file` `/sepolicy`, hassmic from `/system/hassmic`, lock
+      up, puffin stopped. Setup's unlock step now takes an Echo already unlocked (Fire OS on adb: stock has none) to
+      TWRP with `adb reboot recovery` instead of asking for the unlock (biscuit: "unlocked already", TWRP up; donut's
+      kamakiri and radar's amonet also leave TWRP on the recovery partition). Not tried: donut and radar first installs.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

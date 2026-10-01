@@ -4,6 +4,13 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-01
 
+- **First install fixed** ([issue #2](https://github.com/Gamer92000/echo-dot-assist/issues/2)). Installing on an
+  Echo for the first time stopped at the "Install" step ("No such file or directory", then "Permission denied" for
+  `/sepolicy.new`); only Echos installed before 2026-09-30 got through, because they had run the older installer. Fixed,
+  with two smaller hiccups of the guided setup: the firmware unpacking failing on a missing `images` folder, and the
+  lockdown failing when adb was gone for a moment. An Echo that is unlocked already is now taken straight to TWRP by
+  the "Unlock" step instead of having to be marked done by hand.
+
 - **Play on a Bluetooth speaker.** The Echo can now send everything it plays to a Bluetooth speaker, as a stock Echo
   can. Put the speaker in pairing mode and switch on "Bluetooth speaker search" in Home Assistant; "Play on Bluetooth
   speaker" switches between the speaker and the Echo, and the Echo reconnects by itself. While on the speaker, the

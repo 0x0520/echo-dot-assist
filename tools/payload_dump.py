@@ -17,6 +17,7 @@ def fields(b):
         else: raise Exception(w)
         yield f, v
 f = open(sys.argv[1], 'rb'); out = sys.argv[2]
+os.makedirs(out, exist_ok=True)
 assert f.read(4) == b'CrAU'
 ver, msz = struct.unpack('>QQ', f.read(16)); ssz = struct.unpack('>I', f.read(4))[0]
 man = f.read(msz); f.read(ssz); base = f.tell()

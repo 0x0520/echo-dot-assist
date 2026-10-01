@@ -47,6 +47,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Media player entity (TTS, `play_media`)       | ❌                      | ✅                                           | ❌                       |
 | Multiroom music                               | Amazon speaker groups   | Music Assistant (Sendspin)                   | Music Assistant (Sendspin) |
 | Bluetooth speaker                             | SBC                     | SBC, AAC, aptX, aptX HD; pairing from HA     | reconnects already paired devices only |
+| Play on a Bluetooth speaker                   | ✅ (Alexa app)          | ✅ found and paired from HA, SBC ([details](#bluetooth-speaker-output)) | keeps playing on one already set up |
 | Bluetooth proxy for Home Assistant            | ❌                      | ✅ scanning, connections, pairing            | ❌                       |
 | Buttons, LED ring, hardware mute              | ✅                      | ✅                                           | ✅                       |
 | Mute state and audio settings in HA           | ❌                      | ✅                                           | ❌                       |
@@ -79,13 +80,32 @@ Details:
   speaking, errors and mute. Silent and dark at boot.
 - **Music**: one source at a time, the newest wins. A phone starting over Bluetooth pauses Music Assistant (the whole
   group), Music Assistant starting on the Echo pauses the phone. The voice assistant ducks both.
+- **Playing on a Bluetooth speaker**<a id="bluetooth-speaker-output"></a>: everything the Echo plays (replies, timers,
+  its sounds, music) can come out of a Bluetooth speaker instead of its own, as with stock. Put the speaker in pairing
+  mode near the Echo and switch on "Bluetooth speaker search": within a minute the Echo pairs with the strongest one it
+  hears (speakers, headphones, and PCs that offer to play audio) and plays on it. You cannot pick one from a list: Home
+  Assistant reads an ESPHome select's choices only when it connects, so keep only the speaker you want in pairing mode.
+  "Play on Bluetooth speaker" switches between it and the Echo; the Echo reconnects by itself when the speaker comes
+  back, and takes it when the speaker calls the Echo on switching on. "Bluetooth speaker" shows its name and state.
+  - **Volume**: the speaker has its own. While the Echo plays on it, the volume buttons, Home Assistant and Music
+    Assistant set the speaker's volume, and the light ring shows it; the Echo starts from the speaker's own volume and
+    the speaker's buttons move it too. Back on the Echo, its own volume returns. With a speaker that supports
+    Bluetooth absolute volume (most do) the Echo sends the sound at full level and the speaker turns it down, which
+    sounds best; with one that does not, the Echo turns it down itself, as stock does.
+  - **Music Assistant**: a Bluetooth speaker plays late, by its buffer. "Bluetooth speaker delay" (default 250 ms) is
+    what the Echo allows for, so that it stays in time with other players; set it by ear for your speaker.
+  - The Echo still listens for the wake word while the sound comes from the speaker. How well it hears through loud
+    music played elsewhere in the room has not been measured yet.
+  - SBC only (every speaker has it), one speaker at a time. ESPHome only for setting it up.
 - **Bluetooth**: the proxy works like an ESPHome `bluetooth_proxy` with `active: true`, up to 3 connections, "Just Works"
   pairing only. While a phone plays, the proxy stops scanning: the radio cannot do both without the music stuttering.
 - **Settings in Home Assistant**: "Mic level" (how loud speech reaches the voice assistant, -35 to -15 dBFS, default
   -26; the Echo adjusts its gain to it), "Noise reduction" (off by default; low, medium, high: RNNoise on what the voice
   assistant gets takes the background down by up to 6, 9 or 12 dB), mute switch, "Do not disturb"
   switch (drops announcements, purple pulse when switched on), "Wake sound" switch (covers all local sounds),
-  "Bluetooth pairing" switch (blue chaser on the ring while it is on), "Bluetooth announcements" switch and their language, "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
+  "Bluetooth pairing" switch (blue chaser on the ring while it is on), "Bluetooth announcements" switch and their language,
+  "Bluetooth speaker search" and "Play on Bluetooth speaker" switches, "Bluetooth speaker" state and "Bluetooth speaker
+  delay" (see [Playing on a Bluetooth speaker](#bluetooth-speaker-output)), "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
   only Sendspin servers paired with the token may play), equalizer (bass, mid, treble, −6 to +6 dB, Amazon's own,
   applied to everything the Echo plays), "Debug access (adb over Wi-Fi)" switch (see [Configuration](#configuration)).
   "LED auto brightness" switch and "LED brightness" slider: the ring dims with the room as on a stock Echo (Amazon's

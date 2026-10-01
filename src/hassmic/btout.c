@@ -1,0 +1,328 @@
+/*
+ * Playing to a Bluetooth speaker, the mixer's side.  Stock Alexa did it with btmanagerd (Fluoride inside); the mixer has
+ * the whole route built in, so hassmic stands in for btmanagerd towards it (docs/re-a2dp-source.md, checked on an Echo
+ * Dot 2 with a2dpprobe):
+ *
+ *   route   LIPC string property com.doppler.audiod A2DPSourceConnect, "1:<address>" moves the mixer's single output
+ *           from the Echo's speaker to its A2DP HAL (audio.a2dp.default.so), "0:<address>" back.  Everything mixed goes
+ *           there (music, replies, earcons), with the Echo's volume and equalizer applied, as with stock.
+ *   HAL     AOSP's audio_a2dp_hw: it connects to two abstract sockets as Fluoride serves them, commands on .a2dp_ctrl (a
+ *           byte each, a byte back: 0 done), 44.1 kHz stereo s16 on .a2dp_data once started.  The HAL writes as fast as
+ *           it may: the reader sets the pace, like Fluoride's media timer.  It sends START once when the mixer opens the
+ *           output and then plays all the time (silence included: the mixer's keep-alive for speakers that switch off).
+ *   AIPC    on every change of A2DPSourceConnect the mixer asks btmanagerd's service (uuid 0) for the speaker's name, and on
+ *           BTUnpair (line out plugged while on the speaker) tells it to disconnect.  With btmanagerd gone each change
+ *           waited ~20 s for a connect timeout; hassmic answers in its place.
+ *   packets SBC (sbc.c) in RTP packets, as many frames as fit the media channel; a2dp.c sends them when the link has
+ *           room.  A queue of at most QUEUE_MS: older packets go when the radio falls behind.
+ */
+#define _GNU_SOURCE                     /* accept4 on the PC */
+#include "btout.h"
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/un.h>
+#include <time.h>
+#include <unistd.h>
+#include "a2dp.h"
+#include "aipc_api.h"
+#include "core.h"
+#include "hci.h"
+#include "sbc.h"
+
+#define RATE 44100                      /* the HAL's output, fixed */
+#define QUEUE_MS 200
+#define QMAX 24
+#define START_WAIT_MS 3000              /* for the speaker to start; the HAL waits up to 5 s for our answer */
+
+enum { CMD_CHECK_READY = 1, CMD_START, CMD_STOP, CMD_SUSPEND, CMD_GET_AUDIO_CONFIG };
+
+static long long us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (long long)t.tv_sec * 1000000 + t.tv_nsec / 1000; }
+
+static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+/* m: */
+static int ready, streaming, start_failed, cfg_gen;     /* a2dp.c's stream state; its configuration's generation */
+static uint64_t ready_addr; static char ready_name[80]; static int bitpool; static unsigned per_packet;
+static int want_route, routed_now; static uint64_t want_addr, routed_addr;
+static int want_abs, abs_pct, mode_now;  /* the speaker takes absolute volume, at that; core_speaker's mode as set */
+static struct { size_t n; unsigned char b[1024]; } q[QMAX];
+static int qh, qn; static long dropped;
+static atomic_int hal_started, routed;
+
+/* ---------------------------------------------------------------- route */
+
+static void set_route(int on, uint64_t addr)
+{
+    char v[16], out[64];
+    snprintf(v, sizeof v, "%d:%012llx", on, (unsigned long long)addr);     /* exactly 12 digits: the mixer copies 6 bytes */
+    char *set[] = { "/system/bin/lipc-set-prop", "-s", "com.doppler.audiod", "A2DPSourceConnect", v, NULL };
+    char *get[] = { "/system/bin/lipc-get-prop", "-s", "com.doppler.audiod", "OutputDevice", NULL };
+    long long t = us();
+    core_run(set, out, sizeof out);
+    for (int i = 0; i < 20; i++) {                      /* the mixer's playback thread switches a moment later */
+        core_run(get, out, sizeof out);
+        if (!strncmp(out, on ? "BT##" : "SPEAKER##", on ? 4 : 9)) break;
+        usleep(100000);
+    }
+    out[strcspn(out, "\r\n")] = 0;
+    fprintf(stderr, "btout: mixer output %s (%s, %lld ms)\n", on ? "to the speaker" : "to the Echo", out, (us() - t) / 1000);
+}
+
+/* One change at a time, in an order that never plays loud: the Echo's own volume comes back (and the mixer down from
+ * full scale) before the route goes back to the Echo's speaker; the speaker's volume takes over only once routed. */
+static void *route_thread(void *arg)
+{
+    (void)arg;
+    /* left on the speaker by a hassmic that is gone: back to the Echo (core_volume has the mixer's level back already) */
+    char out[64]; char *get[] = { "/system/bin/lipc-get-prop", "-s", "com.doppler.audiod", "OutputDevice", NULL };
+    core_run(get, out, sizeof out);
+    if (!strncmp(out, "BT##", 4)) set_route(0, 0);
+    for (;;) {
+        pthread_mutex_lock(&m);
+        for (;;) {
+            int off = routed_now && (!want_route || want_addr != routed_addr), on = !routed_now && want_route;
+            int mode = routed_now && !off ? (want_abs ? SPEAKER_ABSOLUTE : SPEAKER_MIXER) : SPEAKER_NONE;
+            if (off || on || (routed_now && !off && mode != mode_now)) break;
+            pthread_cond_wait(&cv, &m);
+        }
+        int off = routed_now && (!want_route || want_addr != routed_addr);
+        if (routed_now) {                               /* volume first: down to the Echo's own before leaving */
+            int mode = off ? SPEAKER_NONE : want_abs ? SPEAKER_ABSOLUTE : SPEAKER_MIXER, pct = abs_pct;
+            if (mode != mode_now) {
+                pthread_mutex_unlock(&m); core_speaker(mode, pct);
+                pthread_mutex_lock(&m); mode_now = mode; pthread_mutex_unlock(&m);
+                continue;
+            }
+        }
+        int on = !routed_now; uint64_t a = on ? want_addr : routed_addr;
+        pthread_mutex_unlock(&m);
+        set_route(on, a);
+        pthread_mutex_lock(&m); routed_now = on; routed_addr = a; atomic_store(&routed, on); pthread_mutex_unlock(&m);
+    }
+    return NULL;
+}
+
+/* ---------------------------------------------------------------- AIPC: btmanagerd's service, what the mixer asks of it */
+
+static int aipc_handler(struct aipc_task *t)
+{
+    unsigned char *d = t->data; uint32_t len = t->len ? *t->len : 0; int32_t ok = 0;
+    if (t->type != 0 || !d) return 0;                   /* events: clients coming and going */
+    switch (t->function_id) {
+    case AIPC_BT_SESSION_OPEN:
+        if (len >= 11) { static uint32_t session; uint32_t s = ++session; memcpy(d + 1, &s, 4); memcpy(d + 7, &ok, 4); }
+        break;
+    case AIPC_BT_SESSION_CLOSE: if (len >= 9) memcpy(d + 5, &ok, 4); break;
+    case AIPC_BT_GET_NAME:                              /* the mixer: its keep-alive table goes by name, and the event */
+        if (len >= 0x0a + 249) {
+            memcpy(d, &ok, 4); memset(d + 0x0a, 0, 249);
+            pthread_mutex_lock(&m); snprintf((char *)d + 0x0a, 249, "%s", ready_name); pthread_mutex_unlock(&m);
+        }
+        break;
+    case AIPC_BT_A2DP_SRC_DISCONNECT:
+        if (len >= 12) { memcpy(d + 8, &ok, 4); fprintf(stderr, "btout: the mixer lets go of the speaker\n"); a2dp_out_enable(0); }
+        break;
+    default:                            /* ace_blemesh_service asks 0x0a every 2 s; we have no answer for it */
+        if (t->status) *t->status = -1;
+    }
+    return 0;
+}
+
+/* The service as btmanagerd had it: directory and socket labelled btmanagerd_aipc_tmpfs, which the mixer may connect to
+ * (created plainly they would be aipcd_tmpfs, which it may not).  The label is for what this thread creates. */
+static void *aipc_thread(void *arg)
+{
+    (void)arg;
+    void *lib = dlopen("libace_aipc.so", RTLD_NOW);
+    aceAipc_start_fn start = lib ? (aceAipc_start_fn)dlsym(lib, "aceAipc_start") : NULL;
+    if (!start) { fprintf(stderr, "btout: no AIPC: %s\n", dlerror()); return NULL; }
+    static struct aipc_server_cfg cfg;
+    cfg.uuid = AIPC_BT_UUID; cfg.handler = aipc_handler; cfg.max_payload = 0x2800; cfg.r10 = 10; cfg.r14 = 1; cfg.thread_option = 1;
+    char path[64]; snprintf(path, sizeof path, "/proc/self/task/%ld/attr/fscreate", (long)syscall(SYS_gettid));
+    for (int i = 0; ; i++) {
+        static const char con[] = "u:object_r:btmanagerd_aipc_tmpfs:s0";
+        int fd = open(path, O_WRONLY | O_CLOEXEC), h = -1;
+        if (fd >= 0 && write(fd, con, sizeof con) < 0) { close(fd); fd = -1; }
+        int r = start(&h, &cfg);
+        if (fd >= 0) { if (write(fd, "", 0) < 0) {} close(fd); }
+        if (!r) { fprintf(stderr, "btout: answering the mixer as the Bluetooth service\n"); return NULL; }
+        /* btmanagerd's directory, until alexa-off.sh has removed it */
+        if (!i) fprintf(stderr, "btout: AIPC service: error %d, trying again\n", r);
+        sleep(i < 12 ? 5 : 60);
+    }
+}
+
+/* ---------------------------------------------------------------- HAL sockets */
+
+static int listen_abstract(const char *name)
+{
+    struct sockaddr_un a = { .sun_family = AF_UNIX };   /* sun_path[0] = 0, the name without its NUL: as the HAL connects */
+    size_t n = strlen(name);
+    memcpy(a.sun_path + 1, name, n);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0 || bind(fd, (struct sockaddr *)&a, offsetof(struct sockaddr_un, sun_path) + 1 + n) < 0 || listen(fd, 5) < 0) {
+        fprintf(stderr, "btout: %s: %s\n", name, strerror(errno));
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void ack(int fd, unsigned char v) { if (send(fd, &v, 1, MSG_NOSIGNAL) < 0) {} }
+
+static unsigned char command(int fd, unsigned c)
+{
+    long long t;
+    switch (c) {
+    case CMD_CHECK_READY: pthread_mutex_lock(&m); c = ready; pthread_mutex_unlock(&m); return c ? 0 : 1;
+    case CMD_START:
+        pthread_mutex_lock(&m);
+        if (!ready) { pthread_mutex_unlock(&m); fprintf(stderr, "btout: START without a speaker\n"); return 1; }
+        start_failed = 0; atomic_store(&hal_started, 1);
+        pthread_mutex_unlock(&m);
+        hci_poke();                                     /* a2dp.c sends AVDTP START */
+        for (t = us(); ; ) {
+            pthread_mutex_lock(&m); int s = streaming, f = start_failed || !ready; pthread_mutex_unlock(&m);
+            if (s) return 0;
+            if (f || us() - t > START_WAIT_MS * 1000LL) { atomic_store(&hal_started, 0); fprintf(stderr, "btout: the speaker did not start\n"); return 1; }
+            usleep(10000);
+        }
+    case CMD_STOP: case CMD_SUSPEND: atomic_store(&hal_started, 0); hci_poke(); return 0;
+    case CMD_GET_AUDIO_CONFIG: {        /* the HAL's input side only, never used: the format anyway */
+        uint32_t r = RATE; unsigned char ch = 2;
+        ack(fd, 0); if (send(fd, &r, 4, MSG_NOSIGNAL) < 0 || send(fd, &ch, 1, MSG_NOSIGNAL) < 0) {}
+        return 0xff; }
+    default: return 0;                  /* ACL priority up / down: what the mixer plays is (not) silence */
+    }
+}
+
+static void queue_push(const unsigned char *p, size_t n, unsigned frames)
+{
+    pthread_mutex_lock(&m);
+    if (streaming && n <= sizeof q[0].b) {
+        while (qn && (qn == QMAX || (long long)qn * frames * 1000 / RATE >= QUEUE_MS)) { qh = (qh + 1) % QMAX; qn--; dropped++; }
+        int at = (qh + qn) % QMAX; memcpy(q[at].b, p, n); q[at].n = n; qn++;
+    }
+    pthread_mutex_unlock(&m);
+    hci_poke();
+}
+
+static void *hal_thread(void *arg)
+{
+    int lc = ((int *)arg)[0], ld = ((int *)arg)[1], ctrl = -1, data = -1;
+    struct sbc_enc enc; int gen = -1; unsigned k = 1, nf = 0, fill = 0;
+    int16_t pcm[2 * SBC_ENC_FRAMES]; unsigned char pkt[1024]; size_t plen = 13;
+    uint16_t seq = 0; uint32_t ts = 0;
+    long long since = 0, taken = 0, stat = us(); long got = 0; int peak = 0;
+    for (;;) {
+        /* the pace: what 44.1 kHz stereo s16 has delivered since the data socket opened.  Fallen far behind (the mixer
+         * paused): start counting again rather than drain it in a burst */
+        long long now = us(), allowed = (now - since) * (RATE * 4LL) / 1000000;
+        if (data >= 0 && allowed - taken > RATE * 4LL / 5) { since = now - taken * 1000000 / (RATE * 4LL); allowed = taken; }
+        int hold = data >= 0 && taken >= allowed;
+        struct pollfd p[4] = { { lc, POLLIN, 0 }, { ld, POLLIN, 0 }, { ctrl, POLLIN, 0 }, { hold ? -1 : data, POLLIN, 0 } };
+        if (poll(p, 4, hold ? 3 : 1000) < 0 && errno != EINTR) { usleep(100000); continue; }
+        if (p[0].revents & POLLIN) {
+            int fd = accept4(lc, NULL, NULL, SOCK_CLOEXEC);
+            if (fd >= 0) { if (ctrl >= 0) close(ctrl); ctrl = fd; }
+        }
+        if (p[1].revents & POLLIN) {
+            int fd = accept4(ld, NULL, NULL, SOCK_CLOEXEC);
+            if (fd >= 0) { if (data >= 0) close(data); data = fd; since = us(); taken = 0; fill = 0; nf = 0; plen = 13; fprintf(stderr, "btout: mixer playing\n"); }
+        }
+        if (ctrl >= 0 && p[2].revents) {
+            unsigned char c;
+            if (recv(ctrl, &c, 1, 0) != 1) { close(ctrl); ctrl = -1; atomic_store(&hal_started, 0); hci_poke(); }
+            else { unsigned char a = command(ctrl, c); if (a != 0xff) ack(ctrl, a); }
+        }
+        if (data >= 0 && p[3].revents) {
+            ssize_t n = recv(data, (char *)pcm + fill, sizeof pcm - fill, 0);
+            if (n <= 0) { close(data); data = -1; fprintf(stderr, "btout: mixer stopped\n"); continue; }
+            fill += n; taken += n; got += n;
+            if (fill < sizeof pcm) continue;
+            fill = 0;
+            for (int i = 0; i < 2 * SBC_ENC_FRAMES; i++) { int v = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (v > peak) peak = v; }
+            pthread_mutex_lock(&m);
+            if (gen != cfg_gen) { gen = cfg_gen; sbc_enc_init(&enc, RATE, bitpool); k = per_packet; nf = 0; plen = 13; }
+            pthread_mutex_unlock(&m);
+            if (plen + sbc_enc_len(enc.bitpool) > sizeof pkt) { nf = 0; plen = 13; }
+            plen += sbc_encode(&enc, pcm, pkt + plen);
+            if (++nf < k) continue;
+            /* RTP: version 2, payload type 96, sequence, timestamp in samples, SSRC 1; then the SBC header: frame count */
+            pkt[0] = 0x80; pkt[1] = 0x60; pkt[2] = seq >> 8; pkt[3] = seq; seq++;
+            pkt[4] = ts >> 24; pkt[5] = ts >> 16; pkt[6] = ts >> 8; pkt[7] = ts; ts += nf * SBC_ENC_FRAMES;
+            pkt[8] = pkt[9] = pkt[10] = 0; pkt[11] = 1; pkt[12] = nf;
+            queue_push(pkt, plen, nf * SBC_ENC_FRAMES);
+            nf = 0; plen = 13;
+        }
+        if (us() - stat > 60000000LL) {             /* peak: whether the mixer sends more than its keep-alive silence */
+            pthread_mutex_lock(&m); long d = dropped; dropped = 0; int s = streaming; pthread_mutex_unlock(&m);
+            if (s || d) fprintf(stderr, "btout: %lld bytes/s from the mixer, peak %d, %ld packets dropped\n", got * 1000000LL / (us() - stat), peak, d);
+            stat = us(); got = 0; peak = 0;
+        }
+    }
+    return NULL;
+}
+
+/* ---------------------------------------------------------------- API */
+
+void btout_start(void)
+{
+    static int started; static int fds[2];
+    if (started) return;
+    started = 1;
+    fds[0] = listen_abstract("/data/misc/bluedroid/.a2dp_ctrl"); fds[1] = listen_abstract("/data/misc/bluedroid/.a2dp_data");
+    if (fds[0] < 0 || fds[1] < 0) return;
+    pthread_t t;
+    pthread_create(&t, NULL, hal_thread, fds); pthread_detach(t);
+    pthread_create(&t, NULL, route_thread, NULL); pthread_detach(t);
+    pthread_create(&t, NULL, aipc_thread, NULL); pthread_detach(t);
+}
+
+void btout_ready(uint64_t addr, const char *name, int bp, unsigned mtu)
+{
+    pthread_mutex_lock(&m);
+    ready = 1; streaming = 0; ready_addr = addr; snprintf(ready_name, sizeof ready_name, "%s", name);
+    bitpool = bp; per_packet = (mtu - 13) / sbc_enc_len(bp);
+    if (per_packet < 1) per_packet = 1;
+    if (per_packet > 15) per_packet = 15;               /* the SBC header's frame count has 4 bits */
+    cfg_gen++; qn = 0;
+    want_route = 1; want_addr = addr; pthread_cond_signal(&cv);
+    pthread_mutex_unlock(&m);
+    fprintf(stderr, "btout: \"%s\": SBC bitpool %d, %u frames per packet\n", name, bp, per_packet);
+}
+
+void btout_gone(void)
+{
+    pthread_mutex_lock(&m);
+    ready = 0; streaming = 0; qn = 0; want_route = 0; want_abs = 0; pthread_cond_signal(&cv);
+    pthread_mutex_unlock(&m);
+}
+
+void btout_absvol(int on, int pct) { pthread_mutex_lock(&m); want_abs = on; abs_pct = pct; pthread_cond_signal(&cv); pthread_mutex_unlock(&m); }
+void btout_streaming(int on) { pthread_mutex_lock(&m); streaming = on; if (!on) qn = 0; pthread_mutex_unlock(&m); }
+void btout_start_failed(void) { pthread_mutex_lock(&m); start_failed = 1; pthread_mutex_unlock(&m); }
+int  btout_want(void) { return atomic_load(&hal_started); }
+int  btout_routed(void) { return atomic_load(&routed); }
+
+size_t btout_packet(unsigned char *buf, size_t max)
+{
+    size_t n = 0;
+    pthread_mutex_lock(&m);
+    if (qn && q[qh].n <= max) { n = q[qh].n; memcpy(buf, q[qh].b, n); }
+    if (qn) { qh = (qh + 1) % QMAX; qn--; }
+    pthread_mutex_unlock(&m);
+    return n;
+}
+
+long long btout_latency_us(void) { return atomic_load(&routed) ? a2dp_out_delay(-1) * 1000LL : 0; }

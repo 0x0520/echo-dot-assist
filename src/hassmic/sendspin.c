@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include "audio.h"
 #include "board.h"
+#include "btout.h"
 #include "core.h"
 #include "hash.h"
 #include "netio.h"
@@ -62,6 +63,9 @@ static uint8_t id_priv[32], id_pub[32]; static char client_id[48];
  * arriving in micRaw, which includes the capture path (32 ms blocks, stamped on delivery).  Taking ~15 ms for that leaves
  * ~70 ms; the rest is trimmed by ear with the server's static delay.  Override: HASSMIC_OUTPUT_LATENCY_MS. */
 static long long output_latency_us = 70000;
+/* Playing to a Bluetooth speaker: its own buffer on top (the "Bluetooth speaker delay" setting, btout.c).  The step when
+ * the route changes is caught up like any other: one snap. */
+static long long out_latency_us(void) { return output_latency_us + btout_latency_us(); }
 
 static long long raw_us(void)
 {
@@ -183,10 +187,10 @@ static void *player_thread(void *arg)
 
         uint8_t *pcm = c->pcm; size_t len = c->len;
         long long due = tf_client_time(c->ts) - atomic_load(&static_delay_ms) * 1000LL;
-        long long err = due - (raw_us() + music_queued_us() + output_latency_us);      /* > 0: we are early */
+        long long err = due - (raw_us() + music_queued_us() + out_latency_us());       /* > 0: we are early */
         if (atomic_exchange(&snap_next, 0) || llabs(err) > SNAP_US) {
             if (err > 0) {
-                while (err > 200000 && atomic_load(&stream_on)) { usleep(20000); err = due - (raw_us() + music_queued_us() + output_latency_us); }
+                while (err > 200000 && atomic_load(&stream_on)) { usleep(20000); err = due - (raw_us() + music_queued_us() + out_latency_us()); }
                 for (long long frames = err * RATE / 1000000; frames > 0; ) {
                     size_t n = frames > RATE / 100 ? RATE / 100 : (size_t)frames;
                     music_write(silence, n * FRAME); frames -= n;

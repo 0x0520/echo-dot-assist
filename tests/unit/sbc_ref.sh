@@ -1,5 +1,6 @@
 #!/bin/sh
 # SBC decoder against BlueZ's libsbc: every mode sbcenc offers, on a synthetic stereo signal (sweeps, noise, clipping).
+# Encoder: libsbc decodes ours (CRC checked) about as well as its own encoder's output at the same bitpool.
 set -e
 d=build/sbc; mkdir -p $d
 python3 - $d/in.au <<'PY'
@@ -23,4 +24,21 @@ for opt in "-s 8 -b 53 -j" "-s 8 -b 35" "-s 4 -b 20 -j -S" "-s 8 -b 31 -d -B 4" 
 done
 sbcenc -s 8 -b 31 $d/mono.au > $d/mono.sbc 2>/dev/null; sbcdec -f $d/mono.sbc.au $d/mono.sbc >/dev/null 2>&1
 build/sbc_test $d/mono.sbc $d/mono.sbc.au || fail=1
+cc -O2 -Wall -Isrc/hassmic tests/unit/sbc_enc_test.c src/hassmic/sbc.c -lm -o build/sbc_enc_test
+for bp in 2 35 53 250; do
+    build/sbc_enc_test $d/in.au $d/enc$bp.sbc $bp && sbcdec -f $d/enc$bp.au $d/enc$bp.sbc >/dev/null 2>&1
+    sbcenc -s 8 -b $bp -j $d/in.au > $d/ref$bp.sbc 2>/dev/null && sbcdec -f $d/ref$bp.au $d/ref$bp.sbc >/dev/null 2>&1
+    python3 - $d/in.au $d/enc$bp.au $d/ref$bp.au $bp <<'PY' || fail=1
+import array, math, sys
+def pcm(p):
+    b = open(p, 'rb').read(); a = array.array('h', b[int.from_bytes(b[4:8], 'big'):]); a.byteswap(); return a
+x, ours, ref = (pcm(p) for p in sys.argv[1:4])
+def snr(d, lag=146):                    # both codecs: 73 frames of filter delay, stereo interleaved
+    n = min(len(x), len(d) - lag); s = sum(v * v for v in x[:n]); e = sum((d[lag + i] - x[i]) ** 2 for i in range(n))
+    return 10 * math.log10(s / max(e, 1))
+a, b = snr(ours), snr(ref); ok = len(ours) == len(ref) and a > b - 0.5
+print("%s encoder bitpool %s: SNR %.1f dB, libsbc's encoder %.1f dB" % ("ok  " if ok else "FAIL", sys.argv[4], a, b))
+sys.exit(not ok)
+PY
+done
 exit $fail

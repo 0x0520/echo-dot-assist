@@ -11,7 +11,7 @@ through the reverse-engineered C API of `libmixerAPI.so` and speaks the ESPHome 
 
 Docs: `README.md` (user-facing usage; install instructions per model in `devices/<codename>/README.md`, guided by
 `scripts/setup.sh`), `DEVELOPMENT.md` (architecture, layout, tests, contributing), `PLAN.md` (phases, open issues, every measurement), `CHANGELOG.md`
-(user-visible changes by date), `docs/` (reverse-engineering findings: `FINDINGS.md`, `re-platform.md`, `re-pryon.md`, `re-aed.md`,
+(user-visible changes by date), `docs/` (reverse-engineering findings: `FINDINGS.md`, `re-platform.md`, `re-pryon.md`, `re-aed.md`, `re-a2dp-source.md`,
 `sendspin-digest.md`).
 
 ## Build and test
@@ -118,15 +118,19 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 - **Music**: `sendspin.c` (Music Assistant Sendspin player over `ws.c`/`noise.c`/`net.c`/`hash.c`, decodes via
   `dr_flac`/`minimp3`/libopus). `a2dp.c` + `a2dp_codecs.c` + `sbc.c` = Bluetooth A2DP sink (SBC, AAC via firmware FFmpeg
   loaded with dlopen, aptX/aptX HD via `freeaptx`) with AVRCP. Only one music source plays at a time (newest wins).
+  The other way, playing on a Bluetooth speaker: `a2dp.c` (inquiry, pairing, AVDTP initiator, AVRCP absolute volume)
+  + `btout.c`, which stands in for btmanagerd towards the mixer's own A2DP route (LIPC `A2DPSourceConnect`, the A2DP
+  HAL's abstract sockets, AIPC service uuid 0 via `libace_aipc.so`; `docs/re-a2dp-source.md`) and SBC-encodes
+  (`sbc.c`). While on the speaker the core has a volume of its own (`core_speaker`).
 - **Bluetooth**: `ble.c`/`ble_crypto.c` talk raw HCI (`hci.h`) to the controller for the HA Bluetooth proxy (scan, GATT,
   Just Works pairing); Amazon's `btmanagerd` is stopped. A2DP shares the controller; scanning pauses while a phone plays.
 - **adb over Wi-Fi** (`adbwifi.c`): the HA switch only writes a request for root's firewall watcher, as `ota.c` does
   for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key.
 - **Push updates**: `ota.c` receives bundles on the device; `src/tools/otatool.c` is the same code for pack/sign (PC)
   and verify/unpack (device), with monocypher.
-- `src/include/`: headers for the reversed Amazon libraries (`mixer_api.h`, `pryon_api.h`) and `netio.h`.
+- `src/include/`: headers for the reversed Amazon libraries (`mixer_api.h`, `pryon_api.h`, `aipc_api.h`) and `netio.h`.
 - `src/tools/`: standalone device tools (`mixcap`, `mixplay`, `pryon_test`, `aed_test`, `latency`, `runas` — AIPC refuses uid 0 and
-  the image has no `su`; `curlspy`, `hciscan` not in `all`).
+  the image has no `su`; `curlspy`, `hciscan`, `a2dpprobe` not in `all`).
 
 Boot integration (`scripts/system/`, rc in `devices/<codename>/`): `hassmic.rc` (init) starts `boot.sh` (fixed, on /system), which picks the factory
 copy or a verified update and runs `main.sh` (updatable): `main.sh firewall` (egress lock re-asserted in a loop, root side

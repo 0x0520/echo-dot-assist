@@ -852,7 +852,34 @@ Run in this order. Each step says what it proves.
       threshold 0.845, the same results on all clips except a near miss on the CO beeps. The /system model is good enough.
       Open: played test sounds in the room (smoke alarm, glass, dog) and some talking or TV; whether to require a
       type in two windows in a row.
-- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): the Echo as a Bluetooth
-      *source* to a speaker (a2dp.c is sink only); Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
+- [x] Playing on a Bluetooth speaker (2026-10-01, `btout.c`, `a2dp.c`, `sbc.c`; `docs/re-a2dp-source.md`): the mixer
+      keeps its own A2DP route; hassmic stands in for btmanagerd towards it. LIPC `com.doppler.audiod`
+      `A2DPSourceConnect` `1:<12 hex>` / `0:…` switches the mixer's single output; the HAL's abstract sockets
+      `.a2dp_ctrl` / `.a2dp_data` served as Fluoride does (CHECK_READY only with a stream, START acked once AVDTP START
+      is), 44.1 kHz stereo s16 read paced (unpaced the HAL wrote 234 kB/s; paced exactly 176.4 kB/s, 0 drops over
+      minutes). AIPC service uuid 0 through `libace_aipc.so` (`thread_option` 1, else `aceAipc_start` never returns),
+      created as `btmanagerd_aipc_tmpfs` via fscreate; `alexa-off.sh` removes btmanagerd's `/dev/aipc/0`. Without it
+      every route change stalled ~20 s (`lipc-set-prop` timed out at 10 s); with it 0.08 s. SBC encoder (analysis
+      filter from the spec, joint stereo per subband, CRC): `make unit` decodes it with libsbc at every bitpool tried,
+      SNR equal to libsbc's own encoder within 0.1 dB, first frame bit-identical apart from the CRC we got wrong at
+      first. Radio: inquiry (class audio/video or service bits rendering + audio, strongest wins), Create Connection
+      (paged every 10 s, then every 60 s), SSP / PIN 0000 only with the chosen speaker, AVDTP initiator (discover, caps,
+      SBC 44.1 kHz joint stereo 16/8 loudness, bitpool min(53, sink max), open, media channel) or acceptor when the
+      speaker configures our source SEP 0x30; SDP: A2DP source record added, AVRCP controller now categories 1 + 2.
+      Checked on air, Echo Dot 2 with BlueZ 5.87 / PipeWire on the PC as the speaker: pairing, configuration (bitpool 53,
+      MTU 1021, 8 frames per packet), route switch, reconnect with the stored key; a 48 kHz stereo tone through `mixplay`
+      arrived at the PC as 1000.2 / 3000.5 Hz on the right sides, 74 s without a gap. Levels: PipeWire applied the
+      Echo's 30 % as AVRCP volume (we answered as a phone's target), -31 dB more: the speaker link offers no absolute
+      volume as target now. Volume model: a volume of its own while on the speaker, taken from the speaker
+      (RegisterNotification INTERIM), Echo buttons / HA / MA set it (SetAbsoluteVolume), the speaker's CHANGED come
+      back; mixer at full scale meanwhile (`core_speaker`), the Echo's own volume set aside in `state/volume.speaker`
+      and restored before the route goes back. BlueZ refused the volume event (REJECTED, invalid parameter) while our
+      controller record said category 1 only (`avrcp_volume_supported`, `volume_category`); the PC keeps the SDP
+      records of the first pairing, so the fix needs a fresh pairing there: **absolute volume not yet seen working**.
+      Not done: a real speaker; the speaker's own reconnect to us; echo cancellation with the sound coming from a
+      speaker elsewhere (the wake word through loud music); choosing among several speakers (an ESPHome select's
+      options reach Home Assistant only on connect, `manager.py` `device_info_and_list_entities`, so it would need a
+      reconnect: kept as "strongest in pairing mode"); `BTUnpair` (line out) only switches playing on the speaker off.
+- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

@@ -59,6 +59,10 @@ int  core_bluetooth(int set);                   /* same; -B on the command line:
 int  core_dnd(int set);                          /* same: do not disturb, announcements are dropped (the protocol checks) */
 int  core_volume(void);
 void core_set_volume(int percent);
+enum { SPEAKER_NONE, SPEAKER_MIXER, SPEAKER_ABSOLUTE };
+void core_speaker(int mode, int pct);            /* not the lock: playing on the Echo's speaker, a Bluetooth speaker with a
+                                                    volume of its own through the mixer, or one with absolute volume (pct:
+                                                    its own; the mixer at full scale).  The Echo's own volume comes back */
 /* Wake word models: the stock "Alexa" plus model sets in the models directory (README, "Another wake word").  The list
  * is fixed after start; Home Assistant picks the active one. */
 struct core_wake_word { char id[64], name[64], lang[16], manifest[256]; };
@@ -86,4 +90,6 @@ enum { MUSIC_SENDSPIN = 1, MUSIC_BLUETOOTH = 2 };
 void   core_music(int source, int on);                      /* a music stream runs: the wake word threshold follows */
 void   core_bt_device(const char *name, int on);            /* a Bluetooth speaker source connected / went (not the lock) */
 void   core_bt_pairing(int on);                             /* the Bluetooth speaker's pairing window opened / closed (not the lock) */
+void   core_run(char *const argv[], char *out, size_t n);   /* runs a stock tool the way the core does, until it closes its
+                                                               stdout, which lands in out (any thread, not the lock) */
 #endif

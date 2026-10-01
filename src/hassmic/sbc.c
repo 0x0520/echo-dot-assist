@@ -163,3 +163,103 @@ size_t sbc_decode(struct sbc *s, const uint8_t *p, size_t n, int16_t *out, unsig
     *samples = blocks * nsb;
     return len;
 }
+
+/* ---------------------------------------------------------------- encoder
+ * The analysis filter bank (12.5.1 of the specification, in floating point like the decoder), scale factors, joint
+ * stereo per subband where mid/side needs smaller scale factors than left/right, the same bit allocation as decoding,
+ * and the CRC sinks check (libsbc refuses a frame without it). */
+
+static float acos8[8][16];                      /* analysis matrixing M[k][i] = cos((k + 0.5)(i - 4) pi / 8) */
+
+int sbc_enc_init(struct sbc_enc *e, unsigned rate, int bitpool)
+{
+    memset(e, 0, sizeof *e);
+    if (!tables_ready) tables();
+    if (!acos8[0][0]) for (int k = 0; k < 8; k++) for (int i = 0; i < 16; i++) acos8[k][i] = cos((k + 0.5) * (i - 4) * M_PI / 8);
+    e->fs = -1;
+    for (int i = 0; i < 4; i++) if (rates[i] == rate) e->fs = i;
+    e->bitpool = bitpool < 2 ? 2 : bitpool > 250 ? 250 : bitpool;
+    return e->fs < 0 ? -1 : 0;
+}
+
+size_t sbc_enc_len(int bitpool) { return 4 + 4 * 8 * 2 / 8 + (8 + 16 * bitpool + 7) / 8; }
+
+/* 8 new samples of one channel (stride apart, oldest first) through the analysis filter: 8 subband samples */
+static void analysis(float *x, const int16_t *in, int stride, float *s)
+{
+    float y[16];
+    memmove(x + 8, x, 72 * sizeof *x);
+    for (int i = 0; i < 8; i++) x[7 - i] = in[i * stride];
+    for (int i = 0; i < 16; i++) {
+        float a = 0;
+        for (int j = 0; j < 5; j++) a += proto8[i + 16 * j] * x[i + 16 * j];
+        y[i] = a;
+    }
+    for (int k = 0; k < 8; k++) {
+        float a = 0;
+        for (int i = 0; i < 16; i++) a += acos8[k][i] * y[i];
+        s[k] = a;
+    }
+}
+
+static int scalefactor(float m) { int sf = 0; while (sf < 15 && m >= (float)(2 << sf)) sf++; return sf; }
+
+static void put(uint8_t *p, size_t *pos, unsigned v, int n)
+{
+    while (n--) { if (v >> n & 1) p[*pos >> 3] |= 0x80 >> (*pos & 7); (*pos)++; }
+}
+
+/* CRC-8, polynomial x^8 + x^4 + x^3 + x^2 + 1, initial 0x0f, over bytes 1-2 and the first `bits` bits from byte 4 */
+static uint8_t crc8(const uint8_t *p, size_t bits)
+{
+    unsigned c = 0x0f;
+    for (size_t i = 8; i < 32 + bits; i++) {
+        if (i >= 24 && i < 32) continue;                /* the CRC itself */
+        unsigned b = p[i >> 3] >> (7 - (i & 7)) & 1;
+        c = (c << 1 ^ ((c >> 7 ^ b) ? 0x1d : 0)) & 0xff;
+    }
+    return c;
+}
+
+size_t sbc_encode(struct sbc_enc *e, const int16_t *pcm, uint8_t *out)
+{
+    float sb[16][2][8];
+    for (int blk = 0; blk < 16; blk++) for (int ch = 0; ch < 2; ch++) analysis(e->x[ch], pcm + blk * 16 + ch, 2, sb[blk][ch]);
+
+    int sf[2][8], bits[2][8], join = 0;
+    for (int k = 0; k < 8; k++) {
+        float m[2] = { 0, 0 }, ms[2] = { 0, 0 };
+        for (int blk = 0; blk < 16; blk++) {
+            float l = sb[blk][0][k], r = sb[blk][1][k], mid = (l + r) / 2, side = (l - r) / 2;
+            if (fabsf(l) > m[0]) m[0] = fabsf(l);
+            if (fabsf(r) > m[1]) m[1] = fabsf(r);
+            if (fabsf(mid) > ms[0]) ms[0] = fabsf(mid);
+            if (fabsf(side) > ms[1]) ms[1] = fabsf(side);
+        }
+        int a = scalefactor(m[0]), b = scalefactor(m[1]), c = scalefactor(ms[0]), d = scalefactor(ms[1]);
+        if (k < 7 && c + d < a + b) {                   /* the last subband never joins (12.5.2) */
+            join |= 1 << k; sf[0][k] = c; sf[1][k] = d;
+            for (int blk = 0; blk < 16; blk++) {
+                float l = sb[blk][0][k], r = sb[blk][1][k];
+                sb[blk][0][k] = (l + r) / 2; sb[blk][1][k] = (l - r) / 2;
+            }
+        } else { sf[0][k] = a; sf[1][k] = b; }
+    }
+    allocate(2, 8, 0, e->fs, e->bitpool, sf, bits);
+
+    size_t len = sbc_enc_len(e->bitpool), pos = 32;
+    memset(out, 0, len);
+    out[0] = 0x9c; out[1] = e->fs << 6 | 3 << 4 | 3 << 2 | 0 << 1 | 1; out[2] = e->bitpool;
+    for (int k = 0; k < 8; k++) put(out, &pos, join >> k & 1, 1);
+    for (int ch = 0; ch < 2; ch++) for (int k = 0; k < 8; k++) put(out, &pos, sf[ch][k], 4);
+    out[3] = crc8(out, pos - 32);
+    for (int blk = 0; blk < 16; blk++) for (int ch = 0; ch < 2; ch++) for (int k = 0; k < 8; k++) {
+        int nb = bits[ch][k];
+        if (!nb) continue;
+        /* the decoder rebuilds scale * ((2q + 1) / levels - 1): q is the level the sample falls in */
+        float levels = (float)((1u << nb) - 1), scale = (float)(2u << sf[ch][k]);
+        long q = (long)floorf((sb[blk][ch][k] / scale + 1) * levels / 2);
+        put(out, &pos, q < 0 ? 0 : q > (long)levels - 1 ? (unsigned)levels - 1 : (unsigned)q, nb);
+    }
+    return len;
+}

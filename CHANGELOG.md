@@ -4,6 +4,12 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-01
 
+- **Play on a Bluetooth speaker.** The Echo can now send everything it plays to a Bluetooth speaker, as a stock Echo
+  can. Put the speaker in pairing mode and switch on "Bluetooth speaker search" in Home Assistant; "Play on Bluetooth
+  speaker" switches between the speaker and the Echo, and the Echo reconnects by itself. While on the speaker, the
+  volume buttons and Home Assistant set the speaker's own volume (shown on the light ring); the Echo's volume comes back
+  when you switch back. Music Assistant keeps it in time with other players through "Bluetooth speaker delay".
+
 - **Sound detection, optional.** A new "Sound detection" switch (off by default) runs Amazon's Alexa Guard model on
   the Echo itself, and a "Sound" entity in Home Assistant reports what it heard: smoke or CO alarm, breaking glass, a
   dog barking, a baby crying, snoring, coughing, water, a beeping appliance. It is less reliable than on a stock Echo,

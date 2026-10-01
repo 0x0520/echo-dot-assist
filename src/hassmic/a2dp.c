@@ -12,13 +12,17 @@
  *   L2CAP     basic mode, we accept channels (SDP, AVDTP, AVCTP) and open only AVCTP, when the device has not 2 s after
  *             AVDTP (BlueZ does not always).  AVDTP and AVCTP need an encrypted link: a device that asks before
  *             encrypting gets "pending" while we authenticate and encrypt.
- *   SDP       A2DP sink 1.3 (AVDTP 1.3), speaker; AVRCP 1.5 target (category 2: absolute volume) and controller.
+ *   SDP       A2DP sink 1.3 (AVDTP 1.3), speaker; AVRCP 1.5 target (category 2: absolute volume) and controller
+ *             (categories 1 and 2: play / pause a phone, a speaker's volume); A2DP source 1.3 for playing to a speaker.
  *   AVRCP     the Echo's volume is the device's volume slider, both ways; play / pause to the device (action button,
  *             another music source starting on the Echo).
  *   AVDTP     one sink endpoint per codec (a2dp_codecs.c: SBC, AAC, aptX HD, aptX; Opus not, see there), the source
  *             picks; delay reporting so video stays in sync.  One stream at a time: the others show as in use meanwhile.
  *   audio     decoded into a jitter buffer, a player thread feeds the mixer's music stream.  The phone's clock and the
  *             mixer's drift apart: a frame is dropped or repeated now and then to hold the buffer at its target.
+ *
+ * And the other way, the Echo playing to a Bluetooth speaker (A2DP source; the mixer's side is btout.c), see "playing
+ * to a Bluetooth speaker" below.
  */
 #include "a2dp.h"
 #include <errno.h>
@@ -34,11 +38,12 @@
 #include <unistd.h>
 #include "audio.h"
 #include "ble.h"
+#include "btout.h"
 #include "core.h"
 #include "hci.h"
 #include "a2dp_codec.h"
 
-#define MAX_LINKS 2
+#define MAX_LINKS 3                     /* a phone playing to us, the speaker we play to, one more */
 #define MAX_CHANS 6                     /* per link: SDP, AVDTP signalling + media, and room for a retry */
 #define MAX_KEYS 8
 #define RX_MTU 1024                     /* what we receive per L2CAP frame; phones size their media packets to it */
@@ -48,10 +53,10 @@
 #define CHUNK_MS 10
 
 enum { H4_CMD = 1, H4_ACL = 2 };
-enum { EV_CONN_COMPLETE = 0x03, EV_CONN_REQUEST, EV_DISCONNECT, EV_AUTH_COMPLETE, EV_REMOTE_NAME = 0x07, EV_ENC_CHANGE, EV_PIN_REQUEST = 0x16,
+enum { EV_INQUIRY_COMPLETE = 0x01, EV_CONN_COMPLETE = 0x03, EV_CONN_REQUEST, EV_DISCONNECT, EV_AUTH_COMPLETE, EV_REMOTE_NAME = 0x07, EV_ENC_CHANGE, EV_PIN_REQUEST = 0x16,
        EV_LINK_KEY_REQUEST, EV_LINK_KEY_NOTIFY, EV_KEY_REFRESH = 0x30, EV_IO_CAP_REQUEST, EV_IO_CAP_RESPONSE, EV_USER_CONFIRM,
-       EV_SSP_COMPLETE = 0x36 };
-enum { OP_DISCONNECT = 0x0406, OP_ACCEPT = 0x0409, OP_REJECT, OP_LINK_KEY_REPLY, OP_LINK_KEY_NEG, OP_PIN_REPLY, OP_PIN_NEG,
+       EV_SSP_COMPLETE = 0x36, EV_INQUIRY_RSSI = 0x22, EV_INQUIRY_EXT = 0x2f };
+enum { OP_INQUIRY = 0x0401, OP_INQUIRY_CANCEL, OP_CREATE_CONN = 0x0405, OP_DISCONNECT = 0x0406, OP_ACCEPT = 0x0409, OP_REJECT, OP_LINK_KEY_REPLY, OP_LINK_KEY_NEG, OP_PIN_REPLY, OP_PIN_NEG,
        OP_AUTH = 0x0411, OP_ENCRYPT = 0x0413, OP_REMOTE_NAME = 0x0419, OP_IO_CAP_REPLY = 0x042b, OP_CONFIRM_REPLY, OP_CONFIRM_NEG, OP_IO_CAP_NEG = 0x0434,
        OP_LINK_POLICY = 0x080f, OP_LOCAL_NAME = 0x0c13, OP_SCAN_ENABLE = 0x0c1a, OP_CLASS = 0x0c24, OP_INQUIRY_MODE = 0x0c45,
        OP_EIR = 0x0c52, OP_SSP_MODE = 0x0c56, OP_READ_BUFFER = 0x1005 };
@@ -150,7 +155,7 @@ static void later_addr(unsigned op, const unsigned char *addr, const void *extra
 
 struct chan { int used, psm, lcid, rcid, rmtu, cfg_in, cfg_out, pending, pend_id, out_id; };   /* out_id: ours, awaiting the answer */
 static struct link {
-    int used, handle, enc, auth_sent; uint64_t addr;
+    int used, handle, enc, auth_sent, queued, dropping; uint64_t addr;   /* queued: our ACL fragments not yet sent */
     long long auth_at, pend_until;              /* AVDTP waits for encryption: when we authenticate ourselves, give up */
     unsigned char rx[4 + 2048]; size_t rxlen, rxwant;
     struct chan ch[MAX_CHANS]; int next_id, av_sig, unacked;    /* av_sig: our CID of the AVDTP signalling channel, 0 = none */
@@ -164,6 +169,7 @@ static unsigned acl_len = 27, acl_num = 1; static int credits;
 struct frag { struct frag *next; int handle; size_t len; unsigned char b[]; };
 static struct frag *fhead, **ftail = &fhead;
 
+static int is_speaker(const struct link *l);            /* the one we play to (below) */
 static struct link *link_by(int handle) { for (int i = 0; i < MAX_LINKS; i++) if (links[i].used && links[i].handle == handle) return &links[i]; return NULL; }
 static struct chan *chan_by(struct link *l, int lcid) { for (int i = 0; i < MAX_CHANS; i++) if (l->ch[i].used && l->ch[i].lcid == lcid) return &l->ch[i]; return NULL; }
 
@@ -172,7 +178,7 @@ static void acl_flush(void)
     while (fhead && credits > 0) {
         struct frag *f = fhead; struct link *l = link_by(f->handle);
         if (!(fhead = f->next)) ftail = &fhead;
-        if (l) { if (hci_write(f->b, f->len) < 0) fprintf(stderr, "a2dp: ACL write failed\n"); else { credits--; l->unacked++; } }
+        if (l) { l->queued--; if (hci_write(f->b, f->len) < 0) fprintf(stderr, "a2dp: ACL write failed\n"); else { credits--; l->unacked++; } }
         free(f);
     }
 }
@@ -189,7 +195,7 @@ static void l2_send(struct link *l, unsigned cid, const void *pdu, size_t n)
         f->next = NULL; f->handle = l->handle; f->len = 5 + k;
         f->b[0] = H4_ACL; f->b[1] = l->handle; f->b[2] = (l->handle >> 8 & 0x0f) | (o ? 0x10 : 0x20);   /* continuing / first */
         put16(f->b + 3, k); memcpy(f->b + 5, fr + o, k);
-        *ftail = f; ftail = &f->next;
+        *ftail = f; ftail = &f->next; l->queued++;
     }
     acl_flush();
 }
@@ -346,16 +352,23 @@ static const struct attr r_sink[] = {                  /* A2DP sink 1.3, speaker
 }, r_target[] = {                                       /* AVRCP target, category 2 (amplifier): absolute volume */
     A(0x0000, 0x0a, 0x00, 0x01, 0x00, 0x02), A(0x0001, 0x35, 0x03, 0x19, 0x11, 0x0c), { 0x0004, a_avctp, sizeof a_avctp },
     { 0x0005, a_browse, sizeof a_browse }, { 0x0009, a_avrcp, sizeof a_avrcp }, A(0x0311, 0x09, 0x00, 0x02),
-}, r_control[] = {                                      /* AVRCP controller, category 1: play / pause the phone */
+}, r_control[] = {                                      /* AVRCP controller, category 1: play / pause the phone; 2:
+                                                           the speaker's absolute volume (BlueZ refuses the event without) */
     A(0x0000, 0x0a, 0x00, 0x01, 0x00, 0x03), A(0x0001, 0x35, 0x06, 0x19, 0x11, 0x0e, 0x19, 0x11, 0x0f),
     { 0x0004, a_avctp, sizeof a_avctp }, { 0x0005, a_browse, sizeof a_browse }, { 0x0009, a_avrcp, sizeof a_avrcp },
-    A(0x0311, 0x09, 0x00, 0x01),
+    A(0x0311, 0x09, 0x00, 0x03),
+}, r_source[] = {                                       /* A2DP source 1.3, player: playing to a speaker (some check) */
+    A(0x0000, 0x0a, 0x00, 0x01, 0x00, 0x04), A(0x0001, 0x35, 0x03, 0x19, 0x11, 0x0a),
+    A(0x0004, 0x35, 0x10, 0x35, 0x06, 0x19, 0x01, 0x00, 0x09, 0x00, 0x19, 0x35, 0x06, 0x19, 0x00, 0x19, 0x09, 0x01, 0x03),
+    { 0x0005, a_browse, sizeof a_browse }, A(0x0009, 0x35, 0x08, 0x35, 0x06, 0x19, 0x11, 0x0d, 0x09, 0x01, 0x03),
+    A(0x0100, 0x25, 0x0c, 'A', 'u', 'd', 'i', 'o', ' ', 'S', 'o', 'u', 'r', 'c', 'e'), A(0x0311, 0x09, 0x00, 0x01),
 };
 #undef A
 static const struct { unsigned handle; const struct attr *a; int n; unsigned uuids[6]; } records[] = {
     { 0x00010001, r_sink, sizeof r_sink / sizeof *r_sink, { 0x110b, 0x0100, 0x0019, 0x1002, 0x110d } },
     { 0x00010002, r_target, sizeof r_target / sizeof *r_target, { 0x110c, 0x0100, 0x0017, 0x1002, 0x110e } },
     { 0x00010003, r_control, sizeof r_control / sizeof *r_control, { 0x110e, 0x110f, 0x0100, 0x0017, 0x1002 } },
+    { 0x00010004, r_source, sizeof r_source / sizeof *r_source, { 0x110a, 0x0100, 0x0019, 0x1002, 0x110d } },
 };
 #define NREC (int)(sizeof records / sizeof *records)
 
@@ -774,7 +787,7 @@ static void media_rx(const unsigned char *p, size_t n)
  * phone's volume slider is the Echo's volume and the other way round.  Controller (we control the device): play and
  * pause as pass-through commands, like the buttons of headphones. */
 
-enum { AVC_CONTROL = 0x00, AVC_STATUS = 0x01, AVC_NOT_IMPLEMENTED = 0x08, AVC_ACCEPTED, AVC_REJECTED, AVC_STABLE = 0x0c,
+enum { AVC_CONTROL = 0x00, AVC_STATUS = 0x01, AVC_NOTIFY = 0x03, AVC_NOT_IMPLEMENTED = 0x08, AVC_ACCEPTED, AVC_REJECTED, AVC_STABLE = 0x0c,
        AVC_CHANGED, AVC_INTERIM = 0x0f };
 enum { AVC_VENDOR = 0x00, AVC_UNIT_INFO = 0x30, AVC_SUBUNIT_INFO, AVC_PASS_THROUGH = 0x7c };
 enum { PDU_GET_CAPS = 0x10, PDU_REGISTER = 0x31, PDU_SET_VOLUME = 0x50, EVENT_VOLUME = 0x0d, KEY_PLAY = 0x44, KEY_PAUSE = 0x46 };
@@ -826,11 +839,18 @@ static void vendor_reply(struct link *l, unsigned label, unsigned code, unsigned
     memcpy(a + 10, par, n); avctp_send(l, label, 1, a, 10 + n);
 }
 
+static void out_avrcp_answer(unsigned code, unsigned pdu, const unsigned char *par, size_t n);
+
 static void avrcp_rx(struct link *l, const unsigned char *p, size_t n)
 {
     unsigned char r[16];
     if (n < 6 || (p[0] >> 2 & 3)) return;                  /* fragments: never this small */
     unsigned label = p[0] >> 4;
+    if ((p[0] & 2) && is_speaker(l) && n >= 13 && p[5] == AVC_VENDOR) {     /* the speaker answers us: its volume */
+        size_t pl = (size_t)(p[11] << 8 | p[12]);
+        out_avrcp_answer(p[3], p[9], p + 13, pl < n - 13 ? pl : n - 13);
+        return;
+    }
     if (p[0] & 2) {                                         /* answers to our pass-through commands */
         if (n >= 7 && p[5] == AVC_PASS_THROUGH && !(p[6] & 0x80))
             fprintf(stderr, "a2dp: %012llx: %s %s\n", (unsigned long long)l->addr, (p[6] & 0x7f) == KEY_PLAY ? "play" : "pause",
@@ -854,6 +874,13 @@ static void avrcp_rx(struct link *l, const unsigned char *p, size_t n)
     }
     unsigned pdu = a[6]; size_t plen = a[8] << 8 | a[9]; const unsigned char *par = a + 10;
     if (10 + plen > an) plen = 0;
+    /* The speaker we play to gets no absolute volume: the mixer applies the Echo's volume before encoding (stock sets
+     * persist.bluetooth.disableabsvol too).  Offered, PipeWire took the Echo's 30 % as the stream's volume, -31 dB more. */
+    if (is_speaker(l) && (pdu == PDU_REGISTER || pdu == PDU_SET_VOLUME || (pdu == PDU_GET_CAPS && plen >= 1 && par[0] == 3))) {
+        if (pdu == PDU_GET_CAPS) { unsigned char c[2] = { 3, 0 }; vendor_reply(l, label, AVC_STABLE, pdu, c, 2); }
+        else { r[0] = 0x01; vendor_reply(l, label, AVC_REJECTED, pdu, r, 1); }
+        return;
+    }
     switch (pdu) {
     case PDU_GET_CAPS:
         if (plen >= 1 && par[0] == 2) { unsigned char c[5] = { 2, 1, 0x00, 0x19, 0x58 }; vendor_reply(l, label, AVC_STABLE, pdu, c, 5); }
@@ -882,22 +909,25 @@ static void avrcp_rx(struct link *l, const unsigned char *p, size_t n)
 static struct link *avrcp_link(void)                    /* the streaming device if it has AVRCP, else any that has */
 {
     if (av.l && av.l->avctp) return av.l;
-    for (int i = 0; i < MAX_LINKS; i++) if (links[i].used && links[i].avctp) return &links[i];
+    for (int i = 0; i < MAX_LINKS; i++) if (links[i].used && links[i].avctp && !is_speaker(&links[i])) return &links[i];
     return NULL;
 }
 
-static void avctp_open(struct link *l)                  /* the device has not opened AVRCP: we do */
+static int chan_open(struct link *l, int psm)           /* a channel of ours: its CID, 0 = no room */
 {
     struct chan *c = NULL;
     for (int i = 0; i < MAX_CHANS && !c; i++) if (!l->ch[i].used) c = &l->ch[i];
-    if (!c) return;
+    if (!c) return 0;
     memset(c, 0, sizeof *c);
-    c->used = 1; c->psm = PSM_AVCTP; c->rmtu = 672; c->lcid = 0x40 + (int)(c - l->ch) + 8 * (int)(l - links);
+    c->used = 1; c->psm = psm; c->rmtu = 672; c->lcid = 0x40 + (int)(c - l->ch) + 8 * (int)(l - links);
     if (++l->next_id > 255) l->next_id = 1;
     c->out_id = l->next_id;
-    unsigned char d[4]; put16(d, PSM_AVCTP); put16(d + 2, c->lcid);
+    unsigned char d[4]; put16(d, psm); put16(d + 2, c->lcid);
     sig_send(l, 0x02, c->out_id, d, 4);
+    return c->lcid;
 }
+
+static void avctp_open(struct link *l) { chan_open(l, PSM_AVCTP); }   /* the device has not opened AVRCP: we do */
 
 static void avrcp_upkeep(void)
 {
@@ -925,6 +955,413 @@ static void avrcp_upkeep(void)
     }
 }
 
+/* ---------------------------------------------------------------- playing to a Bluetooth speaker (A2DP source)
+ * The radio side; btout.c serves the mixer, which plays everything to the speaker once routed.  Home Assistant's
+ * "Bluetooth speaker search" inquires for up to OUT_SEARCH_S for speakers in pairing mode (class of device audio), takes
+ * the strongest, pairs as phones pair with us (Just Works, or PIN 0000) and remembers it in state/bt_speaker.  "Play on
+ * Bluetooth speaker" keeps a link to it: paged while away (backing off), and accepted when it pages us (speakers call
+ * their last source when switched on).  On the link we configure SBC ourselves as AVDTP initiator (discover,
+ * capabilities, set configuration, open, media channel); a speaker that configures our source endpoint itself first is
+ * followed instead.  START and SUSPEND follow the mixer's HAL (btout_want). */
+
+#define OUT_SEID 0x30                   /* our source endpoint; the sink endpoints are 1..nseps */
+#define OUT_BITPOOL 53                  /* SBC "high quality" for joint stereo 44.1 kHz: 328 kbit/s */
+#define OUT_SEARCH_S 60
+#define OUT_DELAY_MS 250                /* default latency of a speaker for Sendspin (SBC sinks buffer 150..250 ms) */
+
+enum { O_IDLE, O_DISCOVER, O_CAPS, O_SETCONF, O_OPEN, O_ACP, O_MEDIA, O_READY, O_START, O_STREAMING, O_SUSPEND };
+enum { S_NONE, S_OFF, S_AWAY, S_CONNECTING, S_READY, S_PLAYING };      /* out_state, for Home Assistant */
+enum { A_NO = -1, A_UNKNOWN, A_ASKED, A_ON };                            /* out.absvol */
+
+static struct {
+    uint64_t addr; char name[80]; int on;               /* the speaker (state/bt_speaker), whether to play on it */
+    struct link *l;                                     /* its link */
+    int phase, label, sig; long long sent_at;           /* our AVDTP command awaiting its answer (sig 0: none) */
+    int seps[8], nseps, sep_i, rseid, bp_min, bitpool, media; unsigned mtu;
+    int sig_lcid; long long sig_at, int_at;             /* AVDTP signalling we opened, when; when we configure */
+    int absvol, sent_v; long long avol_at;              /* AVRCP absolute volume (A_*), the value we set last */
+    long long next_page; int paging, failures, pairing, psrm, clock, delay_report;
+} out;
+static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;          /* out.name for other threads */
+static atomic_int out_on_req = -1, out_search_req = -1, out_searching, out_enabled, out_delay = OUT_DELAY_MS, out_save_req,
+                  out_state, out_live;
+static long long search_until; static int inquiring;
+static struct { uint64_t addr; int rssi, psrm, clock; char name[80]; } cand;
+
+static int is_speaker(const struct link *l) { return out.addr && l->addr == out.addr; }
+static int out_may_pair(uint64_t a) { return out.addr && a == out.addr && (out.pairing || (out.on && !key_for(a))); }
+
+static const char *speaker_path(void)
+{
+    static char p[256]; const char *d = getenv("HASSMIC_STATE");
+    snprintf(p, sizeof p, "%s/bt_speaker", d ? d : "/data/local/hassmic/state");
+    return p;
+}
+
+static void speaker_load(void)                  /* address, play on it, latency (ms), name */
+{
+    char l[160]; unsigned long long a; int on, d, n = 0; FILE *f = fopen(speaker_path(), "r");
+    if (!f) return;
+    if (fgets(l, sizeof l, f) && sscanf(l, "%llx %d %d %n", &a, &on, &d, &n) == 3 && n) {
+        l[strcspn(l, "\n")] = 0;
+        out.addr = a; out.on = on != 0; out.psrm = 1; atomic_store(&out_enabled, out.on);   /* page scan R1: most devices */
+        atomic_store(&out_delay, d >= 0 && d <= 2000 ? d : OUT_DELAY_MS);
+        snprintf(out.name, sizeof out.name, "%s", l + n);
+        fprintf(stderr, "a2dp: speaker %012llx \"%s\"%s\n", a, out.name, out.on ? ", playing on it" : "");
+    }
+    fclose(f);
+}
+
+static void speaker_save(void)
+{
+    char tmp[300]; snprintf(tmp, sizeof tmp, "%s.tmp", speaker_path());
+    FILE *f = fopen(tmp, "w");
+    if (!f) { fprintf(stderr, "a2dp: cannot write %s\n", tmp); return; }
+    pthread_mutex_lock(&out_lock);
+    fprintf(f, "%012llx %d %d %s\n", (unsigned long long)out.addr, out.on, atomic_load(&out_delay), out.name);
+    pthread_mutex_unlock(&out_lock);
+    if (fclose(f) || rename(tmp, speaker_path())) { unlink(tmp); fprintf(stderr, "a2dp: cannot write %s\n", speaker_path()); }
+}
+
+static void out_name(const char *name)
+{
+    pthread_mutex_lock(&out_lock); snprintf(out.name, sizeof out.name, "%s", name); pthread_mutex_unlock(&out_lock);
+}
+
+static void out_phase(int p)
+{
+    out.phase = p;
+    atomic_store(&out_live, p == O_STREAMING);
+}
+
+static void out_stream_reset(void)
+{
+    if (out.phase >= O_READY) btout_gone();
+    out.absvol = A_UNKNOWN;                             /* asked again once there is a stream: btout_gone forgot it */
+    out_phase(O_IDLE); out.media = 0; out.sig = 0; out.nseps = 0;
+}
+
+static void out_disconnect(struct link *l)
+{
+    if (!l || l->dropping) return;
+    unsigned char d[3]; put16(d, l->handle); d[2] = 0x13;      /* remote user terminated connection */
+    l->dropping = 1; later(OP_DISCONNECT, d, 3);
+}
+
+/* the stream failed: drop the link, page again later */
+static void out_fail(const char *why)
+{
+    fprintf(stderr, "a2dp: speaker %012llx: %s\n", (unsigned long long)out.addr, why);
+    out_stream_reset();
+    out_disconnect(out.l);
+    out.next_page = ms() + 30000;
+}
+
+static void out_cmd(int sig, const unsigned char *d, size_t n)
+{
+    unsigned char p[24]; struct chan *c = out.l ? chan_by(out.l, out.l->av_sig) : NULL;
+    if (!c || n > sizeof p - 2) return;
+    out.label = (out.label + 1) & 15; out.sig = sig; out.sent_at = ms();
+    p[0] = out.label << 4; p[1] = sig; memcpy(p + 2, d, n);
+    l2_send(out.l, c->rcid, p, 2 + n);
+}
+
+static void out_seid_cmd(int sig) { unsigned char d = out.rseid << 2; out_cmd(sig, &d, 1); }
+
+/* our endpoint's capabilities: what the encoder does (sbc.c), 44.1 kHz (the HAL's rate) joint stereo, 16 blocks, 8
+ * subbands, loudness; bitpool 2..OUT_BITPOOL */
+static const unsigned char out_caps[] = { 1, 0, 7, 6, 0x00, 0x00, 0x21, 0x15, 2, OUT_BITPOOL };
+
+static int sbc_fits(const unsigned char *s)     /* a sink's SBC capabilities (4 bytes): can it take ours */
+{
+    return (s[0] & 0x20) && (s[0] & 0x01) && (s[1] & 0x10) && (s[1] & 0x04) && (s[1] & 0x01) && s[2] <= s[3] && s[2] <= OUT_BITPOOL;
+}
+
+static void out_media_open(struct link *l, struct chan *c)
+{
+    out.media = c->lcid; out.mtu = c->rmtu < 1024 ? c->rmtu : 1024; out_phase(O_READY);
+    fprintf(stderr, "a2dp: speaker %012llx ready, SBC bitpool %d, MTU %u\n", (unsigned long long)l->addr, out.bitpool, c->rmtu);
+    btout_ready(l->addr, out.name[0] ? out.name : l->name, out.bitpool, out.mtu);
+}
+
+/* answers to our commands */
+static void out_answer(struct link *l, int ok, const unsigned char *d, size_t dn)
+{
+    switch (out.phase) {
+    case O_DISCOVER:
+        if (!ok) { out_fail("discover refused"); return; }
+        out.nseps = 0;
+        for (size_t i = 0; i + 1 < dn && out.nseps < 8; i += 2)        /* audio sinks not in use */
+            if (!(d[i] & 2) && d[i + 1] >> 4 == 0 && d[i + 1] & 8) out.seps[out.nseps++] = d[i] >> 2;
+        if (!out.nseps) { out_fail("no free audio sink endpoint"); return; }
+        out.sep_i = 0; out.rseid = out.seps[0]; out_phase(O_CAPS); out_seid_cmd(AV_GET_CAP);
+        return;
+    case O_CAPS:
+        for (size_t i = 0; ok && i + 2 <= dn && i + 2 + d[i + 1] <= dn; i += 2 + d[i + 1]) {
+            const unsigned char *s = d + i + 2;
+            if (d[i] != 7 || d[i + 1] < 6 || s[0] >> 4 != 0 || s[1] != 0 || !sbc_fits(s + 2)) continue;
+            out.bp_min = s[4] < 2 ? 2 : s[4]; out.bitpool = s[5] < OUT_BITPOOL ? s[5] : OUT_BITPOOL;
+            unsigned char c[12] = { out.rseid << 2, OUT_SEID << 2, 1, 0, 7, 6, 0x00, 0x00, 0x21, 0x15, out.bp_min, out.bitpool };
+            out_phase(O_SETCONF); out_cmd(AV_SET_CONF, c, 12);
+            return;
+        }
+        if (++out.sep_i < out.nseps) { out.rseid = out.seps[out.sep_i]; out_seid_cmd(AV_GET_CAP); return; }
+        out_fail("no SBC endpoint that takes 44.1 kHz joint stereo");
+        return;
+    case O_SETCONF:
+        if (!ok) { out_fail("configuration refused"); return; }
+        out_phase(O_OPEN); out_seid_cmd(AV_OPEN);
+        return;
+    case O_OPEN:
+        if (!ok) { out_fail("open refused"); return; }
+        out_phase(O_MEDIA); out.sent_at = ms();
+        if (!chan_open(l, PSM_AVDTP)) out_fail("no room for the media channel");
+        return;
+    case O_START:
+        if (ok) { out_phase(O_STREAMING); btout_streaming(1); }
+        else { out_phase(O_READY); btout_start_failed(); fprintf(stderr, "a2dp: speaker refused to start\n"); }
+        return;
+    case O_SUSPEND:
+        if (ok) { out_phase(O_READY); btout_streaming(0); }
+        else out_phase(O_STREAMING);
+        return;
+    }
+}
+
+/* commands of the speaker: when it configures our endpoint itself, starts, suspends, closes, reports its delay */
+static void out_command(struct link *l, unsigned label, unsigned sig, const unsigned char *d, size_t dn)
+{
+    unsigned char r[16]; int seid = dn ? d[0] >> 2 : 0, mine = seid == OUT_SEID;
+    switch (sig) {
+    case AV_DISCOVER:
+        r[0] = OUT_SEID << 2 | (out.phase >= O_SETCONF ? 2 : 0); r[1] = 0x00;      /* audio, source */
+        av_reply(l, label, sig, 1, r, 2);
+        return;
+    case AV_GET_CAP: case AV_GET_ALL_CAP:
+        if (!mine) { r[0] = E_BAD_ACP_SEID; av_reply(l, label, sig, 0, r, 1); return; }
+        av_reply(l, label, sig, 1, out_caps, sizeof out_caps);
+        return;
+    case AV_SET_CONF: {
+        if (dn < 2 || !mine) { r[0] = 0; r[1] = E_BAD_ACP_SEID; av_reply(l, label, sig, 0, r, 2); return; }
+        if (out.phase >= O_SETCONF) { r[0] = 0; r[1] = E_SEP_IN_USE; av_reply(l, label, sig, 0, r, 2); return; }
+        int bp = 0;
+        for (size_t i = 2; i + 2 <= dn; i += 2 + d[i + 1]) {
+            const unsigned char *s = d + i + 2; unsigned cat = d[i], len = d[i + 1];
+            if (i + 2 + len > dn) { r[0] = cat; r[1] = E_BAD_SERV_CATEGORY; av_reply(l, label, sig, 0, r, 2); return; }
+            if (cat == 1 || cat == 8) continue;
+            if (cat != 7) { r[0] = cat; r[1] = E_BAD_SERV_CATEGORY; av_reply(l, label, sig, 0, r, 2); return; }
+            if (len < 6 || s[0] >> 4 != 0 || s[1] != 0 || s[2] != 0x21 || s[3] != 0x15 || s[4] < 2 || s[4] > s[5] || s[4] > OUT_BITPOOL) {
+                r[0] = 7; r[1] = E_UNSUPPORTED_CONF; av_reply(l, label, sig, 0, r, 2); return;
+            }
+            bp = s[5] < OUT_BITPOOL ? s[5] : OUT_BITPOOL;
+        }
+        if (!bp) { r[0] = 7; r[1] = E_UNSUPPORTED_CONF; av_reply(l, label, sig, 0, r, 2); return; }
+        out.rseid = d[1] >> 2; out.bitpool = bp; out.sig = 0; out.int_at = 0; out_phase(O_ACP);
+        fprintf(stderr, "a2dp: speaker %012llx configured us, SBC bitpool %d\n", (unsigned long long)l->addr, bp);
+        av_reply(l, label, sig, 1, NULL, 0);
+        return; }
+    case AV_OPEN:
+        if (!mine || out.phase != O_ACP) { r[0] = mine ? E_BAD_STATE : E_BAD_ACP_SEID; av_reply(l, label, sig, 0, r, 1); return; }
+        out_phase(O_MEDIA); out.sent_at = ms();          /* it opens the media channel */
+        av_reply(l, label, sig, 1, NULL, 0);
+        return;
+    case AV_START: case AV_SUSPEND:
+        if (!mine || out.phase < O_READY) { r[0] = seid << 2; r[1] = mine ? E_BAD_STATE : E_BAD_ACP_SEID; av_reply(l, label, sig, 0, r, 2); return; }
+        av_reply(l, label, sig, 1, NULL, 0);
+        if (sig == AV_START) { if (out.phase != O_STREAMING) { out_phase(O_STREAMING); btout_streaming(1); } }
+        else if (out.phase == O_STREAMING || out.phase == O_SUSPEND) { out_phase(O_READY); btout_streaming(0); }
+        return;
+    case AV_CLOSE: case AV_ABORT:
+        av_reply(l, label, sig, 1, NULL, 0);
+        fprintf(stderr, "a2dp: speaker %012llx closed the stream\n", (unsigned long long)l->addr);
+        out_stream_reset(); out.int_at = ms() + 2000;    /* configure again unless it does */
+        return;
+    case AV_DELAY:                                      /* its latency, 1/10 ms: logged, Sendspin goes by the setting */
+        if (dn >= 3 && (d[1] << 8 | d[2]) != out.delay_report) {
+            out.delay_report = d[1] << 8 | d[2];
+            fprintf(stderr, "a2dp: speaker reports %d ms of delay\n", out.delay_report / 10);
+        }
+        av_reply(l, label, sig, 1, NULL, 0);
+        return;
+    case AV_GET_CONF: case AV_RECONF: case AV_SECURITY: r[0] = E_NOT_SUPPORTED; av_reply(l, label, sig, 0, r, 1); return;
+    default: { unsigned char g[2] = { label << 4 | 1, sig }; av_send(l, g, 2); return; }
+    }
+}
+
+static void out_rx(struct link *l, const unsigned char *p, size_t n)
+{
+    if (n < 2 || (p[0] >> 2 & 3)) return;              /* fragments: never this small */
+    unsigned label = p[0] >> 4, msg = p[0] & 3, sig = p[1] & 0x3f;
+    if (msg == 0) { out_command(l, label, sig, p + 2, n - 2); return; }
+    if (!out.sig || label != (unsigned)out.label || sig != (unsigned)out.sig) return;     /* not what we wait for */
+    out.sig = 0;
+    out_answer(l, msg == 2, p + 2, n - 2);
+}
+
+/* inquiry: speakers, headphones and the like in pairing mode; the strongest wins */
+static void out_found(const unsigned char *r, size_t n, int eir)
+{
+    if (n < 14) return;
+    /* audio/video: headset, hands-free, loudspeaker, headphones, portable, car, hi-fi; or anything rendering audio (a PC
+     * with an A2DP sink says so in its service bits, phones do not) */
+    unsigned cod = r[8] | r[9] << 8 | r[10] << 16, major = cod >> 8 & 0x1f, minor = cod >> 2 & 0x3f;
+    int av = major == 4 && (minor == 1 || minor == 2 || minor == 5 || minor == 6 || minor == 7 || minor == 8 || minor == 10);
+    if (!av && (cod & (1 << 18 | 1 << 21)) != (1 << 18 | 1 << 21)) return;
+    char name[80] = ""; uint64_t a = addr_of(r); int rssi = (signed char)r[13];
+    for (size_t i = 14; eir && i + 1 < n && r[i]; i += 1 + r[i]) {     /* EIR: length, type, data */
+        if (i + 1 + r[i] > n || (r[i + 1] != 0x09 && r[i + 1] != 0x08) || r[i] < 2) continue;
+        size_t k = (size_t)r[i] - 1 < sizeof name - 1 ? (size_t)r[i] - 1 : sizeof name - 1;
+        memcpy(name, r + i + 2, k); name[k] = 0;
+    }
+    if (cand.addr && rssi <= cand.rssi && a != cand.addr) return;
+    if (a != cand.addr) fprintf(stderr, "a2dp: found speaker %012llx \"%s\", %d dBm\n", (unsigned long long)a, name, rssi);
+    cand.addr = a; cand.rssi = rssi; cand.psrm = r[6]; cand.clock = u16(r + 11) | 0x8000;
+    if (name[0] || !cand.name[0]) snprintf(cand.name, sizeof cand.name, "%s", name);
+}
+
+static void search_end(void)
+{
+    if (!atomic_exchange(&out_searching, 0)) return;
+    core_bt_pairing(0);
+    if (notify) notify();
+}
+
+static void out_inquiry_done(void)
+{
+    inquiring = 0;
+    if (!atomic_load(&out_searching) || !cand.addr) return;
+    if (out.l && out.l->addr != cand.addr) { out_stream_reset(); out_disconnect(out.l); }
+    key_forget(cand.addr);                              /* in pairing mode: whatever it had with us is gone */
+    out.addr = cand.addr; out_name(cand.name); out.on = 1; atomic_store(&out_enabled, 1);
+    out.pairing = 1; out.failures = 0; out.next_page = ms(); out.psrm = cand.psrm; out.clock = cand.clock;
+    fprintf(stderr, "a2dp: pairing with speaker %012llx \"%s\"\n", (unsigned long long)out.addr, cand.name);
+    speaker_save();
+    search_end();
+}
+
+/* The speaker's volume is the user's while we play on it (AVRCP absolute volume, we the controller): taken from it when
+ * it connects (the ring and Home Assistant show it), the Echo's buttons and Home Assistant set it, its own buttons come
+ * back; the mixer plays at full scale meanwhile and the Echo's own volume waits (btout_absvol, core_speaker).  Speakers
+ * without it get their volume through the mixer, as stock did for all of them (persist.bluetooth.disableabsvol). */
+static void out_vendor(unsigned ctype, unsigned pdu, const unsigned char *par, size_t n)
+{
+    struct link *l = out.l; unsigned char a[24] = { ctype, PANEL, AVC_VENDOR, 0x00, 0x19, 0x58, pdu, 0, n >> 8, n };
+    if (!l || !l->avctp || n > sizeof a - 10) return;
+    memcpy(a + 10, par, n); avctp_send(l, l->av_label++ & 15, 0, a, 10 + n);
+}
+
+static void out_register_volume(void) { unsigned char e[5] = { EVENT_VOLUME }; out_vendor(AVC_NOTIFY, PDU_REGISTER, e, 5); }
+static void out_set_volume(int pct) { unsigned char v = out.sent_v = (pct * 127 + 50) / 100; out_vendor(AVC_CONTROL, PDU_SET_VOLUME, &v, 1); }
+
+static void out_avrcp_answer(unsigned code, unsigned pdu, const unsigned char *par, size_t n)
+{
+    if (pdu == PDU_REGISTER) {
+        if (code == AVC_INTERIM && n >= 2 && par[0] == EVENT_VOLUME && out.absvol == A_ASKED) {
+            unsigned v = par[1] & 0x7f; int pct = (v * 100 + 63) / 127;
+            fprintf(stderr, "a2dp: speaker has absolute volume, at %d %%: it sets the volume\n", pct);
+            out.absvol = A_ON; out.sent_v = v; atomic_store(&echo_volume, pct); btout_absvol(1, pct);
+        } else if (code == AVC_CHANGED && n >= 2 && par[0] == EVENT_VOLUME) {
+            unsigned v = par[1] & 0x7f;
+            if (out.absvol == A_ON && (int)v != out.sent_v) {        /* its own buttons */
+                int pct = (v * 100 + 63) / 127;
+                out.sent_v = v; atomic_store(&echo_volume, pct); volume_set_later(pct);
+            }
+            out_register_volume();                      /* a notification is good for one change */
+        } else if (code == AVC_REJECTED || code == AVC_NOT_IMPLEMENTED) {
+            if (out.absvol == A_ASKED) fprintf(stderr, "a2dp: speaker has no absolute volume (0x%02x, error 0x%02x): the mixer sets the volume\n", code, n ? par[0] : 0);
+            out.absvol = A_NO;
+        }
+    } else if (pdu == PDU_SET_VOLUME && out.absvol == A_ON && code != AVC_ACCEPTED) {
+        out.absvol = A_NO; btout_absvol(0, 0);
+        fprintf(stderr, "a2dp: speaker refused its volume: the mixer sets the volume\n");
+    }
+}
+
+static void out_volume_upkeep(long long now)
+{
+    if (!out.l || !out.l->avctp || out.phase < O_READY) return;
+    if (out.absvol == A_UNKNOWN) { out.absvol = A_ASKED; out.avol_at = now + 3000; out_register_volume(); }
+    else if (out.absvol == A_ASKED && now > out.avol_at) { out.absvol = A_NO; fprintf(stderr, "a2dp: speaker does not answer about its volume\n"); }
+    else if (out.absvol == A_ON && (volume_now() * 127 + 50) / 100 != out.sent_v) out_set_volume(volume_now());
+}
+
+static void out_link_up(struct link *l, int paged)
+{
+    out.l = l; out.failures = 0; out.sig_lcid = 0; out.int_at = 0; out_phase(O_IDLE);
+    l->auth_at = ms() + (paged ? 0 : 1500);           /* it may secure the link itself when it paged us */
+    l->pend_until = ms() + 20000;
+}
+
+static void out_link_gone(void)
+{
+    out_stream_reset(); out.l = NULL; out.sig_lcid = 0; out.int_at = 0;
+    if (out.next_page < ms() + 5000) out.next_page = ms() + 5000;
+}
+
+static int out_upkeep(void)
+{
+    long long now = ms(); int r, st;
+    if ((r = atomic_exchange(&out_search_req, -1)) >= 0) {
+        if (r && !atomic_load(&out_searching)) {
+            atomic_store(&out_searching, 1); search_until = now + OUT_SEARCH_S * 1000LL; memset(&cand, 0, sizeof cand);
+            fprintf(stderr, "a2dp: looking for a speaker\n");
+            core_bt_pairing(1);
+            if (notify) notify();
+        } else if (!r) {
+            if (inquiring && hci_cmd(OP_INQUIRY_CANCEL, NULL, 0) < 0) return -1;
+            inquiring = 0; search_end();
+        }
+    }
+    if ((r = atomic_exchange(&out_on_req, -1)) >= 0 && r != out.on) {
+        out.on = r; out.failures = 0; out.next_page = now;
+        fprintf(stderr, "a2dp: %s\n", r ? "playing on the speaker" : "playing on the Echo");
+        if (!r) { out_stream_reset(); out_disconnect(out.l); }
+        speaker_save();
+        if (r && !out.addr && !atomic_load(&out_searching)) atomic_store(&out_search_req, 1);   /* none yet: find one */
+    }
+    if (atomic_exchange(&out_save_req, 0)) speaker_save();
+    if (atomic_load(&out_searching)) {
+        if (now > search_until) {
+            fprintf(stderr, "a2dp: no speaker found\n");
+            if (inquiring && hci_cmd(OP_INQUIRY_CANCEL, NULL, 0) < 0) return -1;
+            inquiring = 0; search_end();
+        } else if (!inquiring && !out.paging) {
+            unsigned char p[5] = { 0x33, 0x8b, 0x9e, 4, 0 };    /* general inquiry, 5.12 s, any number of responses */
+            if ((st = hci_cmd(OP_INQUIRY, p, 5)) < 0) return -1;
+            if (!st) inquiring = 1; else { fprintf(stderr, "a2dp: inquiry refused (0x%02x)\n", st); search_until = 0; }
+        }
+    }
+    if (out.on && out.addr && !out.l && !out.paging && !inquiring && now >= out.next_page) {
+        unsigned char p[13];
+        for (int i = 0; i < 6; i++) p[i] = out.addr >> 8 * i;
+        put16(p + 6, 0xcc18); p[8] = out.psrm <= 2 ? out.psrm : 1; p[9] = 0; put16(p + 10, out.clock); p[12] = 1;   /* DM/DH 1-5; role switch ok */
+        if ((st = hci_cmd(OP_CREATE_CONN, p, 13)) < 0) return -1;
+        if (!st) out.paging = 1; else out.next_page = now + 10000;
+    }
+    struct link *l = out.l;
+    int state = !out.addr ? S_NONE : !out.on ? S_OFF : out.phase == O_STREAMING ? S_PLAYING : out.phase >= O_READY ? S_READY
+              : l || out.paging ? S_CONNECTING : S_AWAY;
+    if (atomic_exchange(&out_state, state) != state && notify) notify();
+    if (!l || l->dropping) return 0;
+    if (!out.on) { out_disconnect(l); return 0; }
+    if (!l->enc) { if (!l->pend_until) out_fail("link not encrypted"); return 0; }      /* a2dp_upkeep authenticates */
+    if (!l->av_sig) {
+        if (!out.sig_lcid) { out.sig_lcid = chan_open(l, PSM_AVDTP); out.sig_at = now; }
+        else if (now - out.sig_at > 10000) out_fail("no AVDTP");
+        return 0;
+    }
+    if (out.int_at && now >= out.int_at && out.phase == O_IDLE) { out.int_at = 0; out_phase(O_DISCOVER); out_cmd(AV_DISCOVER, NULL, 0); }
+    if (out.sig && now - out.sent_at > 5000) { out_fail("no answer"); return 0; }
+    if (out.phase == O_MEDIA && now - out.sent_at > 5000) { out_fail("no media channel"); return 0; }
+    if (!out.sig && out.phase == O_READY && btout_want()) { out_phase(O_START); out_seid_cmd(AV_START); }
+    else if (!out.sig && out.phase == O_STREAMING && !btout_want()) { out_phase(O_SUSPEND); out_seid_cmd(AV_SUSPEND); }
+    out_volume_upkeep(now);
+    struct chan *mc = out.phase == O_STREAMING ? chan_by(l, out.media) : NULL;
+    unsigned char pkt[1024]; size_t n;
+    while (mc && l->queued < 2 && (n = btout_packet(pkt, out.mtu))) l2_send(l, mc->rcid, pkt, n);
+    return 0;
+}
+
 /* "Connected to <name>" like stock Alexa, once the device has opened AVDTP (a speaker connection, not just an ACL link)
  * and its name is in.  Phones ask for AVDTP a second or two after connecting; the name takes some 100 ms.  A Pixel
  * "disconnecting" in its Bluetooth settings closes AVDTP and AVRCP but keeps the ACL link up: the announcement follows
@@ -941,17 +1378,29 @@ static void chan_opened(struct link *l, struct chan *c)
     if (c->psm == PSM_AVCTP && !l->avctp) { l->avctp = c->lcid; l->vol_label = -1; atomic_fetch_add(&avrcp_links, 1);
                                             fprintf(stderr, "a2dp: %012llx: remote control\n", (unsigned long long)l->addr); }
     if (c->psm != PSM_AVDTP) return;
-    if (!l->av_sig) { l->av_sig = c->lcid; if (!l->avctp) l->avctp_at = ms() + 2000; maybe_tell(l); return; }
+    if (!l->av_sig) {
+        l->av_sig = c->lcid;
+        if (is_speaker(l)) out.int_at = ms() + (c->lcid == out.sig_lcid ? 0 : 1500);  /* it opened it: let it configure */
+        if (!l->avctp) l->avctp_at = ms() + 2000;
+        maybe_tell(l);
+        return;
+    }
+    if (is_speaker(l)) { if (l == out.l && out.phase == O_MEDIA && !out.media) out_media_open(l, c); return; }
     if (av.l == l && av.state == ST_OPEN && !av.media) av.media = c->lcid;
 }
 
 static void chan_closed(struct link *l, struct chan *c)
 {
-    if (c->lcid == l->avctp) { l->avctp = 0; atomic_fetch_sub(&avrcp_links, 1); }
+    if (c->lcid == l->avctp) {
+        l->avctp = 0; atomic_fetch_sub(&avrcp_links, 1);
+        if (l == out.l && out.absvol != A_UNKNOWN) { out.absvol = A_UNKNOWN; btout_absvol(0, 0); }
+    }
     if (c->lcid == l->av_sig) {
         l->av_sig = 0; if (av.l == l) av_reset();
+        if (l == out.l) { out_stream_reset(); out.sig_lcid = 0; out.int_at = 0; }
         if (l->told) { l->told = 0; core_bt_device(l->name, 0); }  /* phones drop the profile, not always the link */
     }
+    else if (l == out.l && c->lcid == out.media) { out_stream_reset(); out.int_at = ms() + 2000; }
     else if (av.l == l && c->lcid == av.media) { av.media = 0; if (av.state >= ST_OPEN) { av.state = ST_CONFIGURED; set_streaming(0); } }
 }
 
@@ -962,7 +1411,7 @@ static void l2_rx(struct link *l, const unsigned char *p, size_t n)
     if (cid == 0x0001) { sig_rx(l, p, n); return; }
     if (!(c = chan_by(l, cid)) || !c->cfg_in || !c->cfg_out) return;
     if (c->psm == PSM_SDP) sdp_rx(l, c, p, n);
-    else if (cid == l->av_sig) av_rx(l, p, n);
+    else if (cid == l->av_sig) { if (is_speaker(l)) out_rx(l, p, n); else av_rx(l, p, n); }
     else if (cid == l->avctp) avrcp_rx(l, p, n);
     else if (av.l == l && cid == av.media) media_rx(p, n);
 }
@@ -973,6 +1422,7 @@ static void link_gone(struct link *l)
 {
     for (int i = 0; i < MAX_CHANS; i++) if (l->ch[i].used) chan_free(l, &l->ch[i]);
     if (av.l == l) av_reset();
+    if (out.l == l) out_link_gone();
     for (struct frag **p = &fhead; *p; ) {
         struct frag *f = *p;
         if (f->handle == l->handle) { *p = f->next; free(f); } else p = &f->next;
@@ -1013,6 +1463,10 @@ int a2dp_event(const unsigned char *e, size_t n)
     const unsigned char *q = e + 2; size_t qn = n - 2; struct link *l;
     int pairing = atomic_load(&pairing_on);
     switch (e[0]) {
+    case EV_INQUIRY_COMPLETE: out_inquiry_done(); return 1;
+    case EV_INQUIRY_RSSI: case EV_INQUIRY_EXT:              /* one response each: count, address, ... */
+        if (qn >= 15 && q[0]) out_found(q + 1, qn - 1, e[0] == EV_INQUIRY_EXT);
+        return 1;
     case EV_CONN_REQUEST:                                   /* address, class of device, link type */
         if (qn < 10) return 1;
         {   uint64_t a = addr_of(q); int free_slot = 0;
@@ -1025,18 +1479,29 @@ int a2dp_event(const unsigned char *e, size_t n)
             }
         }
         return 1;
-    case EV_CONN_COMPLETE:                                  /* status, handle, address, link type, encryption */
+    case EV_CONN_COMPLETE: {                                /* status, handle, address, link type, encryption */
         if (qn < 11) return 1;
+        int paged = 0;
+        if (out.addr && addr_of(q + 3) == out.addr && out.paging) {
+            out.paging = 0; paged = 1;
+            if (q[0]) {                                     /* page timeout (0x04) mostly: off, or out of reach */
+                if (!out.failures++) fprintf(stderr, "a2dp: speaker %012llx not reachable (0x%02x)\n", (unsigned long long)out.addr, q[0]);
+                out.next_page = ms() + (out.failures < 6 ? 10000 : 60000);
+                if (out.pairing && out.failures >= 3) { out.pairing = 0; fprintf(stderr, "a2dp: pairing with the speaker failed\n"); }
+                return 1;
+            }
+        }
         if (q[0] || q[9] != 1) return 1;
         for (int i = 0; i < MAX_LINKS; i++) if (!links[i].used) {
             l = &links[i]; memset(l, 0, sizeof *l);
             l->used = 1; l->handle = u16(q + 1) & 0x0fff; l->addr = addr_of(q + 3); l->enc = q[10];
             fprintf(stderr, "a2dp: %012llx connected\n", (unsigned long long)l->addr);
             { unsigned char r[4] = { 0x01, 0, 0, 0 }; later_addr(OP_REMOTE_NAME, q + 3, r, 4); }   /* page scan R1, clock offset unknown */
+            if (is_speaker(l)) out_link_up(l, paged);
             return 1;
         }
         { unsigned char d[3]; put16(d, u16(q + 1)); d[2] = 0x14; later(OP_DISCONNECT, d, 3); }  /* no room after all */
-        return 1;
+        return 1; }
     case EV_DISCONNECT:
         if (qn < 4 || q[0] || !(l = link_by(u16(q + 1) & 0x0fff))) return 0;
         fprintf(stderr, "a2dp: %012llx disconnected (0x%02x)\n", (unsigned long long)l->addr, q[3]);
@@ -1052,6 +1517,7 @@ int a2dp_event(const unsigned char *e, size_t n)
         if (nl == max && 7 + nl < qn) while (nl && (q[7 + nl] & 0xc0) == 0x80) nl--;      /* cut: not inside a UTF-8 character */
         memcpy(l->name, q + 7, nl); l->name[nl] = 0;
         for (size_t i = 0; i < nl; i++) if ((unsigned char)l->name[i] < 0x20) l->name[i] = ' ';
+        if (is_speaker(l) && nl && strcmp(out.name, l->name)) { out_name(l->name); atomic_store(&out_save_req, 1); if (notify) notify(); }
         if (q[0]) fprintf(stderr, "a2dp: %012llx: no name (0x%02x)\n", (unsigned long long)a, q[0]);
         else fprintf(stderr, "a2dp: %012llx is \"%s\"\n", (unsigned long long)a, l->name);
         l->named = 1;
@@ -1069,21 +1535,22 @@ int a2dp_event(const unsigned char *e, size_t n)
         k->addr = a; memcpy(k->k, q + 6, 16); k->type = q[22];
         keys_save();
         fprintf(stderr, "a2dp: paired with %012llx (key type %u)\n", (unsigned long long)a, q[22]);
-        if (pairing) set_pairing(0);                        /* like the stock speaker: one device per "pair" */
+        if (out.addr && a == out.addr) out.pairing = 0;
+        else if (pairing) set_pairing(0);                   /* like the stock speaker: one device per "pair" */
         return 1; }
     case EV_IO_CAP_REQUEST:
         if (qn < 6) return 1;
-        if (pairing) { unsigned char io[3] = { 0x03, 0x00, 0x04 }; later_addr(OP_IO_CAP_REPLY, q, io, 3); }   /* NoInputNoOutput, no OOB, general bonding */
+        if (pairing || out_may_pair(addr_of(q))) { unsigned char io[3] = { 0x03, 0x00, 0x04 }; later_addr(OP_IO_CAP_REPLY, q, io, 3); }   /* NoInputNoOutput, no OOB, general bonding */
         else { unsigned char why = 0x18; later_addr(OP_IO_CAP_NEG, q, &why, 1);              /* pairing not allowed */
                fprintf(stderr, "a2dp: %012llx wants to pair, pairing is off\n", (unsigned long long)addr_of(q)); }
         return 1;
     case EV_USER_CONFIRM:
         if (qn < 6) return 1;
-        later_addr(pairing ? OP_CONFIRM_REPLY : OP_CONFIRM_NEG, q, NULL, 0);
+        later_addr(pairing || out_may_pair(addr_of(q)) ? OP_CONFIRM_REPLY : OP_CONFIRM_NEG, q, NULL, 0);
         return 1;
     case EV_PIN_REQUEST:
         if (qn < 6) return 1;
-        if (pairing) { unsigned char pin[17] = { 4, '0', '0', '0', '0' }; later_addr(OP_PIN_REPLY, q, pin, 17); }
+        if (pairing || out_may_pair(addr_of(q))) { unsigned char pin[17] = { 4, '0', '0', '0', '0' }; later_addr(OP_PIN_REPLY, q, pin, 17); }
         else later_addr(OP_PIN_NEG, q, NULL, 0);
         return 1;
     case EV_IO_CAP_RESPONSE: return 1;
@@ -1094,7 +1561,8 @@ int a2dp_event(const unsigned char *e, size_t n)
         if (qn < 3 || !(l = link_by(u16(q + 1) & 0x0fff))) return 0;
         if (q[0]) {
             fprintf(stderr, "a2dp: %012llx: authentication failed (0x%02x)\n", (unsigned long long)l->addr, q[0]);
-            if (q[0] == 0x06) key_forget(l->addr);          /* key missing: the device forgot us */
+            if (q[0] == 0x06 || (q[0] == 0x05 && is_speaker(l))) key_forget(l->addr);   /* key missing: the device forgot us
+                                                                (BlueZ says 0x05); our speaker pairs afresh next time */
             pending_resolve(l, 0);
         } else if (!l->enc) { unsigned char d[3]; put16(d, l->handle); d[2] = 1; later(OP_ENCRYPT, d, 3); }
         else pending_resolve(l, 1);
@@ -1113,6 +1581,7 @@ int a2dp_event(const unsigned char *e, size_t n)
 int a2dp_upkeep(void)
 {
     avrcp_upkeep();
+    if (out_upkeep() < 0) return -1;
     for (int i = 0; i < npend; i++) if (hci_cmd(pend[i].op, pend[i].p, pend[i].n) < 0) { npend = 0; return -1; }
     npend = 0;
     int r = atomic_exchange(&pair_req, -1);
@@ -1137,11 +1606,11 @@ int a2dp_upkeep(void)
     return 0;
 }
 
-int a2dp_streaming(void) { return atomic_load(&streaming); }
+int a2dp_streaming(void) { return atomic_load(&streaming) || atomic_load(&out_live); }
 
 int a2dp_busy(void)
 {
-    int b = pair_until != 0 || npend > 0;
+    int b = pair_until != 0 || npend > 0 || atomic_load(&out_searching) || out.paging || (out.on && out.addr);
     for (int i = 0; i < MAX_LINKS; i++) b |= links[i].used && (links[i].pend_until || links[i].avctp_at);
     return b;
 }
@@ -1151,6 +1620,7 @@ void a2dp_lost(void)
     for (int i = 0; i < MAX_LINKS; i++) if (links[i].used) link_gone(&links[i]);
     for (struct frag *f = fhead, *n; f; f = n) { n = f->next; free(f); }
     fhead = NULL; ftail = &fhead; npend = 0; scan_mode = -1;
+    out.paging = 0; inquiring = 0;
 }
 
 int a2dp_setup(void)
@@ -1207,6 +1677,26 @@ void a2dp_pause(void)
 }
 
 void a2dp_unyield(void) { if (atomic_exchange(&yielded, 0)) fprintf(stderr, "a2dp: audible again\n"); }
+
+void a2dp_out_search(int on) { atomic_store(&out_search_req, on != 0); hci_poke(); }
+int  a2dp_out_searching(void) { return atomic_load(&out_searching); }
+void a2dp_out_enable(int on) { atomic_store(&out_enabled, on != 0); atomic_store(&out_on_req, on != 0); hci_poke(); }
+int  a2dp_out_enabled(void) { return atomic_load(&out_enabled); }
+
+int a2dp_out_delay(int set)
+{
+    if (set >= 0) { atomic_store(&out_delay, set > 2000 ? 2000 : set); atomic_store(&out_save_req, 1); hci_poke(); }
+    return atomic_load(&out_delay);
+}
+
+void a2dp_out_status(char *buf, unsigned n)
+{
+    static const char *const words[] = { "None", "Off", "Not reachable", "Connecting", "Connected", "Playing" };
+    int st = atomic_load(&out_state);
+    if (atomic_load(&out_searching)) { snprintf(buf, n, "Searching..."); return; }
+    if (st == S_NONE) { snprintf(buf, n, "%s", words[st]); return; }
+    pthread_mutex_lock(&out_lock); snprintf(buf, n, "%s: %s", out.name[0] ? out.name : "Speaker", words[st]); pthread_mutex_unlock(&out_lock);
+}
 int  a2dp_pairing(void) { return atomic_load(&pairing_on); }
 
 void a2dp_start(void (*changed)(void))
@@ -1216,6 +1706,8 @@ void a2dp_start(void (*changed)(void))
     started = 1;
     pthread_mutex_lock(&core_lock); atomic_store(&echo_volume, core_volume()); pthread_mutex_unlock(&core_lock);
     keys_load();
+    speaker_load();
+    btout_start();
     for (int i = 0; i < a2dp_ncodecs && nseps < (int)(sizeof seps / sizeof *seps); i++) if (a2dp_codecs[i].usable()) seps[nseps++] = i;
     { char names[80] = ""; for (int i = 0; i < nseps; i++) snprintf(names + strlen(names), sizeof names - strlen(names), "%s%s", i ? ", " : "", a2dp_codecs[seps[i]].name);
       fprintf(stderr, "a2dp: codecs %s\n", names); }

@@ -1,4 +1,5 @@
-/* Bluetooth speaker: A2DP sink (SBC) on the controller ble.c drives, beside the Bluetooth LE proxy. */
+/* Bluetooth speaker: A2DP sink (SBC) on the controller ble.c drives, beside the Bluetooth LE proxy; and the other way,
+ * playing to a Bluetooth speaker (A2DP source). */
 #ifndef A2DP_H
 #define A2DP_H
 
@@ -15,4 +16,14 @@ int  a2dp_button(int resume);              /* action button: 0 = pause the strea
 void a2dp_pause(void);                     /* another source started: pause the device, or play nothing until it
                                               starts again or a2dp_unyield() when it has no AVRCP */
 void a2dp_unyield(void);                   /* the other source stopped */
+
+/* Playing to a Bluetooth speaker (the Echo as A2DP source; btout.c routes the mixer).  Any thread. */
+void a2dp_out_search(int on);              /* look for a speaker in pairing mode for up to a minute, pair the nearest,
+                                              play on it */
+int  a2dp_out_searching(void);
+void a2dp_out_enable(int on);              /* play on the paired speaker (connect, reconnect) or on the Echo again; on
+                                              without one searches */
+int  a2dp_out_enabled(void);
+int  a2dp_out_delay(int set);              /* the speaker's latency for Sendspin in ms, -1 reads */
+void a2dp_out_status(char *buf, unsigned n);   /* "None", "Searching...", "<name>: playing" and so on */
 #endif

@@ -19,7 +19,9 @@
  *                    Assistant names it esphome.<node>_arbitration_key) through which other Echos hand over their
  *                    network key, and the HomeassistantActionRequest with which this one hands over its own (arb.c)
  *   bluetooth proxy  LE scanning with raw advertisements, GATT connections to up to 3 devices at a time, pairing (ble.c)
- *   bluetooth speaker  a switch opens the pairing window (a2dp.c).  A phone connecting is announced by asking Home
+ *   bluetooth speaker  a switch opens the pairing window (a2dp.c).  The other way, playing to a Bluetooth speaker: a
+ *              switch searches for one and pairs it, another plays on it, a text sensor says how it is, a number holds its
+ *              latency for Sendspin (a2dp.c, btout.c).  A phone connecting is announced by asking Home
  *                    Assistant to run assist_satellite.announce on us (HomeassistantActionRequest, what an ESPHome YAML
  *                    `homeassistant.action` sends).  Home Assistant only runs it with "Allow the device to perform Home
  *                    Assistant actions" ticked in the device's options; otherwise it raises a repair saying so.
@@ -82,7 +84,8 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 /* KEY_NOISE and KEY_MULT: retired entities (noise suppression, mic volume multiplier), kept so the others keep their keys */
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
-       KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS, KEY_SOUND_DETECTION, KEY_SOUND };
+       KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS, KEY_SOUND_DETECTION, KEY_SOUND,
+       KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -357,6 +360,12 @@ static void send_setting(int key)       /* lock held */
     case KEY_SOUND_DETECTION: pb_uint(&b, 2, core_sound(-1)); send_state(SWITCH_STATE, &b); break;
     case KEY_LED_AUTO: if (have_light) { pb_uint(&b, 2, core_led_auto(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_LED_BRIGHTNESS: { int v = core_led_brightness(-1); if (v >= 0) { pb_float(&b, 2, v); send_state(NUMBER_STATE, &b); } } break;
+    case KEY_BT_OUT_SEARCH: if (ble_present()) { pb_uint(&b, 2, a2dp_out_searching()); send_state(SWITCH_STATE, &b); } break;
+    case KEY_BT_OUT: if (ble_present()) { pb_uint(&b, 2, a2dp_out_enabled()); send_state(SWITCH_STATE, &b); } break;
+    case KEY_BT_OUT_DELAY: if (ble_present()) { pb_float(&b, 2, a2dp_out_delay(-1)); send_state(NUMBER_STATE, &b); } break;
+    case KEY_BT_OUT_STATUS:
+        if (ble_present()) { PB(t, 160); char st[120]; a2dp_out_status(st, sizeof st); pb_fixed32(&t, 1, key); pb_str(&t, 2, st); send_state(TEXT_SENSOR_STATE, &t); }
+        break;
     }
 }
 
@@ -521,6 +530,19 @@ static void send_setting_entities(void)
       send_msg(LIST_EVENT, &b); }
     if (ble_present()) { PB(b, 128); pb_str(&b, 1, "bluetooth_pairing"); pb_fixed32(&b, 2, KEY_BT_PAIRING); pb_str(&b, 3, "Bluetooth pairing");
       pb_str(&b, 5, "mdi:bluetooth-connect"); send_msg(LIST_SWITCH, &b); }
+    /* playing to a Bluetooth speaker: the search pairs the nearest one in pairing mode and switches playing on it on */
+    if (ble_present()) {
+        { PB(b, 160); pb_str(&b, 1, "bluetooth_speaker_search"); pb_fixed32(&b, 2, KEY_BT_OUT_SEARCH); pb_str(&b, 3, "Bluetooth speaker search");
+          pb_str(&b, 5, "mdi:speaker-wireless"); send_msg(LIST_SWITCH, &b); }
+        { PB(b, 160); pb_str(&b, 1, "play_on_bluetooth_speaker"); pb_fixed32(&b, 2, KEY_BT_OUT); pb_str(&b, 3, "Play on Bluetooth speaker");
+          pb_str(&b, 5, "mdi:speaker-bluetooth"); send_msg(LIST_SWITCH, &b); }
+        { PB(b, 160); pb_str(&b, 1, "bluetooth_speaker"); pb_fixed32(&b, 2, KEY_BT_OUT_STATUS); pb_str(&b, 3, "Bluetooth speaker");
+          pb_str(&b, 5, "mdi:speaker"); send_msg(LIST_TEXT_SENSOR, &b); }
+        /* what the speaker adds to the Echo's own latency, for Sendspin's sync with other players: speakers differ */
+        { PB(b, 192); pb_str(&b, 1, "bluetooth_speaker_delay"); pb_fixed32(&b, 2, KEY_BT_OUT_DELAY); pb_str(&b, 3, "Bluetooth speaker delay");
+          pb_str(&b, 5, "mdi:timer-sand"); pb_float(&b, 6, 0); pb_float(&b, 7, 1000); pb_float(&b, 8, 10); pb_uint(&b, 10, 1);
+          pb_str(&b, 11, "ms"); pb_uint(&b, 12, 2); send_msg(LIST_NUMBER, &b); }
+    }
     if (ble_present()) { PB(b, 128); pb_str(&b, 1, "bluetooth_announcements"); pb_fixed32(&b, 2, KEY_BT_ANNOUNCE); pb_str(&b, 3, "Bluetooth announcements");
       pb_str(&b, 5, "mdi:bluetooth-audio"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
     if (ble_present()) { PB(b, 512); pb_str(&b, 1, "bluetooth_announcement_language"); pb_fixed32(&b, 2, KEY_BT_LANG);
@@ -566,6 +588,9 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
     else if (type == SWITCH_COMMAND && key == KEY_BT_ANNOUNCE) core_bt_announce(on);
     else if (type == SWITCH_COMMAND && key == KEY_DND) core_dnd(on);
     else if (type == SWITCH_COMMAND && key == KEY_BT_PAIRING) { a2dp_pair(on); return; }     /* its state follows through bt_changed */
+    else if (type == SWITCH_COMMAND && key == KEY_BT_OUT_SEARCH && ble_present()) { a2dp_out_search(on); return; }   /* a2dp.c keeps them */
+    else if (type == SWITCH_COMMAND && key == KEY_BT_OUT && ble_present()) { a2dp_out_enable(on); send_setting(key); return; }
+    else if (type == NUMBER_COMMAND && key == KEY_BT_OUT_DELAY && ble_present()) { a2dp_out_delay(num < 0 ? 0 : (int)lroundf(num)); send_setting(key); return; }
     else if (type == SWITCH_COMMAND && key == KEY_ARB_JOIN && arb_running()) { arb_join(on); send_setting(key); return; }   /* arb.c keeps it */
     else if (type == SWITCH_COMMAND && key == KEY_SS_UNPAIRED && core_sendspin_port) { sendspin_unpaired(on); send_setting(key); return; }  /* sendspin.c keeps it */
     else if (type == SWITCH_COMMAND && key == KEY_ADB_WIFI) {
@@ -898,7 +923,12 @@ static void ble_paired_cb(uint64_t a, int ok, int e) { ble_pair_result(BLE_PAIRE
 static void ble_unpaired_cb(uint64_t a, int ok, int e) { ble_pair_result(BLE_UNPAIRED, a, ok, e); }
 
 /* Bluetooth speaker: the pairing window opened, ran out or ended with a paired device */
-static void bt_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_BT_PAIRING); pthread_mutex_unlock(&core_lock); }
+static void bt_changed(void)
+{
+    pthread_mutex_lock(&core_lock);
+    send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS);
+    pthread_mutex_unlock(&core_lock);
+}
 static void adb_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_ADB_WIFI); pthread_mutex_unlock(&core_lock); }
 
 static const struct ble_handler ble_handler = {
@@ -1178,6 +1208,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         for (int k = KEY_EQ_BASS; k <= KEY_EQ_TREBLE; k++) send_setting(k);
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
+        send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS); send_setting(KEY_BT_OUT_DELAY);
         send_token_state(); send_light_states(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: on_setting(type, p, end); break;
     case SUBSCRIBE_HA_ACTIONS: if (c >= 0) clients[c].actions = 1; break;

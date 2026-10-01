@@ -1,0 +1,13 @@
+# On top of kernel.org 4.4.22's arm64 defconfig, for building a module that loads into donut's kernel (Makefile, KFRAG).
+# That kernel has no IKCONFIG, so this is what its modules show (all in NS65741's /system/lib/modules): vermagic
+# "4.4.22+ SMP preempt mod_unload aarch64", no __versions, no signature.  With these the module's struct module comes out
+# as theirs (0x300 bytes, init at 0x158, exit at 0x2d8).
+CONFIG_LOCALVERSION="+"
+# CONFIG_LOCALVERSION_AUTO is not set
+# CONFIG_PREEMPT_NONE is not set
+# CONFIG_PREEMPT_VOLUNTARY is not set
+CONFIG_PREEMPT=y
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+# CONFIG_MODVERSIONS is not set
+# CONFIG_MODULE_SIG is not set

@@ -62,6 +62,30 @@ jobs:
       fail-fast: false
       matrix:
         device: [donut, biscuit, radar]
+        include:
+          # Wi-Fi motion's kernel module: kernel.org's sources of the Echo's kernel and the compiler Amazon built it with;
+          # the config is in the repository (device.mk KCONFIG or KFRAG)
+          - device: donut
+            ksrc: linux-4.4.22
+            kernel: https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.4.22.tar.xz
+            kernel_sha256: 629d5661dc3b554fb0214b4635d80bb20f7977c6e814810945de31cfa86d1a0f
+            kcc: aarch64-linux-android-4.9
+            kcross: aarch64-linux-android-
+            kcc_url: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/961622e926a1b21382dba4dd9fe0e5fb3ee5ab7c.tar.gz
+          - device: biscuit
+            ksrc: linux-3.18.19
+            kernel: https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.19.tar.xz
+            kernel_sha256: 3d80d3b8d98c3141d9e26f6c25d73575d688f1c1651b8076f0f2bfd76325b7c9
+            kcc: arm-eabi-4.8
+            kcross: arm-eabi-
+            kcc_url: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.8/+archive/26e93f6af47f7bd3a9beb5c102a5f45e19bfa38a.tar.gz
+          - device: radar
+            ksrc: linux-3.18.19
+            kernel: https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.19.tar.xz
+            kernel_sha256: 3d80d3b8d98c3141d9e26f6c25d73575d688f1c1651b8076f0f2bfd76325b7c9
+            kcc: arm-eabi-4.8
+            kcross: arm-eabi-
+            kcc_url: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.8/+archive/26e93f6af47f7bd3a9beb5c102a5f45e19bfa38a.tar.gz
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,10 +109,39 @@ jobs:
           echo "$NDK_SHA256  ndk.zip" | sha256sum -c -
           unzip -q ndk.zip -d toolchain && rm ndk.zip
 
+      - name: Kernel build tools
+        if: matrix.kernel
+        run: command -v bc > /dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq bc > /dev/null; }     # timeconst.h
+      - name: Kernel cache
+        if: matrix.kernel && !env.ACT
+        id: kernel
+        uses: actions/cache@v4
+        with:
+          path: |
+            toolchain/${{ matrix.ksrc }}
+            toolchain/${{ matrix.kcc }}
+          key: kernel-${{ matrix.ksrc }}-${{ matrix.kcc }}-${{ matrix.kernel_sha256 }}
+      - name: Kernel sources and compiler
+        if: matrix.kernel && steps.kernel.outputs.cache-hit != 'true'
+        run: |
+          [ -f toolchain/${{ matrix.ksrc }}/Makefile ] && [ -x toolchain/${{ matrix.kcc }}/bin/${{ matrix.kcross }}gcc ] && exit 0
+          mkdir -p toolchain/${{ matrix.kcc }}
+          curl -fsSL -o kernel.tar.xz "${{ matrix.kernel }}"
+          echo "${{ matrix.kernel_sha256 }}  kernel.tar.xz" | sha256sum -c -
+          tar xf kernel.tar.xz -C toolchain && rm kernel.tar.xz
+          curl -fsSL "${{ matrix.kcc_url }}" | tar xz -C toolchain/${{ matrix.kcc }}
+          # aarch64-linux-android-4.9's gcc and g++ are Python 2 wrappers (/usr/bin/python) that only exec real-<name>
+          # (and goma): go direct
+          cd toolchain/${{ matrix.kcc }}/bin
+          for w in real-*; do if [ -e "$w" ]; then ln -sf $w ${w#real-}; fi; done
+
       - name: Build
         run: |
           make -j"$(nproc)" DEVICE=${{ matrix.device }} STUBS=1 RELEASE=1 all build/otatool-host
           [ "$(make -s version RELEASE=1)" = "${{ needs.version.outputs.version }}" ]
+          # make leaves Wi-Fi motion's module out with a note when it cannot build it: a bundle must not lose it that way
+          kmod=$(sed -n 's/^KMOD *:= *//p' devices/${{ matrix.device }}/device.mk)
+          [ -z "$kmod" ] || [ -f build/${{ matrix.device }}/$kmod.ko ] || { echo "::error::$kmod.ko not built"; exit 1; }
 
       # The bundling as the release job does it, with a key of its own: checks the build is complete.  The release key
       # is not here: this job runs whatever code the branch or pull request brings.
@@ -109,6 +162,7 @@ jobs:
             build/${{ matrix.device }}/mixcap
             build/${{ matrix.device }}/mixplay
             build/${{ matrix.device }}/pryon_test
+            build/${{ matrix.device }}/*.ko
           if-no-files-found: error
 
   test:

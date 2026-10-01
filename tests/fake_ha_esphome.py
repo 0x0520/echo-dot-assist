@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Plays Home Assistant's side of the ESPHome native API against build/hassmic-host, using the reference
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
-import asyncio, base64, io, math, os, signal, struct, subprocess, sys, tempfile, threading, wave
+import asyncio, base64, io, math, os, random, signal, struct, subprocess, sys, tempfile, threading, wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
-from aioesphomeapi import ZERO_NOISE_PSK, EventInfo
+from aioesphomeapi import ZERO_NOISE_PSK, EventInfo, BinarySensorInfo, BinarySensorState
 from aioesphomeapi.model import Event
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
 
@@ -51,7 +51,10 @@ async def main():
                HASSMIC_MODELS=os.path.join(state, "models"),
                HASSMIC_ADB_OPEN=os.path.join(state, "adb-open.root"),          # on the Echo: in a directory only root writes
                HASSMIC_LUX=os.path.join(state, "calibrated_lux"),              # the light sensor's sysfs file
-               HASSMIC_FAKE_SOUND="dogBark")                                    # every ~10 s window "hears" a dog (sound_none.c)
+               HASSMIC_FAKE_SOUND="dogBark",                                    # every ~10 s window "hears" a dog (sound_none.c)
+               HASSMIC_FAKE_WIFI=os.path.join(state, "rx_stat"))                # what the Wi-Fi driver answers RX_STAT (wifimotion.c)
+    rx_stat = lambda rcpi: open(env["HASSMIC_FAKE_WIFI"], "w").write(f"RX Stat:\nRX SNR (dB)          = 32\nRCPI RX0             = {rcpi}\n")
+    rx_stat(112)
     with open(env["HASSMIC_LUX"], "w") as f: f.write("67\n")
     for m in ("echo-de", "computer-en-US"):             # installed wake word models (the PC build loads none of them)
         os.makedirs(os.path.join(state, "models", m)); open(os.path.join(state, "models", m, "pryon.manifest"), "w").close()
@@ -429,6 +432,35 @@ async def main():
         c.switch_command(sw.key, False)
         await asyncio.sleep(0.5)
         check(last3(sw.key, SwitchState) is False and open(settings).read().split()[11:12] == ["0"], "sound detection switched off again")
+        # Wi-Fi motion (experimental): off by default, the sensor unknown while off; on, a still level is no motion, a
+        # wobbling one is, and it clears after the hold (3 s in the PC build, 30 s on the Echo)
+        wsw, wbs, wsn = by.get("wifi_motion_detection"), by.get("wifi_motion"), by.get("wifi_motion_sensitivity")
+        wstate = lambda: ([x for x in st3 if isinstance(x, BinarySensorState) and x.key == wbs.key] or [None])[-1]
+        check(isinstance(wsw, SwitchInfo) and "experimental" in wsw.name and int(wsw.entity_category) == 1
+              and isinstance(wbs, BinarySensorInfo) and wbs.device_class == "motion" and "experimental" in wbs.name
+              and isinstance(wsn, NumberInfo) and (wsn.min_value, wsn.max_value) == (1, 10) and int(wsn.entity_category) == 1,
+              "Wi-Fi motion entities listed, named experimental")
+        check(last3(wsw.key, SwitchState) is False and last3(wsn.key, NumberState) == 5 and wstate() and wstate().missing_state,
+              "Wi-Fi motion off by default, sensitivity 5, the sensor unknown")
+        c.switch_command(wsw.key, True)
+        await asyncio.sleep(3)
+        check(last3(wsw.key, SwitchState) is True and wstate() and not wstate().missing_state and wstate().state is False
+              and open(settings).read().split()[12:14] == ["1", "5"],
+              f"switched on: a steady level is no motion, kept in the settings file: {open(settings).read().strip()!r}")
+        for _ in range(60):                                 # someone walking through the path: 6 s
+            rx_stat(random.randint(106, 118)); await asyncio.sleep(0.1)
+            if wstate().state: break
+        check(wstate().state is True, "a wobbling level is motion")
+        rx_stat(112)
+        await asyncio.sleep(7)
+        check(wstate().state is False, "motion clears after the hold")
+        c.number_command(wsn.key, 8)
+        await asyncio.sleep(0.5)
+        check(last3(wsn.key, NumberState) == 8 and open(settings).read().split()[13] == "8", "sensitivity set and kept")
+        c.switch_command(wsw.key, False)
+        await asyncio.sleep(1)
+        check(last3(wsw.key, SwitchState) is False and wstate().missing_state and open(settings).read().split()[12] == "0",
+              "switched off again: the sensor unknown")
         await c.disconnect()
     finally:
         proc.terminate(); httpd.shutdown()

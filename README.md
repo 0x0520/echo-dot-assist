@@ -55,6 +55,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Equalizer (bass, mid, treble)                 | ✅ (Alexa app)          | ✅ sliders in HA                             | ❌                       |
 | Light ring follows the room's light           | ✅                      | ✅ same, or a fixed level from HA; illuminance sensor | ❌ (stock's automatic only) |
 | Sound detection (smoke alarm, glass, dog, …)  | ✅ Alexa Guard, checked in Amazon's cloud | optional, off by default: on the Echo only, less reliable ([details](#sound-detection)) | ❌ |
+| Motion sensor                                 | ❌                      | **experimental**, off by default: from the Wi-Fi signal ([details](#wifi-motion)) | ❌ |
 | Encrypted link to Home Assistant              | –                       | ✅ key set by Home Assistant                 | ❌ plain TCP             |
 | Talks to Amazon                               | always                  | never (firewalled)                           | never (firewalled)       |
 | Updates                                       | automatic, from Amazon  | signed: pushed from your PC, or online from Home Assistant (off by default) | signed, pushed from your PC |
@@ -130,6 +131,24 @@ Details:
   - **Private**: it all happens on the Echo; nothing leaves it except the event to Home Assistant (a stock Echo uploads
     the recordings, and near misses for training). Costs about 13 % of one CPU core while on (Echo Dot 2).
   - ESPHome only, not with Wyoming. Background: [docs/re-aed.md](docs/re-aed.md).
+- **Wi-Fi motion** (**experimental**, off by default)<a id="wifi-motion"></a>: "Wi-Fi motion detection (experimental)"
+  turns the Echo into a motion sensor without any extra hardware. Someone walking between the Echo and your Wi-Fi router
+  changes how strongly the Echo receives the router, and "Wi-Fi motion (experimental)" (a motion binary sensor) goes on
+  while that happens and off 30 s after it stops, like a PIR sensor. "Wi-Fi motion sensitivity (experimental)", 1 to 10
+  (default 5), sets how much change counts. It is a first version, tried in one flat for a few minutes and one night,
+  where it mostly did what it should; please read:
+  - **Motion, not presence.** Someone sitting still does not show; an empty room and a quiet one look the same.
+  - **Only between the Echo and the router.** It sees best what crosses the path between them (also in the next room,
+    if the router is there); someone moving elsewhere in the room may not show at all.
+  - **Expect false alarms** from other Wi-Fi devices, doors and people in the router's room; how often has not been
+    counted yet. Try the sensitivity before you rely on it. On the Echo Dot 2 and Echo 2
+    also when the router switches between its faster speeds: their Wi-Fi does not say at which speed a frame came,
+    and a router sends each speed at its own strength (the Echo Dot 3 allows for that).
+  - **Through a small kernel module.** The Wi-Fi drivers do not report what this needs (the Echo Dot 3's only for the
+    last frame from any device nearby), so hassmic brings a kernel module of its own that reads the level of every
+    frame from your router in the driver. It is only loaded once you switch Wi-Fi motion on (within 10 s), and then
+    stays loaded until the Echo restarts. Running on an Echo Dot 3, an Echo Dot 2 and an Echo 2.
+  - ESPHome only. It does not use the microphones; muting the Echo does not stop it.
 - **No cloud**: Alexa client, updater and telemetry are stopped at every boot; a firewall drops everything that is not
   going to a local address. Only hassmic itself may go further, to fetch replies and music from where Home Assistant or
   Music Assistant point it. See [Security](#security).

@@ -66,6 +66,20 @@ fwcheck() {
     fwmiss=0
 }
 
+# Wi-Fi motion (device.conf KMOD): our kernel module hooks the Wi-Fi driver's receive path for the level of every frame
+# from the access point (src/kmod/).  Loaded only once Wi-Fi motion is switched on (field 13 of hassmic's settings
+# file; hassmic waits for /proc/<module> meanwhile), so while it is off - the default - no kernel code is touched; and
+# only with the link up, so that a driver that is a module itself (donut's) is there to be hooked.  It cannot be
+# unloaded: it stays until the next reboot.  A failed load is not tried again until then.
+kmod() {
+    [ -n "$KMOD" ] && [ -f $D/$KMOD ] || return 0
+    grep -q "^${KMOD%.ko} " /proc/modules && return 0
+    set -- $(cat /data/local/hassmic/state/settings 2>/dev/null)
+    [ "${13}" = 1 ] || return 0
+    if out=$(insmod $D/$KMOD $KMOD_ARGS 2>&1); then echo "kmod: $KMOD loaded (Wi-Fi motion switched on)"
+    else echo "kmod: $KMOD not loaded, not tried again until reboot: $out"; KMOD=; fi
+}
+
 netwatch() {
     miss=0
     while :; do
@@ -73,6 +87,7 @@ netwatch() {
         fwcheck
         if ifconfig $WLAN 2>/dev/null | grep -q "inet addr"; then
             miss=0
+            kmod
             [ "$(getprop init.svc.$WIFI_SERVICE)" = running ] && { sleep 5; stop $WIFI_SERVICE; echo "netwatch: link up, $WIFI_SERVICE stopped"; }
         else
             miss=$((miss + 1))
@@ -191,6 +206,8 @@ satellite)
     } >> $LOG 2>&1
     # A binary in /data wins over the installed one: lets a new build be tried without a trip through TWRP.
     BIN=$D/hassmic; [ -x /data/local/hassmic/hassmic ] && BIN=/data/local/hassmic/hassmic
+    # hassmic offers Wi-Fi motion where the module can be loaded (wifimotion.c), the loop below loads it when needed
+    [ -n "$KMOD" ] && [ -f $D/$KMOD ] && export HASSMIC_WIFI_KMOD=/proc/${KMOD%.ko}
     # online updates: hassmic checks downloads against the key root will check them against (ota.c)
     export HASSMIC_RELEASE_PUB=$(release_pub)
     netwatch >> $LOG 2>&1 &

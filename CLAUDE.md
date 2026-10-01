@@ -139,6 +139,17 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
   Just Works pairing); Amazon's `btmanagerd` is stopped. A2DP shares the controller; scanning pauses while a phone plays.
 - **adb over Wi-Fi** (`adbwifi.c`): the HA switch only writes a request for root's firewall watcher, as `ota.c` does
   for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key.
+- **Wi-Fi motion** (`wifimotion.c`, experimental, off by default): polls the RCPI of the frames from the AP at 10 Hz, scatter
+  over 2 s = motion binary sensor. A kernel module of ours (no kprobes on any model) words it like MediaTek's `RX_STAT` in
+  `/proc/<module>`: biscuit/radar (gen2 driver, built in, no frame levels) `src/kmod/hassmic_rcpi.c` inline-hooks
+  `nicRxProcessDataPacket`; donut (gen4m `wlan_mt76x8_sdio.ko`, arm64 kernel) `src/kmod/hassmic_rcpi4m.c` turns its
+  `bl nicRxFillRFB` into a call to a wrapper. Each reading also has a `KIND` (donut: rate from the RX vector; gen2:
+  broadcast or not), and `wm_kind_norm` compares it with its kind's own level: APs send each rate at its own power. device.conf `KMOD`, loaded by `main.sh` only once the switch is on (settings
+  field 13) and the link is up, never unloaded. Built by `make` per device.mk `KVER`/`KARCH`/`KCROSS` against
+  `toolchain/linux-<KVER>` + `devices/<codename>/kconfig` (biscuit/radar: IKCONFIG of `boot.img`, `KCONFIG`; donut: a
+  fragment on arm64 defconfig, `KFRAG`), with AOSP
+  `arm-eabi-4.8` / `aarch64-linux-android-4.9`. Without the module donut falls back to `iwpriv wlan0 driver RX_STAT` (last
+  frame from anyone). The MT7668's CSI commands are accepted but the chip firmware sends no data.
 - **Push updates**: `ota.c` receives bundles on the device; `src/tools/otatool.c` is the same code for pack/sign (PC)
   and verify/unpack (device), with monocypher. `scripts/bundle.sh` packs (ota-push.sh and CI).
 - **Online updates** (`update.c`): HA select "Online updates" (off default / beta / release, settings field 15) and an

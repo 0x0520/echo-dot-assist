@@ -54,7 +54,7 @@ if [ "$1" != --uninstall ]; then
     WANT=$(md5sum $OUT/sepolicy.hassmic | cut -d' ' -f1)
 fi
 # What goes into /system/hassmic, whichever way it gets there.
-FILES="$OUT/hassmic $OUT/runas $(ls $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $OUT/otatool secrets/update.pub keys/release.pub $DDIR/device.conf
+FILES="$OUT/hassmic $OUT/runas $(ls $OUT/mixcap $OUT/mixplay $OUT/pryon_test $OUT/*.ko 2>/dev/null) $OUT/otatool secrets/update.pub keys/release.pub $DDIR/device.conf
        scripts/system/boot.sh scripts/system/main.sh scripts/system/sysinstall.sh scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh"
 
 if [ -z "$TWRP" ]; then

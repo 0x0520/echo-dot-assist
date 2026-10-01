@@ -1,0 +1,2 @@
+# HM_KMOD: the model's module (device.mk KMOD), set by the Makefile
+obj-m := $(HM_KMOD).o

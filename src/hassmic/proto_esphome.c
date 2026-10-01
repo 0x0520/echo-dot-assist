@@ -26,6 +26,8 @@
  *                    `homeassistant.action` sends).  Home Assistant only runs it with "Allow the device to perform Home
  *                    Assistant actions" ticked in the device's options; otherwise it raises a repair saying so.
  *   debug access     a switch opens adb over Wi-Fi for 30 min (adbwifi.c); only taken over the connection with the key
+ *   wifi motion      experimental, off by default: a switch, a motion binary sensor, its sensitivity (wifimotion.c);
+ *                    listed only where the Wi-Fi driver can do it
  *   online updates   a select (off by default, beta, release) and an update entity with the newest build on that channel
  *                    and an install button (update.c); channel and install only over the connection with the key
  */
@@ -55,6 +57,7 @@
 #include "noise.h"
 #include "sendspin.h"
 #include "update.h"
+#include "wifimotion.h"
 #include "net.h"
 #include "netio.h"
 #define MINIMP3_IMPLEMENTATION
@@ -65,7 +68,7 @@ enum {
     HELLO_REQ = 1, HELLO_RESP, CONNECT_REQ, CONNECT_RESP, DISCONNECT_REQ, DISCONNECT_RESP, PING_REQ, PING_RESP,
     DEVICE_INFO_REQ, DEVICE_INFO_RESP, LIST_ENTITIES_REQ, LIST_ENTITIES_DONE = 19, SUBSCRIBE_STATES = 20,
     SUBSCRIBE_HA_ACTIONS = 34, HA_ACTION, LIST_SERVICE = 41, EXECUTE_SERVICE,
-    LIST_SENSOR = 16, LIST_SWITCH = 17, LIST_TEXT_SENSOR = 18, SENSOR_STATE = 25, SWITCH_STATE = 26, TEXT_SENSOR_STATE = 27, SWITCH_COMMAND = 33, LIST_NUMBER = 49, NUMBER_STATE, NUMBER_COMMAND,
+    LIST_BINARY_SENSOR = 12, LIST_SENSOR = 16, LIST_SWITCH = 17, LIST_TEXT_SENSOR = 18, SENSOR_STATE = 25, SWITCH_STATE = 26, BINARY_SENSOR_STATE = 21, TEXT_SENSOR_STATE = 27, SWITCH_COMMAND = 33, LIST_NUMBER = 49, NUMBER_STATE, NUMBER_COMMAND,
     LIST_SELECT = 52, SELECT_STATE, SELECT_COMMAND,
     LIST_MEDIA_PLAYER = 63, MEDIA_PLAYER_STATE, MEDIA_PLAYER_COMMAND,
     SUBSCRIBE_VA = 89, VA_REQUEST, VA_RESPONSE, VA_EVENT, VA_AUDIO = 106, VA_TIMER_EVENT = 115,
@@ -90,7 +93,8 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
        KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS, KEY_SOUND_DETECTION, KEY_SOUND,
-       KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_UPDATE_CHANNEL, KEY_UPDATE };
+       KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_WIFI_MOTION_ON, KEY_WIFI_MOTION, KEY_WIFI_MOTION_SENS,
+       KEY_UPDATE_CHANNEL, KEY_UPDATE };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -313,27 +317,25 @@ static const struct bt_lang { const char *code, *name, *on, *off, *on_any, *off_
 };
 #define BT_LANGS (int)(sizeof bt_langs / sizeof bt_langs[0])
 static int bt_lang;                     /* lock held: index into bt_langs */
-/* Settings fields 13 and 14 belong to Wi-Fi motion, which only builds of main have (switch, sensitivity): written back
- * as read, so that an Echo going between the channels keeps them, and the update channel stays field 15 */
-static int kept[2] = { 0, 5 };          /* lock held */
 static int have_light;                  /* a light sensor answered at start: illuminance and auto brightness are listed */
 
 static const char *settings_path(void) { const char *p = getenv("HASSMIC_SETTINGS"); return p ? p : "/data/local/hassmic/state/settings"; }
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, uc = UPDATE_OFF; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
+    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, wm = 0, ws = WIFIMOTION_SENS_DEFAULT, uc = UPDATE_OFF; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
     if (!f) { core_mic_level(mic_level); return; }
     /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
      * which ignored them; unused since), 9 (before LED brightness: auto, as stock), 11 (before sound detection: off), 12
-     * (before the two of Wi-Fi motion, which this version does not have: kept as they are), 14 (before online updates: off). */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &kept[0], &kept[1], &uc) >= 5) {
+ * (before Wi-Fi motion: off, default sensitivity), 14 (before online updates: off). */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &wm, &ws, &uc) >= 5) {
         if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
         if (!la) { if (lb >= 0) core_led_brightness(lb); else core_led_auto(0); }  /* ledcontroller started its auto at boot */
         core_sound(sd != 0);
+        wifimotion_enable(wm != 0); wifimotion_sensitivity(ws);
         update_channel(uc);
     }
     fclose(f);
@@ -345,7 +347,7 @@ static void settings_save(void)
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
     fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d %d %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
-            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), kept[0], kept[1], update_channel(-1));
+            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), wifimotion_enable(-1), wifimotion_sensitivity(-1), update_channel(-1));
     fclose(f);
 }
 
@@ -368,6 +370,11 @@ static void send_setting(int key)       /* lock held */
     case KEY_SS_UNPAIRED: if (core_sendspin_port) { pb_uint(&b, 2, sendspin_unpaired(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_ADB_WIFI: pb_uint(&b, 2, adbwifi_open()); send_state(SWITCH_STATE, &b); break;
     case KEY_SOUND_DETECTION: pb_uint(&b, 2, core_sound(-1)); send_state(SWITCH_STATE, &b); break;
+    case KEY_WIFI_MOTION_ON: if (wifimotion_present()) { pb_uint(&b, 2, wifimotion_enable(-1)); send_state(SWITCH_STATE, &b); } break;
+    case KEY_WIFI_MOTION_SENS: if (wifimotion_present()) { pb_float(&b, 2, wifimotion_sensitivity(-1)); send_state(NUMBER_STATE, &b); } break;
+    case KEY_WIFI_MOTION:               /* unknown while switched off */
+        if (wifimotion_present()) { int m = wifimotion_motion(); pb_uint(&b, 2, m > 0); pb_uint(&b, 3, m < 0); send_state(BINARY_SENSOR_STATE, &b); }
+        break;
     case KEY_LED_AUTO: if (have_light) { pb_uint(&b, 2, core_led_auto(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_LED_BRIGHTNESS: { int v = core_led_brightness(-1); if (v >= 0) { pb_float(&b, 2, v); send_state(NUMBER_STATE, &b); } } break;
     case KEY_BT_OUT_SEARCH: if (ble_present()) { pb_uint(&b, 2, a2dp_out_searching()); send_state(SWITCH_STATE, &b); } break;
@@ -581,6 +588,17 @@ static void send_setting_entities(void)
         { PB(b, 128); pb_str(&b, 1, "arbitration_peers"); pb_fixed32(&b, 2, KEY_ARB_PEERS); pb_str(&b, 3, "Arbitration peers");
           pb_str(&b, 5, "mdi:access-point-network"); pb_uint(&b, 13, 2); send_msg(LIST_SENSOR, &b); }
     }
+    /* Wi-Fi motion (wifimotion.c): experimental, and the names say so; the switch is off by default */
+    if (wifimotion_present()) {
+        { PB(b, 192); pb_str(&b, 1, "wifi_motion_detection"); pb_fixed32(&b, 2, KEY_WIFI_MOTION_ON);
+          pb_str(&b, 3, "Wi-Fi motion detection (experimental)"); pb_str(&b, 5, "mdi:wifi-alert"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
+        { PB(b, 192); pb_str(&b, 1, "wifi_motion"); pb_fixed32(&b, 2, KEY_WIFI_MOTION); pb_str(&b, 3, "Wi-Fi motion (experimental)");
+          pb_str(&b, 5, "motion"); send_msg(LIST_BINARY_SENSOR, &b); }
+        { PB(b, 192); pb_str(&b, 1, "wifi_motion_sensitivity"); pb_fixed32(&b, 2, KEY_WIFI_MOTION_SENS);
+          pb_str(&b, 3, "Wi-Fi motion sensitivity (experimental)"); pb_str(&b, 5, "mdi:tune");
+          pb_float(&b, 6, WIFIMOTION_SENS_MIN); pb_float(&b, 7, WIFIMOTION_SENS_MAX); pb_float(&b, 8, 1); pb_uint(&b, 10, 1); pb_uint(&b, 12, 2);
+          send_msg(LIST_NUMBER, &b); }
+    }
     /* online updates (update.c): off unless chosen here; the entity says what is new on the channel and installs it */
     { PB(b, 192); pb_str(&b, 1, "online_updates"); pb_fixed32(&b, 2, KEY_UPDATE_CHANNEL); pb_str(&b, 3, "Online updates");
       pb_str(&b, 5, "mdi:cloud-download"); for (int i = 0; i < 3; i++) pb_str(&b, 6, update_channels[i]);
@@ -633,6 +651,12 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
             else fprintf(stderr, "update: channel change refused, the request did not come over the keyed connection\n");
         }
         send_setting(key); send_setting(KEY_UPDATE); return;            /* the entity follows through update_changed */
+    }
+    else if (type == SWITCH_COMMAND && key == KEY_WIFI_MOTION_ON && wifimotion_present()) {
+        wifimotion_enable(on); settings_save(); send_setting(key); return;       /* the sensor follows through wifi_changed */
+    }
+    else if (type == NUMBER_COMMAND && key == KEY_WIFI_MOTION_SENS && wifimotion_present()) {
+        wifimotion_sensitivity((int)lroundf(num)); settings_save(); send_setting(key); return;
     }
     else if (type == SWITCH_COMMAND && key == KEY_LED_AUTO && have_light) {
         core_led_auto(on); settings_save(); send_setting(key); return;              /* the level follows through light_thread */
@@ -962,6 +986,7 @@ static void bt_changed(void)
     pthread_mutex_unlock(&core_lock);
 }
 static void adb_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_ADB_WIFI); pthread_mutex_unlock(&core_lock); }
+static void wifi_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_WIFI_MOTION); pthread_mutex_unlock(&core_lock); }
 static void update_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_UPDATE); pthread_mutex_unlock(&core_lock); }
 
 static const struct ble_handler ble_handler = {
@@ -1242,6 +1267,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
         send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS); send_setting(KEY_BT_OUT_DELAY);
+        for (int k = KEY_WIFI_MOTION_ON; k <= KEY_WIFI_MOTION_SENS; k++) send_setting(k);
         send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE);
         send_token_state(); send_light_states(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: on_setting(type, p, end); break;
@@ -1374,7 +1400,7 @@ static void serve(int fd)
     { static int loaded; if (!loaded) { loaded = 1; have_light = !isnan(core_lux()); settings_load(); key_load();
                                        pthread_t t; pthread_create(&t, NULL, diag_thread, NULL); pthread_detach(t);
                                        pthread_create(&t, NULL, light_thread, NULL); pthread_detach(t);
-                                       adbwifi_start(adb_changed); update_start(update_changed);
+                                       adbwifi_start(adb_changed); wifimotion_start(wifi_changed); update_start(update_changed);
                                        if (core_bluetooth(-1)) { ble_start(&ble_handler); a2dp_start(bt_changed); } } }
     for (int i = 0; i < MAX_CLIENTS; i++) { if (clients[i].fd < 0 && slot < 0) slot = i; n += clients[i].fd >= 0; }
     if (slot >= 0) { clients[slot].fd = fd; clients[slot].states = clients[slot].enc = clients[slot].keyed = clients[slot].ble = clients[slot].ble_free = clients[slot].ble_user = clients[slot].actions = 0; if (!n) core_link(1, 0); }

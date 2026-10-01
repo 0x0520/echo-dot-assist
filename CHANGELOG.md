@@ -15,6 +15,14 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-01
 
+- **Wi-Fi motion, experimental.** The Echo Dot 3, Echo Dot 2 and Echo 2 can now work as a motion sensor, from their
+  Wi-Fi signal: someone walking between the Echo and the router changes it. Switch on "Wi-Fi motion detection
+  (experimental)" (off by default); "Wi-Fi motion (experimental)" then shows motion in Home Assistant, and "Wi-Fi motion
+  sensitivity (experimental)" sets how much it takes. It notices movement, not someone sitting still, and has been
+  tried for a few minutes and one night, so expect false alarms; see the README. It works through a small kernel
+  module that reads the signal of every frame from your router; the module comes with the update and is only loaded
+  once you switch Wi-Fi motion on.
+
 - **First install fixed** ([issue #2](https://github.com/Gamer92000/echo-dot-assist/issues/2)). Installing on an
   Echo for the first time stopped at the "Install" step ("No such file or directory", then "Permission denied" for
   `/sepolicy.new`); only Echos installed before 2026-09-30 got through, because they had run the older installer. Fixed,

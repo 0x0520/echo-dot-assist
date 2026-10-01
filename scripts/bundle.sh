@@ -10,6 +10,6 @@ cd "$(dirname "$0")/.."
 [ $# = 2 ] || die "usage: [DEVICE=<codename>] scripts/bundle.sh KEY VERSION"
 build/otatool-host pack "$1" "$2" $OUT/hassmic.bundle \
     $OUT/hassmic $OUT/runas $OUT/otatool $(ls $OUT/latency $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $DDIR/device.conf:644 \
-    keys/release.pub:644 \
+    $(for k in $OUT/*.ko; do [ -f "$k" ] && echo "$k:644"; done) keys/release.pub:644 \
     scripts/system/main.sh scripts/system/boot.sh scripts/system/sysinstall.sh $DDIR/hassmic.rc:644 \
     scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh

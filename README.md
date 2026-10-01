@@ -38,7 +38,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 |-----------------------------------------------|-------------------------|----------------------------------------------|--------------------------|
 | Voice assistant                               | Alexa (Amazon cloud)    | Home Assistant Assist                        | Home Assistant Assist    |
 | Amazon's mic processing (AEC, beamforming)    | ✅                      | ✅                                           | ✅                       |
-| Wake word on the device                       | ✅                      | ✅ "Alexa"; "Echo", "Computer", … with `scripts/wakeword.sh` ([details](devices/donut/README.md#3-optional-another-wake-word)) | ✅ same      |
+| Wake word on the device                       | ✅                      | ✅ "Alexa"; "Echo", "Computer", … with `scripts/artifacts.sh` ([details](devices/donut/README.md#3-optional-another-wake-word)) | ✅ same      |
 | Wake word in Home Assistant instead           | ❌                      | ✅ (`-w remote`)                             | ✅ (`-w remote`)         |
 | Interrupt a reply ("Alexa" / "Alexa, stop")   | ✅                      | ✅                                           | ✅                       |
 | Several Echos hear it, only the nearest answers | ✅ (Amazon cloud)      | ✅ between these Echos, on the LAN           | ❌                       |
@@ -53,6 +53,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Do not disturb                                | ✅ (Alexa app)          | ✅ switch in HA                              | ❌                       |
 | Equalizer (bass, mid, treble)                 | ✅ (Alexa app)          | ✅ sliders in HA                             | ❌                       |
 | Light ring follows the room's light           | ✅                      | ✅ same, or a fixed level from HA; illuminance sensor | ❌ (stock's automatic only) |
+| Sound detection (smoke alarm, glass, dog, …)  | ✅ Alexa Guard, checked in Amazon's cloud | optional, off by default: on the Echo only, less reliable ([details](#sound-detection)) | ❌ |
 | Encrypted link to Home Assistant              | –                       | ✅ key set by Home Assistant                 | ❌ plain TCP             |
 | Talks to Amazon                               | always                  | never (firewalled)                           | never (firewalled)       |
 | Updates                                       | automatic, from Amazon  | signed, pushed from your PC                  | signed, pushed from your PC |
@@ -91,6 +92,24 @@ Details:
   own logic, on by default); setting a level holds it there and switches the automatic off. "Illuminance": the Echo's
   light sensor in lux, as Amazon reads it, for automations.
   Diagnostics, off by default: SoC temperature, CPU usage.
+- **Sound detection** (optional, off by default)<a id="sound-detection"></a>: the "Sound detection" switch runs Amazon's
+  own Alexa Guard model on the Echo, beside the wake word, and the "Sound" event entity reports what it heard:
+  `smoke_or_co_alarm`, `glass_break`, `dog_bark`, `baby_cry`, `snoring`, `cough`, `water`, `beeping_appliance`. Use it
+  in automations ("When Sound fires with smoke_or_co_alarm"). Please read before relying on it:
+  - **Less reliable than on a stock Echo.** Amazon checks every hit in its cloud before it tells anyone; that check
+    cannot be had without Amazon, so here every hit of the model counts. In tests it also took a barking dog, pouring
+    water and a toilet flush for breaking glass, and a cough for a beeping appliance. Treat an event as a hint, not as
+    an alarm system, and never as a replacement for a smoke or CO detector.
+  - **Slow**: the model listens in windows of 10 s, so an event comes up to 10 s after the sound, and once per window
+    while the sound goes on.
+  - **Coarser than stock**: the model gives smoke alarms, smoke sirens and CO alarms the same score, and coughs the same
+    as running water, so they are one event each (`smoke_or_co_alarm`; `cough`). "Human presence" is left out: it fires
+    on any talk, TV or knock.
+  - Nothing is reported while the Echo is muted, or for a window in which the Echo itself played something (a reply, a
+    timer, music, its sounds): those are what it would hear.
+  - **Private**: it all happens on the Echo; nothing leaves it except the event to Home Assistant (a stock Echo uploads
+    the recordings, and near misses for training). Costs about 13 % of one CPU core while on (Echo Dot 2).
+  - ESPHome only, not with Wyoming. Background: [docs/re-aed.md](docs/re-aed.md).
 - **No cloud**: Alexa client, updater and telemetry are stopped at every boot; a firewall drops everything that is not
   going to a local address. Only hassmic itself may go further, to fetch replies and music from where Home Assistant or
   Music Assistant point it. See [Security](#security).
@@ -118,7 +137,7 @@ scripts/setup.sh              # picks the Echo on adb, or asks which one; then r
 A terminal screen with a progress bar and the list of steps. It runs everything on its own and only stops when you
 have to do something: download a file into `~/Downloads` (it picks it up from there and checks it), solder or plug a
 cable, hold a button, type a name or the Wi-Fi password. Its last step offers another wake word ("Echo",
-"Computer", …; see `scripts/wakeword.sh`), or keeps "Alexa". It offers to install missing tools. Before it starts it asks
+"Computer", …; see `scripts/artifacts.sh`), or keeps "Alexa". It offers to install missing tools. Before it starts it asks
 for a typed `yes`, as it wipes the Echo. Command output goes to `build/<codename>/setup.log`; when something fails it
 shows the end of it and offers to try again. Ctrl-C stops it at any point and the next run picks up where it left off;
 `--dry-run` walks all steps and shows the commands without running any, `--restart` starts over for the next Echo of

@@ -117,14 +117,17 @@ If `probe.sh` reports a different library, the Echo runs another firmware: stop 
 Want "Echo" or "Computer" instead of "Alexa"? Once the Echo is installed:
 
 ```sh
-scripts/wakeword.sh <echo-ip>
+scripts/artifacts.sh <echo-ip>
 ```
 
-It offers the models already in `device-logs/models/` (Amazon's sets are the same for every Echo: fetch once, copy to
-every Echo), tries each on the Echo's own engine before installing it, and restarts hassmic. For one you do not have
-yet it walks through the Amazon route below by itself: stock mode with the update block, you register the Echo in the
-Alexa app, it downloads the model (asking for what this Echo's engine can load), you deregister, it removes the app's
-Wi-Fi and the registration and goes back to satellite mode. Home Assistant then offers every installed model in the
+Its menu has a list of ticks per kind, everything new ticked: "Wake words" (the ones already in `device-logs/models/`,
+as Amazon's sets are the same for every Echo: fetch once, copy to every Echo, and the ones Amazon has in the chosen
+language) and "Other artifacts" (the sound detection model, kept on the PC for tests, `docs/re-aed.md`). Untick what
+you do not want; "Go on" shows what it will do and asks once. It tries each wake word on the Echo's own engine before installing it,
+and restarts hassmic. For downloads it walks through the Amazon route below by itself, once for all of them: stock
+mode with the update block, you register the Echo in the Alexa app, it downloads the models (asking for what this
+Echo's engine can load), you deregister, it removes the app's Wi-Fi and the registration and goes back to satellite
+mode. Home Assistant then offers every installed model in the
 Echo's wake word select. What it does, by hand:
 
 <details>

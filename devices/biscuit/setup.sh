@@ -30,7 +30,7 @@ wakeword|Wake word
 NOTES=(
     "adb over Wi-Fi is closed: scripts/adb-wifi.sh <echo-ip> (or \"Debug access\" in Home Assistant) opens it for 30 min."
     "Updates: git pull, then scripts/ota-push.sh <echo-ip>."
-    "More wake words later: scripts/wakeword.sh <echo-ip>"
+    "More wake words later: scripts/artifacts.sh <echo-ip>"
     "Music Assistant, Bluetooth speaker: $DDIR/README.md"
 )
 
@@ -142,5 +142,5 @@ step_install() {
 }
 
 step_wakeword() {
-    wakeword_run setup
+    artifacts_run setup
 }

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Amazon's artifacts (DAVS) for an installed Echo: other wake words ("Echo", "Computer", "Amazon", "Ziggy", or "Alexa" in another
+# language), installed on the Echo, and Alexa Guard's sound detection model, kept on the PC for tests (docs/re-aed.md).
+# All are Amazon's (DAVS) and the same for every Echo, so ones fetched before (device-logs/models/, git-ignored) are only
+# copied over.  A menu with a list of ticks per kind, everything new ticked; then one run does the rest.  Downloading
+# needs the Echo registered to an Amazon account once: it runs stock Alexa with the updaters cut off
+# (MODE=stock-online) until then, and everything is undone afterwards (registration, the Wi-Fi the Alexa app added,
+# the mode).  Home Assistant then offers every installed wake word in the Echo's wake word select.  Stopped halfway
+# (Ctrl-C), a new run finds the Echo in stock-online mode and goes on there.
+#   scripts/artifacts.sh [echo-ip]      without an address: the Echo on adb (USB, or ANDROID_SERIAL)
+cd "$(dirname "$0")/.."
+. scripts/lib/device.sh
+. scripts/lib/setup.sh
+. scripts/lib/artifacts.sh
+
+case $1 in -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0;; esac
+[ -n "$1" ] && { export ANDROID_SERIAL=$1; [[ $1 == *:* ]] || ANDROID_SERIAL=$1:5555; }
+
+trap '[ -n "$TTY" ] && printf "\e[?25h"' EXIT
+trap '[ -n "$TASK_PID" ] && kill $TASK_PID 2>/dev/null; rm -rf "$TMP"; _clr; printf "\n  %sStopped. Run scripts/artifacts.sh again to go on.%s\n" "$DIM" "$N"; exit 130' INT TERM
+LOG=build/artifacts.log; mkdir -p build; : > $LOG
+MODEL_NAME="Artifacts"
+artifacts_run

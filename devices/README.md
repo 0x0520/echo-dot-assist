@@ -82,7 +82,7 @@ Rough order. Each step is safe to stop at.
    `task` (spinner, output into the log), waits through `waitfor`/`wait_adb`; what only the user can do (soldering,
    button presses) is a short `todo` or `tell`, never a paragraph. A step first checks whether its result is there
    already. Mark a model not tried on a real Echo with `UNTESTED=1`. End with
-   `install` (`install_satellite`) and `wakeword` (`wakeword_run setup`). Try it with `scripts/setup.sh <codename> --dry-run`.
+   `install` (`install_satellite`) and `wakeword` (`artifacts_run setup`). Try it with `scripts/setup.sh <codename> --dry-run`.
 6. Add the model to the table above, to the root `README.md` and to `CHANGELOG.md`.
 
 Shared code stays free of `#ifdef DEVICE_...`. When a model needs more than a different value, add a field to

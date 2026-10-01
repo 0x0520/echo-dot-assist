@@ -5,7 +5,8 @@ import asyncio, base64, io, math, os, signal, struct, subprocess, sys, tempfile,
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
-from aioesphomeapi import ZERO_NOISE_PSK
+from aioesphomeapi import ZERO_NOISE_PSK, EventInfo
+from aioesphomeapi.model import Event
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,7 +50,8 @@ async def main():
                HASSMIC_MDNS_FILE=mdns, HASSMIC_ARB_ADDR="127.255.255.255",      # arbitration beacons stay on this PC
                HASSMIC_MODELS=os.path.join(state, "models"),
                HASSMIC_ADB_OPEN=os.path.join(state, "adb-open.root"),          # on the Echo: in a directory only root writes
-               HASSMIC_LUX=os.path.join(state, "calibrated_lux"))              # the light sensor's sysfs file
+               HASSMIC_LUX=os.path.join(state, "calibrated_lux"),              # the light sensor's sysfs file
+               HASSMIC_FAKE_SOUND="dogBark")                                    # every ~10 s window "hears" a dog (sound_none.c)
     with open(env["HASSMIC_LUX"], "w") as f: f.write("67\n")
     for m in ("echo-de", "computer-en-US"):             # installed wake word models (the PC build loads none of them)
         os.makedirs(os.path.join(state, "models", m)); open(os.path.join(state, "models", m, "pryon.manifest"), "w").close()
@@ -388,10 +390,45 @@ async def main():
         c.number_command(lbright.key, 30)
         await asyncio.sleep(0.5)
         check(last3(lbright.key, NumberState) == 30 and last3(lauto.key, SwitchState) is False, "a fixed LED level switches auto brightness off")
-        check(open(settings).read().split()[-2:] == ["0", "30"], f"LED brightness kept in the settings file: {open(settings).read().strip()!r}")
+        check(open(settings).read().split()[9:11] == ["0", "30"], f"LED brightness kept in the settings file: {open(settings).read().strip()!r}")
         c.switch_command(lauto.key, True)
         await asyncio.sleep(0.5)
-        check(last3(lauto.key, SwitchState) is True and open(settings).read().split()[-2] == "1", "auto brightness switched on again")
+        check(last3(lauto.key, SwitchState) is True and open(settings).read().split()[9] == "1", "auto brightness switched on again")
+        # sound detection: off by default, one event entity; on, it reports what the detector hears (here sound_none.c's
+        # dog, once per ~10 s window of the capture), kept in the settings file
+        sw, ev = by.get("sound_detection"), by.get("sound")
+        check(isinstance(sw, SwitchInfo) and int(sw.entity_category) == 1 and isinstance(ev, EventInfo)
+              and list(ev.event_types) == ["smoke_or_co_alarm", "glass_break", "dog_bark", "baby_cry", "snoring", "cough", "water", "beeping_appliance"]
+              and last3(sw.key, SwitchState) is False, f"sound detection switch (off) and event entity listed: {list(ev.event_types) if ev else None}")
+        await asyncio.sleep(11)
+        check(not [x for x in st3 if isinstance(x, Event)], "no sound event while sound detection is off")
+        c.switch_command(sw.key, True)
+        await asyncio.sleep(0.5)
+        check(last3(sw.key, SwitchState) is True and open(settings).read().split()[11:12] == ["1"],
+              f"sound detection switched on and kept in the settings file: {open(settings).read().strip()!r}")
+        for _ in range(26):
+            if [x for x in st3 if isinstance(x, Event)]: break
+            await asyncio.sleep(0.5)
+        evs = [(x.key, x.event_type) for x in st3 if isinstance(x, Event)]
+        check(evs[:1] == [(ev.key, "dog_bark")], f"the detector's dogBark arrives as event dog_bark within a window: {evs}")
+        # a window in which the Echo played something itself is dropped: here an announcement
+        n0 = len(evs)
+        async def no_pipeline(*a): return 0
+        async def nothing(*a): pass
+        c.subscribe_voice_assistant(handle_start=no_pipeline, handle_stop=nothing, handle_audio=nothing,
+                                    handle_announcement_finished=nothing)      # announcements answer the assistant's client
+        await asyncio.sleep(0.3)
+        res = await c.send_voice_assistant_announcement_await_response(f"http://127.0.0.1:{HTTP_PORT}/a.wav", 15, "x")
+        await asyncio.sleep(9)
+        evs = [(x.key, x.event_type) for x in st3 if isinstance(x, Event)]
+        check(res.success and len(evs) == n0, f"no sound event for the window with the announcement in it: {evs[n0:]}")
+        for _ in range(50):
+            if len([x for x in st3 if isinstance(x, Event)]) > n0: break
+            await asyncio.sleep(0.5)
+        check(len([x for x in st3 if isinstance(x, Event)]) > n0, "sound events again once the Echo has been quiet for a window")
+        c.switch_command(sw.key, False)
+        await asyncio.sleep(0.5)
+        check(last3(sw.key, SwitchState) is False and open(settings).read().split()[11:12] == ["0"], "sound detection switched off again")
         await c.disconnect()
     finally:
         proc.terminate(); httpd.shutdown()

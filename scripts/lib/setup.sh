@@ -137,29 +137,69 @@ prompt() {
 }
 
 # menu VAR ITEM...: pick one with the arrow keys (numbers work too); VAR gets its index.  $MENU_SEL: the one selected
-# at first (default 0).  Without a terminal: that one.
+# at first (default 0).  Without a terminal: that one.  An empty ITEM is a blank line between groups: never selected.
 menu() {
-    local _var=$1 _n=$(($# - 1)) _sel=${MENU_SEL:-0} _i _k _k2      # underscores: see prompt
+    local _var=$1 _n=$(($# - 1)) _sel=${MENU_SEL:-0} _i _k _k2 _d      # underscores: see prompt
     shift
     [ -n "$TTY" ] || { printf -v "$_var" '%s' $_sel; return 0; }
     printf '\e[?25l'
     while :; do
         for ((_i = 0; _i < _n; _i++)); do
-            if [ $_i = $_sel ]; then printf '\r\e[K  %s❯ %s%s\n' "$CYN$B" "${@:_i+1:1}" "$N"
+            if [ -z "${@:_i+1:1}" ]; then printf '\r\e[K\n'
+            elif [ $_i = $_sel ]; then printf '\r\e[K  %s❯ %s%s\n' "$CYN$B" "${@:_i+1:1}" "$N"
             else printf '\r\e[K    %s\n' "${@:_i+1:1}"; fi
         done
         IFS= read -rsn1 _k < /dev/tty || exit 1
+        _d=0
         case $_k in
-        $'\e') read -rsn2 -t 0.1 _k2 < /dev/tty; case $_k2 in '[A') _sel=$(( (_sel + _n - 1) % _n ));; '[B') _sel=$(( (_sel + 1) % _n ));; esac;;
-        k) _sel=$(( (_sel + _n - 1) % _n ));;
-        j) _sel=$(( (_sel + 1) % _n ));;
-        [1-9]) [ "$_k" -le $_n ] && _sel=$((_k - 1));;
+        $'\e') read -rsn2 -t 0.1 _k2 < /dev/tty; case $_k2 in '[A') _d=-1;; '[B') _d=1;; esac;;
+        k) _d=-1;;
+        j) _d=1;;
+        [1-9]) [ "$_k" -le $_n ] && [ -n "${@:_k:1}" ] && _sel=$((_k - 1));;
         '') break;;
         esac
+        # step over blank lines
+        [ $_d != 0 ] && { _sel=$(( (_sel + _n + _d) % _n )); while [ -z "${@:_sel+1:1}" ]; do _sel=$(( (_sel + _n + _d) % _n )); done; }
         printf '\e[%dA' $_n
     done
     printf '\e[?25h'
     printf -v "$_var" '%s' $_sel
+}
+
+# checklist VAR ITEM...: tick any number of items (Space or the item's number toggles one, a: all or none), Enter to
+# go on; VAR gets the indices of the ticked ones, space separated.  All ticked at first except the indices in
+# $CHECK_OFF.  Without a terminal: that default.
+checklist() {
+    local _var=$1 _n=$(($# - 1)) _sel=0 _i _k _k2 _box _all _on=() _out=      # underscores: see prompt
+    shift
+    for ((_i = 0; _i < _n; _i++)); do _on[_i]=1; done
+    for _i in $CHECK_OFF; do _on[_i]=0; done
+    if [ -n "$TTY" ]; then
+        printf '\e[?25l'
+        while :; do
+            for ((_i = 0; _i < _n; _i++)); do
+                [ ${_on[_i]} = 1 ] && _box="[$GRN✓$N]" || _box='[ ]'
+                if [ $_i = $_sel ]; then printf '\r\e[K  %s❯%s %s %s%s%s\n' "$CYN$B" "$N" "$_box" "$B" "${@:_i+1:1}" "$N"
+                else printf '\r\e[K    %s %s\n' "$_box" "${@:_i+1:1}"; fi
+            done
+            printf '\r\e[K\n\r\e[K    %s↑↓ move · Space tick · a all/none · Enter go on%s\n' "$DIM" "$N"
+            IFS= read -rsn1 _k < /dev/tty || exit 1
+            case $_k in
+            $'\e') read -rsn2 -t 0.1 _k2 < /dev/tty; case $_k2 in '[A') _sel=$(( (_sel + _n - 1) % _n ));; '[B') _sel=$(( (_sel + 1) % _n ));; esac;;
+            k) _sel=$(( (_sel + _n - 1) % _n ));;
+            j) _sel=$(( (_sel + 1) % _n ));;
+            ' ') _on[_sel]=$((1 - _on[_sel]));;
+            [1-9]) [ "$_k" -le $_n ] && { _sel=$((_k - 1)); _on[_sel]=$((1 - _on[_sel])); };;
+            a) _all=1; for ((_i = 0; _i < _n; _i++)); do [ ${_on[_i]} = 1 ] || _all=0; done
+               for ((_i = 0; _i < _n; _i++)); do _on[_i]=$((1 - _all)); done;;
+            '') break;;
+            esac
+            printf '\e[%dA' $((_n + 2))
+        done
+        printf '\e[?25h'
+    fi
+    for ((_i = 0; _i < _n; _i++)); do [ ${_on[_i]} = 1 ] && _out="$_out $_i"; done
+    printf -v "$_var" '%s' "${_out# }"
 }
 
 # need_sudo "why": ask for the sudo password now, not in the middle of a task

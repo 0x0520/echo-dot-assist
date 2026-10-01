@@ -11,7 +11,7 @@
 cd "$(dirname "$0")/.."
 . scripts/lib/device.sh
 . scripts/lib/setup.sh
-. scripts/lib/wakeword.sh
+. scripts/lib/artifacts.sh
 
 DRY= RESTART=
 for a in "$@"; do

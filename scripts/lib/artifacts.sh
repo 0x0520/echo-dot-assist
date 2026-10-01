@@ -1,0 +1,305 @@
+# Amazon's artifacts for an installed Echo, shared by scripts/artifacts.sh and the last step of scripts/setup.sh.  bash;
+# sourced from the repository root after scripts/lib/device.sh and scripts/lib/setup.sh.
+# Two kinds, both from Amazon's DAVS (Device Artifact Vending Service) and the same for every Echo: wake word model sets, installed on the Echo (Home
+# Assistant then offers each in the Echo's wake word select), and the sound detection (Alexa Guard) model, only kept on
+# the PC for tests (docs/re-aed.md).  Ones fetched before (device-logs/models/, git-ignored) are only copied over.  Each
+# wake word set is first loaded by the Echo's own engine (pryon_test): an older engine (radar) cannot load every set.
+# The user ticks everything wanted first (a menu with a checklist per kind); then one run does it all.  Downloading needs the Echo registered to an
+# Amazon account once: it runs stock Alexa with the updaters cut off (MODE=stock-online) until then, and everything is
+# undone afterwards (registration, the Wi-Fi the Alexa app added, the mode).  Stopped halfway, a new run finds the Echo
+# in stock-online mode and goes on there.
+# Over Wi-Fi the Echo's adb has to be open (scripts/adb-wifi.sh, or "Debug access" in Home Assistant).  The two reboots of
+# the Amazon way would close it, so for that way it is kept open with ADB_WIFI=1 in hassmic.conf, marked as ours, until
+# the end.
+
+MODELS=device-logs/models
+D=/data/local/hassmic
+MAPDB=/data/ace/kvstorage/map.db
+ADB_OURS="ADB_WIFI=1 # artifacts.sh"
+ADB_OURS_OLD="ADB_WIFI=1 # wakeword.sh"   # the marker before the rename; an Echo stopped halfway may still carry it
+WW_KEYS=(echo computer amazon ziggy alexa)
+LOCALES=(de-DE en-US en-GB fr-FR it-IT es-ES ja-JP pt-BR en-CA fr-CA en-AU en-IN es-MX)
+
+# m_stage ID: on its own, a screen per step of M_PLAN; inside the setup (M_SETUP set) only a line
+m_stage() {
+    local i list=() cur=0
+    if [ -n "$M_SETUP" ]; then
+        for ((i = 0; i < ${#M_PLAN[@]}; i += 2)); do
+            [ "${M_PLAN[i]}" = "$1" ] && [ "$1" != connect ] && [ "$1" != choose ] && printf '\n  %s%s%s\n' "$B" "${M_PLAN[i+1]}" "$N"
+        done
+        return 0
+    fi
+    DONE_IDS=
+    for ((i = 0; i < ${#M_PLAN[@]}; i += 2)); do
+        list+=("${M_PLAN[i]}|${M_PLAN[i+1]}"); [ "${M_PLAN[i]}" = "$1" ] && cur=${#list[@]}
+        [ $cur = 0 ] && DONE_IDS="$DONE_IDS ${M_PLAN[i]}"
+    done
+    [ "$1" = done ] && cur=$((${#list[@]} + 1))
+    header $cur ${#list[@]} "${list[@]}"
+}
+
+# model id "echo-de-DE" -> "Echo (de-DE)", "aed-EU" -> "Sound detection (EU)"
+label() { local k=${1%%-*}; [ "$k" = aed ] && k=sound\ detection; printf '%s (%s)' "${k^}" "${1#*-}"; }
+is_aed() { [ "${1%%-*}" = aed ]; }
+# DAVS keeps the sound detection model by region, not by language (tools/davs-fetch.py)
+region() { case $1 in en-US|en-CA|fr-CA|es-MX|pt-BR) echo NA;; ja-JP|en-AU|en-IN) echo FE;; *) echo EU;; esac; }
+wpa() { ashell "wpa_cli -i $WLAN -p $WPA_SOCKETS $*"; }
+net_ids() { wpa list_networks | awk 'NR > 1 { print $1 }' | tr '\n' ' '; }
+token() {                              # the registered Echo's access token, pulled into $TMP/map.db
+    rm -f $TMP/map.db*
+    for f in $(ashell "ls $MAPDB*" 2>/dev/null); do adb pull "$f" $TMP/ > /dev/null 2>&1; done
+    [ -n "$(sqlite3 $TMP/map.db "select value from deviceData where key='access_token'" 2>/dev/null)" ]
+}
+satellite_up() { waitfor "Waiting for the satellite|Satellite running" '[ -n "$(ashell pidof hassmic)" ]' "" 60 180; }
+
+# install_model ID: load it with the Echo's engine first; only a set that loads goes into $D/models (hidden until then:
+# hassmic skips names starting with a dot)
+install_model() {
+    local id=$1 t=$D/models/.try-$1
+    task "Copying $(label $id)" sh -c "adb shell 'rm -rf $t; mkdir -p $D/models' && adb push $MODELS/$id/unpacked $t && adb shell chmod -R a+rX $t" || return 1
+    # pryon_test: 1 = the set did not load, 3 = loaded but heard nothing (there is no audio)
+    if ! task "Trying it on this Echo's engine" sh -c "adb shell '$PT -m $t/pryon.manifest /dev/null > /dev/null 2>&1; echo rc=\$?' | tee /dev/stderr | grep -qv rc=1"; then
+        ashell "rm -rf $t"
+        fail "$(label $id) does not work with this Echo's wake word engine"
+        return 1
+    fi
+    ashell "rm -rf $D/models/$id; mv $t $D/models/$id"
+    INSTALLED+=("$id")
+}
+
+# installed under its own name, or by hand under the short one (echo-de)
+have() { [[ $HAVE == *" $1 "* || $HAVE == *" ${1%-*} "* ]]; }
+
+# build_lists: the wake word and the other artifacts lists for $LOC, all ticked.  An artifact that is only kept on the
+# PC is offered even when it is there already: Amazon may have a newer one since (davs-fetch.py says which).
+build_lists() {
+    local m id k
+    WW_IDS=() WW_ITEMS=() OT_IDS=() OT_ITEMS=()
+    for m in $MODELS/*/unpacked/pryon.manifest; do        # downloaded before, not on this Echo yet
+        [ -f "$m" ] || continue
+        id=${m#$MODELS/}; id=${id%%/*}
+        have $id && continue
+        WW_IDS+=("$id"); WW_ITEMS+=("$(label $id) ${DIM}· downloaded before: install it$N")
+    done
+    for k in "${WW_KEYS[@]}"; do
+        id=$k-$LOC
+        [ -d $MODELS/$id/unpacked ] || have $id && continue
+        WW_IDS+=("$id"); WW_ITEMS+=("$(label $id) ${DIM}· download from Amazon and install it$N")
+    done
+    if [ -z "$M_SETUP" ]; then          # a test artifact: not offered in the guided install
+        id=aed-$(region $LOC)
+        OT_IDS+=("$id")
+        if [ -d $MODELS/$id/unpacked ]; then
+            OT_ITEMS+=("$(label $id) model ${DIM}· on the PC since $(date -r $MODELS/$id/davs.json +%F 2>/dev/null): download again, Amazon may have a newer one$N")
+        else OT_ITEMS+=("$(label $id) model ${DIM}· download from Amazon to $MODELS/$id (hassmic does not use it yet)$N"); fi
+    fi
+    WW_ON=$(seq -s ' ' 0 $((${#WW_IDS[@]} - 1)) 2>/dev/null)
+    OT_ON=$(seq -s ' ' 0 $((${#OT_IDS[@]} - 1)) 2>/dev/null)
+}
+# ticked ONVAR IDSVAR: "3 of 5 ticked"
+ticked() {
+    local -n _on=$1 _ids=$2; local n=0 i
+    [ ${#_ids[@]} = 0 ] && { printf 'nothing new'; return; }
+    for i in $_on; do n=$((n + 1)); done
+    printf '%d of %d ticked' $n ${#_ids[@]}
+}
+# sub_list "title" WW|OT: the checklist of one kind, starting from its ticks so far
+sub_list() {
+    local -n _ids=$2_IDS _items=$2_ITEMS _on=$2_ON; local i off= r
+    m_stage choose
+    say "$1"; printf '\n'
+    if [ ${#_ids[@]} = 0 ]; then
+        info "nothing new for $LOC: every one is on this Echo or on the PC already"
+        [ -n "$TTY" ] && { printf '\n  %sPress Enter.%s ' "$DIM" "$N"; read -r _ < /dev/tty; }
+        return 0
+    fi
+    for ((i = 0; i < ${#_ids[@]}; i++)); do [[ " $_on " == *" $i "* ]] || off="$off $i"; done
+    CHECK_OFF=$off checklist r "${_items[@]}"
+    _on=$r
+}
+
+# fetch_model ID: one download from DAVS with the token in $TMP/map.db
+fetch_model() {
+    local id=$1 key=${1%%-*} loc=${1#*-} ecids=$ECIDS
+    is_aed $id && { ecids=$AED_ECIDS; loc=$LOC; }
+    task "Downloading $(label $id)" python3 tools/davs-fetch.py ${ecids:+--ecids $ecids} $TMP/map.db $key $loc $MODELS
+}
+
+# artifacts_run [setup]: the whole thing; with "setup" as a step of scripts/setup.sh (the Echo on adb is the one just
+# installed, and the wake word stays "Alexa" unless something is ticked)
+artifacts_run() {
+    local r
+    M_SETUP=$1 M_PLAN=(connect "Connect" choose "Choose") INSTALLED=() FETCHED=() FAILED=()
+    if [ -n "$DRY" ]; then info "offers the models in $MODELS/ and Amazon's; the dry run keeps \"Alexa\""; return 0; fi
+    TMP=$(mktemp -d)                  # map.db is the account's device credential: never kept on the PC
+    _artifacts_run; r=$?
+    rm -rf "$TMP"
+    return $r
+}
+
+_artifacts_run() {
+    # --- connect
+    m_stage connect
+    if [ -z "$M_SETUP" ]; then
+        pick_serial
+        waitfor "Waiting for the Echo on adb|Echo on adb" "adb_is device" \
+            "Nothing? Connect it by USB, or open adb over Wi-Fi (scripts/adb-wifi.sh <echo-ip>) and give its address: scripts/artifacts.sh <echo-ip>" 15 || return 1
+        device_load adb
+        MODEL_NAME="Artifacts · $MODEL_NAME"
+    else
+        wait_adb device || return 1
+    fi
+    [ "$(ashell id -u)" = 0 ] || { fail "adb shell is not root: is this Echo set up with scripts/setup.sh?"; return 1; }
+    [ -n "$(ashell "ls $D/hassmic.conf 2>/dev/null")" ] ||
+        { fail "no hassmic installed on this Echo: scripts/setup.sh first"; return 1; }
+    PT=
+    for p in $D/pryon_test /system/hassmic/pryon_test; do [ -n "$(ashell "ls $p 2>/dev/null")" ] && { PT=$p; break; }; done
+    if [ -z "$PT" ]; then
+        [ -f build/$DEVICE/pryon_test ] || { fail "no pryon_test on the Echo or in build/$DEVICE: make DEVICE=$DEVICE"; return 1; }
+        adb push build/$DEVICE/pryon_test /data/local/tmp/ > /dev/null && PT=/data/local/tmp/pryon_test
+    fi
+    ATTRS=$(ashell "$PT -m /nonexistent /dev/null 2>&1")
+    ECIDS=$(grep -o '"wakeword_ecids":\[[0-9,]*\]' <<< "$ATTRS" | grep -o '[0-9][0-9,]*')
+    AED_ECIDS=$(grep -o '"aed_ecids":\[[0-9,]*\]' <<< "$ATTRS" | grep -o '[0-9][0-9,]*')
+    NETS=build/artifacts-$(adb get-serialno | tr -c 'A-Za-z0-9\n' _).nets      # Wi-Fi networks before the Alexa app
+    [ -f $NETS ] || [ ! -f ${NETS/artifacts-/wakeword-} ] || mv ${NETS/artifacts-/wakeword-} $NETS   # a run before the rename
+    ONLINE=; [ -n "$(ashell "grep '^MODE=stock-online' $D/hassmic.conf")" ] && ONLINE=1
+    HAVE=" $(ashell "ls $D/models 2>/dev/null" | tr '\n' ' ') "
+    [ -n "$M_SETUP" ] || ok "$MODEL_NAME${ANDROID_SERIAL:+, $ANDROID_SERIAL}"
+    [ -n "$ONLINE" ] && warn "This Echo is in stock-online mode from an earlier run: going on with that."
+
+    # --- choose: a main menu with a checklist per kind; the language decides which Amazon artifacts are new
+    local def=0 i c id lists_for= WW_IDS WW_ITEMS WW_ON OT_IDS OT_ITEMS OT_ON
+    for i in "${!LOCALES[@]}"; do [ "${LOCALES[i]//-/_}" = "${LANG%%.*}" ] && def=$i; done    # the PC's language first
+    LOC=${LOCALES[def]}
+    while :; do
+        [ "$lists_for" = "$LOC" ] || { build_lists; lists_for=$LOC; }
+        m_stage choose
+        [ -n "${HAVE// }" ] && info "On this Echo already:$HAVE"
+        say "Choose what to do ${DIM}(Enter opens an entry)$N"; printf '\n'
+        # the language first and apart: it decides what the lists below it offer
+        local entries=("Language for downloads from Amazon: $B$LOC$N  ${DIM}· decides what the lists below offer$N" ""
+                       "Wake words …        ${DIM}$(ticked WW_ON WW_IDS)$N") acts=(lang - ww)
+        [ -z "$M_SETUP" ] && { entries+=("Other artifacts …   ${DIM}$(ticked OT_ON OT_IDS)$N"); acts+=(ot); }
+        entries+=("" "Go on ${DIM}· shows what will happen first$N"); acts+=(- go)
+        MENU_SEL=${MAIN_SEL:-0} menu c "${entries[@]}"; MAIN_SEL=$c
+        case ${acts[c]} in
+        ww)  sub_list "Wake words ${DIM}(installed on the Echo; Home Assistant offers each in its wake word select)$N" WW ;;
+        ot)  sub_list "Other artifacts ${DIM}(kept on the PC for tests, not installed)$N" OT ;;
+        lang) m_stage choose; say "Language for downloads from Amazon:"; printf '\n'
+              MENU_SEL=$(for i in "${!LOCALES[@]}"; do [ "${LOCALES[i]}" = "$LOC" ] && echo $i; done) menu c "${LOCALES[@]}"
+              LOC=${LOCALES[c]} ;;
+        go)  break ;;
+        esac
+    done
+    WANT=() AMAZON=()
+    for i in $WW_ON; do WANT+=("${WW_IDS[i]}"); [ -d $MODELS/${WW_IDS[i]}/unpacked ] || AMAZON+=("${WW_IDS[i]}"); done
+    for i in $OT_ON; do WANT+=("${OT_IDS[i]}"); AMAZON+=("${OT_IDS[i]}"); done          # always a download
+    if [ ${#WANT[@]} = 0 ] && [ -z "$ONLINE" ]; then
+        [ -n "$M_SETUP" ] && ok "wake word: Alexa" || info "nothing ticked"
+        return 0
+    fi
+
+    # the plan, shown before anything changes
+    local need_amazon=; [ ${#AMAZON[@]} -gt 0 ] || [ -n "$ONLINE" ] && need_amazon=1
+    local n_install=0; for id in "${WANT[@]}"; do is_aed $id || n_install=$((n_install + 1)); done
+    [ -n "$need_amazon" ] && M_PLAN+=(online "Online with Amazon" register "Register in the Alexa app" fetch "Download from Amazon")
+    [ $n_install -gt 0 ] && M_PLAN+=(install "Install")
+    [ -n "$need_amazon" ] && M_PLAN+=(back "Back to satellite")
+    printf '\n'; say "This will:"
+    for id in "${WANT[@]}"; do
+        if is_aed $id && [ -d $MODELS/$id/unpacked ]; then say "  · download $(label $id) model again: replaces $MODELS/$id if Amazon has a newer one"
+        elif is_aed $id; then say "  · download $(label $id) model to $MODELS/$id"
+        elif [[ " ${AMAZON[*]} " == *" $id "* ]]; then say "  · download wake word $(label $id) and install it"
+        else say "  · install wake word $(label $id)"; fi
+    done
+    [ -n "$ONLINE" ] && say "  · finish the earlier run: deregister, and back to satellite"
+    [ -n "$need_amazon" ] && info "Downloading needs this Echo registered to your Amazon account for a few minutes (Alexa app); it is undone at the end."
+    ask "Go on?" y || return 0
+
+    if [ -n "$need_amazon" ]; then
+        need_tools python3 sqlite3 || return 1
+        # --- online: stock Alexa with internet, updaters cut off
+        m_stage online
+        if [ -z "$ONLINE" ]; then
+            # the Alexa app adds its own Wi-Fi network; the ones there now are kept, the rest is removed at the end
+            net_ids > $NETS
+            ashell "sed -i '/^MODE=/d' $D/hassmic.conf; echo MODE=stock-online >> $D/hassmic.conf"
+            [[ $ANDROID_SERIAL == *:* ]] && ashell "grep -q '^ADB_WIFI=' $D/hassmic.conf || echo '$ADB_OURS' >> $D/hassmic.conf"
+            task "Restarting the Echo as a stock Echo" adb reboot || return 1
+            sleep 10
+        fi
+        wait_adb device || return 1
+        # a firmware update would cost the unlock: nothing goes further without the guard in place
+        waitfor "Waiting for the update block|Firmware updates blocked" \
+            "ashell iptables -S hassmic_out | grep -q 'uid-owner.*-j DROP'" "" 60 120 ||
+            { fail "the update block is not in place: unplug the Echo's power and run this again"; return 1; }
+        tell "Give the Echo internet access" "If your router blocks it, allow it until this is done."
+
+        # --- register
+        m_stage register
+        if ! token; then
+            tell "Set the Echo up in the Alexa app" \
+                "Devices → + → Add device → Amazon Echo, on the Wi-Fi Home Assistant is on." \
+                "The app may show \"updating\" for a while: that is the blocked update check, it is fine."
+            waitfor "Waiting for the registration|Registered" token || return 1
+        else ok "registered already"; fi
+
+        # --- fetch: every download in one go, a failed one does not stop the rest
+        m_stage fetch
+        for id in "${AMAZON[@]}"; do
+            if fetch_model $id; then FETCHED+=("$id"); else FAILED+=("$id"); fi
+        done
+        rm -f $TMP/map.db*
+        [ ${#FAILED[@]} -gt 0 ] &&
+            info "Not downloaded: ${FAILED[*]}. The token may have expired: wait a minute (the Echo renews it) and run this again."
+    fi
+
+    # --- install every wake word that is on the PC now
+    if [ $n_install -gt 0 ]; then
+        m_stage install
+        for id in "${WANT[@]}"; do
+            is_aed $id && continue
+            [ -d $MODELS/$id/unpacked ] || continue          # its download failed
+            install_model $id || FAILED+=("$id")
+        done
+    fi
+
+    if [ -n "$need_amazon" ]; then
+        # --- back: deregister, forget the app's Wi-Fi and the registration, satellite mode
+        m_stage back
+        todo "Remove the Echo from your Amazon account" "Alexa app → Devices → this Echo → ⚙ → Deregister"
+        keep=" $(cat $NETS 2>/dev/null) " drop=
+        if [ "$keep" != "  " ]; then
+            for n in $(net_ids); do [[ $keep == *" $n "* ]] || drop="$drop $n"; done
+            # in one go: the Echo may be on the app's network right now, and adb over Wi-Fi goes with it
+            [ -n "$drop" ] && task "Removing the Wi-Fi the Alexa app added" adb shell "for n in$drop; do
+                wpa_cli -i $WLAN -p $WPA_SOCKETS remove_network \$n; done; wpa_cli -i $WLAN -p $WPA_SOCKETS save_config" &&
+                { wait_adb device || return 1; }
+        fi
+        task "Clearing the registration" sh -c "adb pull $MAPDB $TMP/map.db && sqlite3 $TMP/map.db 'delete from deviceData; vacuum;' &&
+            adb push $TMP/map.db $MAPDB && adb shell 'rm -f $MAPDB-wal $MAPDB-shm; chown ace_maplite:ace_maplite $MAPDB; chmod 660 $MAPDB'" || return 1
+        rm -f $TMP/map.db* $NETS
+        ashell "sed -i '/^MODE=/d' $D/hassmic.conf"
+        task "Restarting the Echo as a satellite" adb reboot || return 1
+        sleep 10
+        wait_adb device && satellite_up || return 1
+        # the firewall service closes adb over Wi-Fi within 5 s
+        ashell "sed -i -e '/^$ADB_OURS\$/d' -e '/^$ADB_OURS_OLD\$/d' $D/hassmic.conf"
+        info "The Echo can lose its internet access at the router again."
+    elif [ ${#INSTALLED[@]} -gt 0 ]; then
+        # main.sh starts a hassmic that exits again; the new one scans $D/models
+        task "Restarting hassmic" adb shell 'kill $(pidof hassmic)' && sleep 3 && satellite_up || return 1
+    fi
+
+    m_stage done
+    local names=() kept=()
+    for id in "${INSTALLED[@]}"; do names+=("$(label $id)"); done
+    for id in "${FETCHED[@]}"; do is_aed $id && kept+=("$MODELS/$id"); done
+    [ ${#names[@]} -gt 0 ] && ok "installed: ${names[*]}"
+    [ ${#kept[@]} -gt 0 ] && ok "downloaded: ${kept[*]}"
+    [ ${#FAILED[@]} -gt 0 ] && fail "not done: ${FAILED[*]}"
+    [ ${#names[@]} -gt 0 ] && tell "Pick it in Home Assistant" "Settings → Devices & services → this Echo → Wake word"
+    printf '\n'
+    [ ${#FAILED[@]} = 0 ]
+}

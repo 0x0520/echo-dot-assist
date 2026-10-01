@@ -11,7 +11,7 @@ through the reverse-engineered C API of `libmixerAPI.so` and speaks the ESPHome 
 
 Docs: `README.md` (user-facing usage; install instructions per model in `devices/<codename>/README.md`, guided by
 `scripts/setup.sh`), `DEVELOPMENT.md` (architecture, layout, tests, contributing), `PLAN.md` (phases, open issues, every measurement), `CHANGELOG.md`
-(user-visible changes by date), `docs/` (reverse-engineering findings: `FINDINGS.md`, `re-platform.md`, `re-pryon.md`,
+(user-visible changes by date), `docs/` (reverse-engineering findings: `FINDINGS.md`, `re-platform.md`, `re-pryon.md`, `re-aed.md`,
 `sendspin-digest.md`).
 
 ## Build and test
@@ -21,7 +21,7 @@ libraries extracted to `firmware/<codename>/rootfs/system/lib`**. Neither the ND
 without them only the host targets build. Extraction steps: `devices/donut/README.md` "2. Unpack the firmware and build".
 
 ```sh
-make [DEVICE=donut]      # ARM binaries into build/donut/ (hassmic, mixcap, mixplay, pryon_test, runas, latency, otatool)
+make [DEVICE=donut]      # ARM binaries into build/donut/ (hassmic, mixcap, mixplay, pryon_test, aed_test, runas, latency, otatool)
 make host                # build/hassmic-host (PC: file audio + no wake word, SIGUSR1 triggers wake; board.c of DEVICE),
                          # build/donut/hassmic-qemu (ARM + real Pryon, run via tools/qrun.sh), build/otatool-host. Needs libopus
 make unit                # C unit tests; ws/noise are checked against Python reference impls in .venv
@@ -67,8 +67,10 @@ There is no single-test selector: run one unit test by building/running its line
   capture while hassmic runs: the mixer feeds the mic stream to one client only.
 - `scripts/mic-compare.sh [-l] [secs]` records micRaw beside that dump and prints speech against noise for both
   (`tools/mic-compare.py`): what the front end does to a sentence. `-l` sets listening mode for the recording.
-- `scripts/wakeword.sh [echo-ip]` (logic in `scripts/lib/wakeword.sh`, also the last step of `setup.sh`): installs wake word models from `device-logs/models/` after loading each with the
-  Echo's `pryon_test`, or fetches one from Amazon (stock-online + Alexa app registration, undone afterwards).
+- `scripts/artifacts.sh [echo-ip]` (logic in `scripts/lib/artifacts.sh`, also the last step of `setup.sh`): Amazon's DAVS
+  artifacts, picked in a menu with a checklist per kind (new ones ticked): wake words, installed from `device-logs/models/`
+  after loading each with the Echo's `pryon_test`, and other artifacts (the sound detection model), kept on the PC for tests.
+  Downloads come from Amazon in one go (stock-online + Alexa app registration, undone afterwards).
 - `scripts/probe.sh` checks the device's libraries match the analysed firmware. Everything assumes exactly that version.
 - PC scripts that use adb (`deploy`, `probe`, `install-system`, `capture-test`, `mic-compare`) detect the model from `ro.product.device`
   via `scripts/lib/device.sh`; `ota-push.sh` takes `DEVICE` (default donut). With two Echos on adb set `ANDROID_SERIAL`.
@@ -104,6 +106,9 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
   `wyoming.c`. Selected with `-P`. The core calls `start/audio/stop/played/...` on the active proto with lock held.
 - **Audio backend (`audio.h`)**: `audio_mixer.c` on device (mixer C API: capture, voice/TTS, music, Bluetooth and
   earcon streams mixed by the mixer); `audio_file.c` for PC builds. Swapped at link time in the Makefile.
+- **Sound detection (`sound.h`)**: `sound_pryon.c` (Alexa Guard's model on `libpryon.so`, a second decoder, off unless HA's
+  switch is on; ESPHome event entity "Sound"; windows with own playback dropped; `docs/re-aed.md`) or `sound_none.c`
+  (host build, `HASSMIC_FAKE_SOUND`). Picked in the Makefile from the wake word backend.
 - **Wake word (`wake.h`)**: `wake_pryon.c` (stock `libpryon.so`, headers in `src/include/pryon_api.h`) or `wake_none.c`
   (host build). Also link-time swap.
 - **Wake word arbitration (`arb.c`, `arb.h`)**: when several Echos hear the wake word, only the best one answers
@@ -120,7 +125,7 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 - **Push updates**: `ota.c` receives bundles on the device; `src/tools/otatool.c` is the same code for pack/sign (PC)
   and verify/unpack (device), with monocypher.
 - `src/include/`: headers for the reversed Amazon libraries (`mixer_api.h`, `pryon_api.h`) and `netio.h`.
-- `src/tools/`: standalone device tools (`mixcap`, `mixplay`, `pryon_test`, `latency`, `runas` — AIPC refuses uid 0 and
+- `src/tools/`: standalone device tools (`mixcap`, `mixplay`, `pryon_test`, `aed_test`, `latency`, `runas` — AIPC refuses uid 0 and
   the image has no `su`; `curlspy`, `hciscan` not in `all`).
 
 Boot integration (`scripts/system/`, rc in `devices/<codename>/`): `hassmic.rc` (init) starts `boot.sh` (fixed, on /system), which picks the factory

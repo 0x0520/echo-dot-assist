@@ -4,6 +4,17 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-01
 
+- **Sound detection, optional.** A new "Sound detection" switch (off by default) runs Amazon's Alexa Guard model on
+  the Echo itself, and a "Sound" entity in Home Assistant reports what it heard: smoke or CO alarm, breaking glass, a
+  dog barking, a baby crying, snoring, coughing, water, a beeping appliance. It is less reliable than on a stock Echo,
+  where Amazon's cloud checks every hit first, and it takes up to 10 s; see the README before you rely on it.
+
+- **`scripts/wakeword.sh` is now `scripts/artifacts.sh`, and asks once.** Its menu has an entry per kind of
+  artifact: "Wake words" (to install, from the PC or downloaded from Amazon) and "Other artifacts" (Alexa Guard's
+  sound detection model, only kept on the PC for tests; Home Assistant does not use it yet), each a list of ticks with
+  everything new ticked, plus the language for Amazon downloads. "Go on" shows what will happen, asks once, and then
+  does all of it with a single Amazon registration.
+
 - **The Echo's light sensor in Home Assistant.** A new "Illuminance" sensor reports the room's light in lux, the
   reading the stock Echo uses to dim its light ring. The ring keeps dimming with the room as before (that is Amazon's
   own code on the Echo, on by default); the new "LED brightness" slider holds it at a level of your choice instead, and

@@ -824,22 +824,34 @@ Run in this order. Each step says what it proves.
       off, file `0 60`; auto on → 74, 51, 26, 13 over 4 s (engine restarts from 98 and ramps); fixed 40, then
       `ledctrl -a on` as at boot (13) and hassmic killed: 40 again once HA reconnected. Echo Dot 2 over USB: 40 lx,
       auto 9, same sequence. Echo 2: builds, not tried. Left at auto on all Echos.
-- [ ] Sound detection (Alexa Guard) as Home Assistant events (found 2026-10-01, nothing tried yet). The firmware ships
-      Amazon's acoustic event detector on all three models (`/system/local/models/AED/` + `/system/lib/libAED.so` on
-      donut, radar and biscuit): 12 sounds with their thresholds in `AED.json` (`score_detection_threshold`, near miss,
-      `energy_threshold` 108 for humanPresence, 82 for the rest): humanPresence 0.79, smokeAlarm 0.825, glassBreak 0.80,
-      dogBark 0.991, babyCry 0.955, snore 0.964, cough 0.982, waterSounds 0.901, beepingAppliance 0.953, smokeSiren
-      0.825, carbonMonoxideSiren 0.825, runningWater 0.982. The model is a Pryon model set like the wake word
-      (`pryon.manifest` -> `pryon.config`: LFBE front end, 16 kHz, 25/10 ms frames; `model_gcmvn.cpu.v1.q.mlp`, 830 KB),
-      so `libpryon.so` probably runs it through the API already reversed for `wake_pryon.c` (`docs/re-pryon.md`) —
-      unverified. `libAED.so` is only the AVS-SDK wrapper (`alexaClientSDK::aed::AbstractAcousticEventDetector`, reads an
-      SDS stream, notifies observers); PuffinApp creates a `PryonAcousticEventManager` (strings `AED_Model_Path`,
-      `AcousticEventDetected`, `ACOUSTICEVENTDETECTION_NEAR_MISS`, `aed_ecids`). Also `/system/vendor/lib/libaed.so`
-      (not looked at) and LED animations `aed_enabled`/`aed_detected`. Next: find in PuffinApp.asm how
-      `PryonAcousticEventManager` creates the decoder (model set, class-to-name mapping, which mic stream: micAsr like the
-      wake word?), then try the model with `pryon_test` under qemu (`tools/qrun.sh`) on test audio (a smoke alarm beep, a
-      dog bark). In HA: ESPHome event entity (or binary sensors) per sound, a switch to turn detection on; CPU cost
-      beside the wake word to be measured on the Echo.
+- [x] Sound detection (Alexa Guard) as Home Assistant events (found 2026-10-01; stock path and model worked out, and
+      built, the same day: `docs/re-aed.md` section 4). ESPHome switch "Sound detection" (off by default, in the
+      settings file) and event entity "Sound" (8 types; smoke/CO merged, human presence left out). A window is dropped
+      when the Echo played something in it. CPU 13 % of one core (Echo Dot 2, `aed_test`). `fake_ha_esphome.py`: entities, default off,
+      event, announcement window dropped. `hassmic-qemu` on the stock model: glass clip gives `glass_break`, footsteps nothing.
+      Echo Dot 2 (pushed, not approved), room audio, about 45 min with the switch on: a real cough gave `cough` in
+      two windows in a row, twice; nothing else fired. The firmware ships Amazon's acoustic event detector on all three models
+      (`/system/local/models/AED/`): 12 types with their thresholds in `AED.json`. `libAED.so` is only the AVS-SDK
+      wrapper; `/system/vendor/lib/libaed.so` is MediaTek's crash reporter, unrelated.
+      **Stock:** PuffinApp runs a second Pryon decoder on its one mic ring (`puffin-micStream`, fed from `micAsr`,
+      the same as the wake word). It is off until the cloud enables it through `SmartHomed`, and it is paused by the
+      front end's low-power sound detector. `SmartHomed` cuts the clip out of that ring and sends it to Amazon to
+      verify or to report. The ring flashes cyan (with `state_sent_to_cloud.mp3` if the user's "acoustic
+      confirmation" is TONE) when a clip goes out for verification. Only a verified event reaches the app or
+      routines. Near-miss audio is uploaded for training.
+      **Under qemu** (`src/tools/aed_test.c`, stock `libpryon.so`): the same API as the wake word, plus
+      `PryonApi_SetAcousticEventDetectionResultCallback` and the client properties `AcousticEventDetectionEnabled` and
+      `aed_<type>_enabled`. Without those properties nothing is reported. There is one report per 9.98 s window
+      with all enabled types' scores, so up to ~10 s latency. ESC-50 clips:
+      - found: dog, glass, snoring, water and real `micAsr` speech; a synthetic T3 smoke alarm 0.990;
+      - not found: synthetic T4 CO beeps;
+      - false hits: glassBreak on a dog, pouring water and a toilet flush; humanPresence on knocks and an alarm clock;
+        beepingAppliance on a cough;
+      - shared scores: smokeAlarm = smokeSiren = carbonMonoxideSiren, and cough = runningWater, in all 28 windows.
+      Newer DAVS model (`scripts/artifacts.sh`, then `wakeword.sh`, 2026-10-01): retrained weights, smoke/CO
+      threshold 0.845, the same results on all clips except a near miss on the CO beeps. The /system model is good enough.
+      Open: played test sounds in the room (smoke alarm, glass, dog) and some talking or TV; whether to require a
+      type in two windows in a row.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): the Echo as a Bluetooth
       *source* to a speaker (a2dp.c is sink only); Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).

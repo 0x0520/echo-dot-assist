@@ -57,14 +57,34 @@ typedef struct _PryonEnumeratedResult {
 #define PRYON_DETECTION_TYPE_NEAR_MISS 0
 #define PRYON_DETECTION_TYPE_ACCEPT    2 /* libAmazonKWD also acts on 3 (flagged variant, not observed) */
 
+/* Acoustic event detection (the model in /system/local/models/AED, docs/re-aed.md). One callback per scoring window
+ * (AED.json result_emission.regular_event_period_msec = 9980), whether anything was heard or not. Partial layout,
+ * read under qemu (src/tools/aed_test.c) and from PuffinApp's callback, which logs +0x10 and checks +0x1c. */
+typedef struct _PryonAcousticEventResult {
+    uint8_t     _unknown00[0x08];
+    uint64_t    sampleIndex;        /* +0x08 end of the window, pushed-sample index (159920 for the first window) */
+    int32_t     resultType;         /* +0x10 0 = nothing, 1 = near miss only, 2 = at least one type detected */
+    const char *json;               /* +0x14 {"amzn1.activity.device.detection.audio.aed":{"<type>":{"score",
+                                     *  "detected","nearMiss","decodingThreshold",...},"aedModelChecksum",...}} */
+    uint32_t    _unknown18;         /* +0x18 0 with resultType 0, else 1. UNVERIFIED meaning */
+    uint32_t    metadataSize;       /* +0x1c PuffinApp rejects "metadata too big"; 0 in every window seen */
+} PryonAcousticEventResult;
+
+#define PRYON_AED_RESULT_NONE      0
+#define PRYON_AED_RESULT_NEAR_MISS 1
+#define PRYON_AED_RESULT_DETECTED  2
+
 typedef void (*PryonLoggingCallback)(int level, const char *tag, const char *message); /* arg names UNVERIFIED */
 typedef void (*PryonEnumeratedResultCallback)(const char *decoderId, PryonEnumeratedResult *result);
+typedef void (*PryonAcousticEventResultCallback)(const char *decoderId, PryonAcousticEventResult *result);
 
 /* Returns a JSON string owned by the library. */
 const char *PryonApi_GetAttributes(void);
 
 int PryonApi_SetLoggingCallback(PryonLoggingCallback cb);
 int PryonApi_SetEnumeratedResultCallback(PryonEnumeratedResultCallback cb);
+/* Stores cb in a global (0x601ac8), returns 0. Without it an AED decoder scores but reports nothing. */
+int PryonApi_SetAcousticEventDetectionResultCallback(PryonAcousticEventResultCallback cb);
 
 /* manifestPath is the pryon.manifest FILE, not the directory.
  * situationList must be non-NULL; stock callers pass "". */
@@ -81,6 +101,17 @@ int PryonDecoder_NewSpotterAudioDecoder(const char *decoderId,
                                         PryonMultichannelAudioFormat format,
                                         const char *configJson);
 
+/* What PuffinApp's AED detector uses (libPryonDetector createPryonDecoder 0x35cc): same first three arguments,
+ * then a NULL pointer and five zero words, then the format by value. Names of the zeroed arguments UNVERIFIED.
+ * For the AED model it gives the same results as NewSpotterAudioDecoder (qemu, same clip, same scores). */
+int PryonDecoder_NewMultichannelAudioDecoder(const char *decoderId,
+                                             const char *modelSetId,
+                                             const char *modelId,
+                                             const char *unknown3,
+                                             uint32_t unknown4, uint32_t unknown5, uint32_t unknown6,
+                                             uint32_t unknown7, uint32_t unknown8,
+                                             PryonMultichannelAudioFormat format);
+
 /* sampleIndex: running index of samples[0] since stream start. sampleCount is in samples, not bytes.
  * Asynchronous: samples are queued for the decoder thread; the result callback fires on that thread. */
 int PryonDecoder_PushAudioEventSamples(const char *decoderId,
@@ -96,7 +127,9 @@ int PryonDecoder_SessionEnd(const char *decoderId);
  * "MediaPlayerState", "EarconPlayerState", "TtsPlayerState").  Stock: wwm::PryonDecoder::pushClientProperty(name, value)
  * builds one event {1, &property} on the stack and calls this with count 1.  The library (0x6c0b50) walks `count`
  * events of 8 bytes, requires the first word to be 1 and the name non-empty, reads the value as int64 at +8 of the
- * property, and stamps the events with the decoder's current sample index itself.  Values persist until pushed again. */
+ * property, and stamps the events with the decoder's current sample index itself.  Values persist until pushed again.
+ * The AED model detects nothing until "AcousticEventDetectionEnabled" and "aed_<type>_enabled" are 1 (PuffinApp
+ * 0x44066c); a type left out is missing from the result JSON. */
 typedef struct PryonClientProperty {
     const char *name;
     uint32_t    _pad;

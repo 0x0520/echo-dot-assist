@@ -68,7 +68,7 @@ enum {
     BLE_SUBSCRIBE = 66, BLE_DEVICE_REQ = 68, BLE_CONNECTION, BLE_SERVICES_REQ, BLE_SERVICES, BLE_SERVICES_DONE, BLE_READ_REQ,
     BLE_READ, BLE_WRITE_REQ, BLE_READ_DESC_REQ, BLE_WRITE_DESC_REQ, BLE_NOTIFY_REQ, BLE_NOTIFY_DATA, BLE_CONN_FREE_REQ,
     BLE_CONN_FREE, BLE_GATT_ERROR, BLE_WRITTEN, BLE_NOTIFY, BLE_PAIRED, BLE_UNPAIRED, BLE_UNSUBSCRIBE, BLE_CACHE_CLEARED,
-    BLE_RAW_ADV = 93, BLE_SCANNER_STATE = 126, BLE_SCANNER_SET_MODE = 127,
+    BLE_RAW_ADV = 93, BLE_SCANNER_STATE = 126, BLE_SCANNER_SET_MODE = 127, LIST_EVENT = 107, EVENT = 108,
 };
 /* Proxy features: passive scan, active connections, remote caching (Home Assistant keeps the GATT database and writes the
  * notification descriptors itself), pairing, raw advertisements, scanner state and mode.  Not: cache clearing (there is
@@ -82,7 +82,7 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 /* KEY_NOISE and KEY_MULT: retired entities (noise suppression, mic volume multiplier), kept so the others keep their keys */
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
-       KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS };
+       KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS, KEY_SOUND_DETECTION, KEY_SOUND };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -311,16 +311,17 @@ static const char *settings_path(void) { const char *p = getenv("HASSMIC_SETTING
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
+    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
     if (!f) { core_mic_level(mic_level); return; }
     /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
-     * which ignored them; unused since), 9 (before LED brightness: auto, as stock). */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb) >= 5) {
+     * which ignored them; unused since), 9 (before LED brightness: auto, as stock), 11 (before sound detection: off). */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd) >= 5) {
         if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
         if (!la) { if (lb >= 0) core_led_brightness(lb); else core_led_auto(0); }  /* ledcontroller started its auto at boot */
+        core_sound(sd != 0);
     }
     fclose(f);
     core_mic_level(mic_level);
@@ -330,8 +331,8 @@ static void settings_save(void)
 {
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
-    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
-            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1));
+    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
+            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1));
     fclose(f);
 }
 
@@ -353,6 +354,7 @@ static void send_setting(int key)       /* lock held */
     case KEY_ARB_PEERS: if (arb_running()) { pb_float(&b, 2, arb_peers()); send_state(SENSOR_STATE, &b); } break;
     case KEY_SS_UNPAIRED: if (core_sendspin_port) { pb_uint(&b, 2, sendspin_unpaired(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_ADB_WIFI: pb_uint(&b, 2, adbwifi_open()); send_state(SWITCH_STATE, &b); break;
+    case KEY_SOUND_DETECTION: pb_uint(&b, 2, core_sound(-1)); send_state(SWITCH_STATE, &b); break;
     case KEY_LED_AUTO: if (have_light) { pb_uint(&b, 2, core_led_auto(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_LED_BRIGHTNESS: { int v = core_led_brightness(-1); if (v >= 0) { pb_float(&b, 2, v); send_state(NUMBER_STATE, &b); } } break;
     }
@@ -510,6 +512,13 @@ static void send_setting_entities(void)
       pb_uint(&b, 8, 1); send_msg(LIST_SELECT, &b); }
     { PB(b, 128); pb_str(&b, 1, "wake_sound"); pb_fixed32(&b, 2, KEY_WAKE_SOUND); pb_str(&b, 3, "Wake sound"); pb_str(&b, 5, "mdi:bell-ring");
       pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
+    /* Sound detection (sound.h): the switch (off by default: a second decoder on the mic stream), and one event entity
+     * whose event type names the sound; Home Assistant keeps each with its time, automations trigger on the type. */
+    { PB(b, 128); pb_str(&b, 1, "sound_detection"); pb_fixed32(&b, 2, KEY_SOUND_DETECTION); pb_str(&b, 3, "Sound detection");
+      pb_str(&b, 5, "mdi:ear-hearing"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
+    { PB(b, 384); pb_str(&b, 1, "sound"); pb_fixed32(&b, 2, KEY_SOUND); pb_str(&b, 3, "Sound"); pb_str(&b, 5, "mdi:waveform");
+      for (int i = 0; i < core_sound_nevents; i++) pb_str(&b, 9, core_sound_events[i]);
+      send_msg(LIST_EVENT, &b); }
     if (ble_present()) { PB(b, 128); pb_str(&b, 1, "bluetooth_pairing"); pb_fixed32(&b, 2, KEY_BT_PAIRING); pb_str(&b, 3, "Bluetooth pairing");
       pb_str(&b, 5, "mdi:bluetooth-connect"); send_msg(LIST_SWITCH, &b); }
     if (ble_present()) { PB(b, 128); pb_str(&b, 1, "bluetooth_announcements"); pb_fixed32(&b, 2, KEY_BT_ANNOUNCE); pb_str(&b, 3, "Bluetooth announcements");
@@ -567,6 +576,7 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         else fprintf(stderr, "adb over Wi-Fi: refused, the request did not come over the keyed connection\n");
         send_setting(key); return;
     }
+    else if (type == SWITCH_COMMAND && key == KEY_SOUND_DETECTION) { core_sound(on); settings_save(); send_setting(key); return; }
     else if (type == SWITCH_COMMAND && key == KEY_LED_AUTO && have_light) {
         core_led_auto(on); settings_save(); send_setting(key); return;              /* the level follows through light_thread */
     }
@@ -1163,7 +1173,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
     case LIST_ENTITIES_REQ: send_entities(); break;
     case SUBSCRIBE_STATES:
         for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i].fd == reply_fd) clients[i].states = 1;
-        send_mp_state(); send_setting(KEY_MIC_LEVEL); send_setting(KEY_DENOISE); send_setting(KEY_MUTE); send_setting(KEY_WAKE_SOUND); send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_ANNOUNCE); send_setting(KEY_DND);
+        send_mp_state(); send_setting(KEY_MIC_LEVEL); send_setting(KEY_DENOISE); send_setting(KEY_MUTE); send_setting(KEY_WAKE_SOUND); send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_ANNOUNCE); send_setting(KEY_DND); send_setting(KEY_SOUND_DETECTION);
         send_setting(KEY_BT_LANG);
         for (int k = KEY_EQ_BASS; k <= KEY_EQ_TREBLE; k++) send_setting(k);
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
@@ -1363,5 +1373,11 @@ static int arb_send(const char *node, const char *network, const char *key)
 
 static void arb_changed(void) { for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k); }
 
+static void sound(const char *event)    /* lock held */
+{
+    PB(b, 64); pb_fixed32(&b, 1, KEY_SOUND); pb_str(&b, 2, event); send_state(EVENT, &b);
+    fprintf(stderr, "sound: %s\n", event);
+}
+
 const struct proto proto_esphome = { "esphome", 26053, 1, serve, start, audio, stop, played, volume_changed, mute_changed, print_mdns, bt_device,
-                                     arb_send, arb_changed };
+                                     arb_send, arb_changed, sound };

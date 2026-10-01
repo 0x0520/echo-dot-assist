@@ -45,6 +45,7 @@
 #include "ota.h"
 #include "sendspin.h"
 #include "sounds.h"
+#include "sound.h"
 #include "board.h"
 
 #define PIPELINE_TIMEOUT 30         /* seconds in LISTENING or THINKING before giving up */
@@ -188,9 +189,12 @@ static long long mono_ms(void);
 /* Amazon's keyword models accept the wake word at a lower score while the device itself makes noise (kw.cfg.json:
  * "AlarmState" 1 cuts the ECHO threshold from 0.75 to 0.45, "AudioPlayerState" / "audio_playback" 1 to 0.70), because
  * that is when the user shouts over it and a false accept costs little. */
+static atomic_llong own_sound_ms;                   /* last time something of ours started or stopped playing */
+
 static void playback_hint(void)
 {
     int alarm = atomic_load(&alarm_on), music = atomic_load(&music_on) != 0, tts = atomic_load(&tts_on);
+    atomic_store(&own_sound_ms, mono_ms());
     wake_property("AlarmState", alarm);
     wake_property("AudioPlayerState", music);
     wake_property("audio_playback", alarm || music || tts);
@@ -363,6 +367,56 @@ int core_dnd(int set)
 }
 
 int core_muted(void) { return soft_mute || buttons_muted(); }
+
+/* ---------------------------------------------------------------- sound detection
+ * The stock detector (sound.h, docs/re-aed.md), off unless Home Assistant switches it on: then a second decoder runs on
+ * the mic stream beside the wake word.  Home Assistant gets the types the model can tell apart.  On every test window
+ * smokeAlarm, smokeSiren and carbonMonoxideSiren scored the same, and so did cough and runningWater: one event each.
+ * humanPresence is left out: it fires on any talk, TV, knock or alarm clock, every window while someone is about.
+ * Stock checks each hit in Amazon's cloud before anyone is told; nothing here can, so a window in which the Echo itself
+ * made sound is dropped: echo cancellation leaves enough of a timer ringing to pass for a beeping appliance. */
+static const struct { const char *amazon, *event; } sound_map[] = {
+    { "smokeAlarm", "smoke_or_co_alarm" }, { "smokeSiren", "smoke_or_co_alarm" }, { "carbonMonoxideSiren", "smoke_or_co_alarm" },
+    { "glassBreak", "glass_break" }, { "dogBark", "dog_bark" }, { "babyCry", "baby_cry" }, { "snore", "snoring" },
+    { "cough", "cough" }, { "waterSounds", "water" }, { "beepingAppliance", "beeping_appliance" },
+};
+#define SOUND_MAP (int)(sizeof sound_map / sizeof sound_map[0])
+const char *const core_sound_events[] = { "smoke_or_co_alarm", "glass_break", "dog_bark", "baby_cry", "snoring", "cough",
+                                          "water", "beeping_appliance" };
+const int core_sound_nevents = sizeof core_sound_events / sizeof core_sound_events[0];
+#define SOUND_WINDOW_MS 11000               /* a scoring window (9.98 s) and the decoder's lag behind it */
+static atomic_int sound_want;               /* the switch; the capture thread opens and closes the decoder to match */
+
+int core_sound(int set)
+{
+    if (set >= 0 && set != atomic_load(&sound_want)) {
+        atomic_store(&sound_want, set);
+        fprintf(stderr, "sound detection: switched %s\n", set ? "on" : "off");
+    }
+    return atomic_load(&sound_want);
+}
+
+static void on_sound(const char *const *types, int n)    /* detector thread */
+{
+    long long now = mono_ms();
+    if (atomic_load(&alarm_on) || atomic_load(&music_on) || atomic_load(&tts_on) || atomic_load(&earcon_sounding)
+        || atomic_load(&sounds_pending) || now - atomic_load(&own_sound_ms) < SOUND_WINDOW_MS
+        || now - atomic_load(&earcon_heard_until) < SOUND_WINDOW_MS) {
+        fprintf(stderr, "sound: dropped, the Echo played something in that window\n");
+        return;
+    }
+    const char *sent[SOUND_MAP]; int ns = 0;
+    pthread_mutex_lock(&core_lock);
+    if (atomic_load(&sound_want) && !core_muted() && connected && proto->sound)
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < SOUND_MAP; j++) {
+                if (strcmp(types[i], sound_map[j].amazon)) continue;
+                int dup = 0;
+                for (int k = 0; k < ns; k++) dup |= sent[k] == sound_map[j].event;
+                if (!dup) { sent[ns++] = sound_map[j].event; proto->sound(sound_map[j].event); }
+            }
+    pthread_mutex_unlock(&core_lock);
+}
 
 static void mute_update(int was, int sound)   /* lock held: ring, sound + Home Assistant follow the effective state */
 {
@@ -1024,6 +1078,7 @@ static void *volume_led_thread(void *arg)
 static void *capture_thread(void *arg)
 {
     FILE *dump = NULL;
+    int sound_running = 0;                  /* the decoder is open: only this thread opens, feeds and closes it */
     (void)arg;
     while (!atomic_load(&quit)) {
         const void *pcm; int n = cap_read(&pcm);
@@ -1054,6 +1109,14 @@ static void *capture_thread(void *arg)
             else { fprintf(stderr, "wake word: cannot load %s, back to Alexa\n", w.manifest); wake_open(wake_words[0].manifest, on_wake); }
         }
         if (core_local_wake) { ring_put(pcm, n / 2); wake_feed(pcm, n / 2); }
+        if (atomic_load(&sound_want) != sound_running) {           /* Home Assistant switched sound detection */
+            if (!sound_running) {
+                const char *types[SOUND_MAP]; for (int i = 0; i < SOUND_MAP; i++) types[i] = sound_map[i].amazon;
+                if (sound_open(types, SOUND_MAP, on_sound) == 0) sound_running = 1;
+                else { fprintf(stderr, "sound detection: cannot start\n"); atomic_store(&sound_want, 0); }
+            } else { sound_close(); sound_running = 0; }
+        }
+        if (sound_running) sound_feed(pcm, n / 2);
         if (atomic_load(&streaming)) {
             pthread_mutex_lock(&core_lock);
             if (atomic_load(&streaming) && connected) send_mic(pcm, n / 2, core_local_wake ? ring_n - n / 2 : 0);

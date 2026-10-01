@@ -29,6 +29,7 @@ struct proto {
      * -1: no client runs actions for us */
     int  (*arb_send)(const char *node, const char *network, const char *key);
     void (*arb_changed)(void);                  /* may be NULL: arbitration membership or peers changed */
+    void (*sound)(const char *event);           /* may be NULL: sound detection heard one of core_sound_events */
 };
 extern const struct proto proto_wyoming, proto_esphome;
 
@@ -68,6 +69,10 @@ void core_set_eq(int band, int db);              /* the mixer keeps it across re
 int  core_led_auto(int set);                     /* LED ring follows the light sensor (stock's own engine, the default); -1 reads */
 int  core_led_brightness(int set);               /* 0..100; set >= 0 fixes the level (auto off); -1 reads what the ring shows */
 float core_lux(void);                            /* light sensor in lux as stock reads it (no lock needed); NAN: none */
+/* Sound detection (sound.h): off by default.  The events Home Assistant may get, one per sound the model tells apart. */
+int  core_sound(int set);                        /* set: 0/1, or -1 to only read */
+extern const char *const core_sound_events[];
+extern const int core_sound_nevents;
 
 /* no lock needed */
 void   core_tts_begin(unsigned rate, unsigned channels);   /* lock held for this one: switches to SPEAKING */

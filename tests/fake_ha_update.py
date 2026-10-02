@@ -20,7 +20,8 @@ def check(ok, what):
 
 
 class GitHub(BaseHTTPRequestHandler):
-    """/repos/o/r/releases/latest, /repos/o/r/releases?per_page=1, /dl/<tag>/<asset>"""
+    """/repos/o/r/releases/latest, /repos/o/r/releases?per_page=10, /dl/<tag>/<asset>.  The list in GitHub's order, which
+    is not newest first: the release marked latest comes first (2026-10-02: the release before a newer beta)."""
     releases = []           # newest first, as GitHub lists them
     files = {}              # (tag, asset) -> bytes
     hits = []
@@ -37,8 +38,9 @@ class GitHub(BaseHTTPRequestHandler):
         if self.path == "/repos/o/r/releases/latest":
             rel = [r for r in GitHub.releases if not r["prerelease"]]
             return self.send(200, json.dumps(rel[0]).encode()) if rel else self.send(404, b'{"message":"Not Found"}')
-        if self.path == "/repos/o/r/releases?per_page=1":
-            return self.send(200, json.dumps(GitHub.releases[:1]).encode())
+        if self.path == "/repos/o/r/releases?per_page=10":
+            latest = [r for r in GitHub.releases if not r["prerelease"]][:1]
+            return self.send(200, json.dumps((latest + [r for r in GitHub.releases if r not in latest])[:10]).encode())
         parts = self.path.split("/")
         if len(parts) == 4 and parts[1] == "dl" and (parts[2], parts[3]) in GitHub.files:
             return self.send(200, GitHub.files[(parts[2], parts[3])], "application/octet-stream")
@@ -129,11 +131,16 @@ async def main():
         check(u.release_url.endswith("/tag/v2099.01.02.120000-beta") and u.release_summary.startswith("Release candidate über \"main\".")
               and len(u.release_summary) <= 255 and u.release_summary.endswith("...") and u.title == "hassmic",
               f"release page, notes unescaped and cut to {len(u.release_summary)} characters")
-        check("/repos/o/r/releases?per_page=1" in GitHub.hits, "beta asks for the newest release of all")
+        check("/repos/o/r/releases?per_page=10" in GitHub.hits, "beta looks through the list, which GitHub starts with the release")
         check(open(env["HASSMIC_SETTINGS"]).read().split()[14] == "1", "channel saved (settings field 15)")
 
         enc.select_command(sel.key, "release")
         check(await wait_for(lambda: last(UpdateState, upd.key).latest_version == "2099.01.01.093000"), "release: the newest that is not a prerelease")
+        # a release newer than every beta is the newest on beta too
+        GitHub.releases.insert(0, release("v2099.01.05.000000", False, "newer release"))
+        enc.select_command(sel.key, "beta")
+        check(await wait_for(lambda: last(UpdateState, upd.key).latest_version == "2099.01.05.000000"), "beta: a release newer than the betas")
+        GitHub.releases.pop(0)
 
         # install from beta; this script's installer stands in for root
         enc.select_command(sel.key, "beta"); await wait_for(lambda: last(UpdateState, upd.key).latest_version == "2099.01.02.120000")

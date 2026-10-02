@@ -1023,7 +1023,9 @@ Run in this order. Each step says what it proves.
       Linux 3.18.19 (sha256 as kernel.org lists it) and arm-eabi-4.8 pinned to marshmallow-release 26e93f6.
       aarch64-linux-android-4.9's gcc is a Python 2 wrapper around real-*: CI links past it.
       Device side (`update.c`): HA select "Online updates" off/beta/release (settings field 15, off by default) and an
-      ESPHome update entity (messages 116-118); GitHub's API (`/releases/latest`, `/releases?per_page=1`), bundle download
+      ESPHome update entity (messages 116-118); GitHub's API (`/releases/latest`; beta: the highest version among
+      `/releases?per_page=10`: first published day, the Dot 3 on beta was offered the release 150841 before the newer
+      beta 154443, because GitHub's list starts with the release it marks latest, not the newest), bundle download
       through the firmware's libcurl 7.50.1 (dlopen; OpenSSL, CA store has USERTrust/DigiCert/ISRG roots), sockets opened
       by us as group 3990 (curl's own would be firewalled), `ota_handoff` -> root, which takes `update.pub` or the release key.
       `tests/fake_ha_update.py` (fake GitHub + aioesphomeapi + installer): 19 checks, incl. unkeyed channel/install refused,

@@ -796,7 +796,11 @@ Run in this order. Each step says what it proves.
       the version. hassmic drops `state/ota/factory`; `ota_watch` promotes `ota/current` only if its VERSION is that one
       and a running hassmic's `/proc/<pid>/exe` is its binary (not after a fallback, not a deploy.sh test binary).
       First version made it the factory copy automatically after a minute of running (`--factory`); the user wanted the
-      approval step instead. Older installs get there with one push: the old `ota_watch` installs the bundle, its new
+      approval step instead. 2026-10-02, with online updates, the user: no approval at all, every update (pushed or
+      online) promoted after the shortest self test that means something: `main.c` selftest_thread once startup is
+      through (capture open, wake word engine loaded, ports bound) and 1 s of mic audio came through the capture loop,
+      30 s at most; `ota_healthy()` -> `state/ota/healthy` -> `ota_watch` -> `factory()`. `--approve`, `otatool factory`
+      and `HMOTA-FACTORY1` removed. Trade-off: a version that passes and misbehaves later is the fallback too. Older installs get there with one push: the old `ota_watch` installs the bundle, its new
       `main.sh` handles the approval.
       On biscuit over `adb forward` to the push port: install by 0.3.0+1646bc1's ota_watch, then (automatic version) "sysinstall factory: 9 files written, factory copy is 0.3.0+aa353bb-dirty", `/` back ro, no `.new` left; with
       `tries` = 3 and a reboot it ran from `/system/hassmic` (lock up, HA/MA reconnected). Approval version: push without

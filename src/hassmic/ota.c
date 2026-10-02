@@ -16,14 +16,9 @@
  *   -> <64 byte signature over "HMOTA-ADB1\n" + the 32 nonce bytes>
  *   <- one line: "OK ..." once root's firewall watcher has opened it | "FAILED <why>"
  *
- * Once the owner has tried a pushed update and approves it (ota-push.sh asks), it becomes the factory copy on the system
- * partition, the one the Echo falls back to.  Same challenge, over the request line with the version the owner tried,
- * so the answer approves that version and no other.  Root's installer loop checks that it is the installed update and
- * that the running hassmic is its binary, then writes it (scripts/system/sysinstall.sh).
- *   -> "HMOTA-FACTORY1 <version>\n"
- *   <- "NONCE <64 hex digits>\n"
- *   -> <64 byte signature over "HMOTA-FACTORY1 <version>\n" + the 32 nonce bytes>
- *   <- one line: "OK ..." once written | "FAILED <why>"
+ * An update that passes its self test (main.c) becomes the factory copy on the system partition, the one the Echo falls
+ * back to: ota_healthy() tells root's installer loop, which checks that it is the installed update and that the running
+ * hassmic is its binary, then writes it (scripts/system/sysinstall.sh).
  *
  * Online updates (update.c) come the same way to root, signed with the project's release key instead of the owner's:
  * ota_handoff() checks that one and leaves the bundle where a push leaves it.  This port takes the owner's key only.
@@ -130,15 +125,11 @@ int ota_handoff(const uint8_t *b, size_t len, const uint8_t sig[64], char *res, 
     return strncmp(res, "OK", 2) ? -1 : 0;
 }
 
-static void factory(int fd, const uint8_t pk[32], const char *line, const char *version)
+void ota_healthy(void)
 {
-    char dir[280], path[300];
-    if (challenge(fd, pk, line)) return;
-    fprintf(stderr, "update: %s approved as the factory copy with the update key\n", version);
+    char dir[280];
     snprintf(dir, sizeof dir, "%s/ota", state_dir()); mkdir(dir, 0700);
-    snprintf(path, sizeof path, "%s/factory-result", dir); unlink(path);
-    if (store(dir, "factory", version, strlen(version))) { reply(fd, "FAILED cannot store the request"); return; }
-    relay(fd, dir, "factory-result", 120);
+    if (store(dir, "healthy", "1\n", 2)) fprintf(stderr, "self test: cannot tell the installer\n");
 }
 
 static void adb_open(int fd, const uint8_t pk[32])
@@ -155,17 +146,14 @@ static void adb_open(int fd, const uint8_t pk[32])
 
 static void handle(int fd)
 {
-    char line[128], version[64] = "", dir[280]; size_t i = 0; unsigned long len = 0; uint8_t sig[64], pk[32], *b; int used = 0;
+    char line[128], dir[280]; size_t i = 0; unsigned long len = 0; uint8_t sig[64], pk[32], *b;
     struct timeval tv = { 30, 0 }; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     while (i < sizeof line - 1 && read(fd, line + i, 1) == 1 && line[i] != '\n') i++;
     line[i] = 0;
     int adb = !strcmp(line, "HMOTA-ADB1");
-    /* versions as ota-push.sh makes them (0.3.0+aa353bb-dirty): nothing that means anything to the shell reading them */
-    int fac = !strncmp(line, "HMOTA-FACTORY1 ", 15) && sscanf(line + 15, "%63[A-Za-z0-9.+_-]%n", version, &used) == 1 && !line[15 + used];
-    if (!adb && !fac && (sscanf(line, "HMOTA-PUSH1 %lu", &len) != 1 || !len || len > MAX_BUNDLE)) { reply(fd, "FAILED bad request"); return; }
+    if (!adb && (sscanf(line, "HMOTA-PUSH1 %lu", &len) != 1 || !len || len > MAX_BUNDLE)) { reply(fd, "FAILED bad request"); return; }
     if (!load_key(pub_path(), pk)) { reply(fd, "FAILED this device has no update key (install-system.sh installs it)"); return; }
     if (adb) { adb_open(fd, pk); return; }
-    if (fac) { factory(fd, pk, line, version); return; }
     if (!(b = malloc(len))) { reply(fd, "FAILED out of memory"); return; }
     if (read_full(fd, sig, 64) != 64 || read_full(fd, b, len) != (ssize_t)len) { reply(fd, "FAILED upload incomplete"); free(b); return; }
     if (crypto_eddsa_check(sig, pk, b, len)) { reply(fd, "FAILED signature does not verify against this device's update key"); free(b); return; }

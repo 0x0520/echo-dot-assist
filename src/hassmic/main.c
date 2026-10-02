@@ -1128,6 +1128,23 @@ static void *volume_led_thread(void *arg)
 
 /* ---------------------------------------------------------------- capture */
 
+/* Self test of the version that runs: started, capture open, wake word engine loaded, ports bound (all before the thread
+ * starts), and then a second of microphone audio through the capture loop.  That is as far as a broken build gets
+ * before it is noticed at all; root then makes the update that runs the factory copy, the one the Echo falls back to
+ * (ota_healthy, main.sh), so that the fallback is never older than the last version that worked. */
+static atomic_long cap_bytes;
+
+static void *selftest_thread(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 300 && !atomic_load(&quit); i++) {          /* 30 s */
+        if (atomic_load(&cap_bytes) >= CAP_RATE * 2) { fprintf(stderr, "self test: passed\n"); ota_healthy(); return NULL; }
+        usleep(100000);
+    }
+    fprintf(stderr, "self test: no audio from the mixer within 30 s: this version does not become the fallback\n");
+    return NULL;
+}
+
 static void *capture_thread(void *arg)
 {
     FILE *dump = NULL;
@@ -1141,6 +1158,7 @@ static void *capture_thread(void *arg)
           if (t == 2) trigger(1); else if (t == 1) wake_heard(ring_n > CAP_RATE * 6 / 10 ? ring_n - CAP_RATE * 6 / 10 : 0, ring_n, 1); }
         if (atomic_exchange(&stop_pending, 0)) stop_word();        /* SIGHUP: the "stop" keyword, for tests on the PC */
         if (n == 0) continue;
+        atomic_fetch_add(&cap_bytes, n);
 
         /* What the wake word hears (post-AEC micAsr), for listening on the PC.  The mixer feeds the mic only to its one
          * micAsr client, so this is the only way to record it while hassmic runs: kill -TTIN <pid> starts, again stops. */
@@ -1257,6 +1275,7 @@ int main(int argc, char **argv)
     int ls = net_listen(core_port);
     if (ls < 0) { perror("listen"); return 1; }
     fprintf(stderr, "hassmic " VERSION " (" BUILD ") %s on %d, wake=%s\n", proto->id, core_port, core_local_wake ? "local" : "remote");
+    if (ota_port) { pthread_t st; if (!pthread_create(&st, NULL, selftest_thread, NULL)) pthread_detach(st); }
     while (!atomic_load(&quit)) {
         int c = net_accept(ls);
         if (c < 0) break;

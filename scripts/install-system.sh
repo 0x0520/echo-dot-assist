@@ -8,7 +8,7 @@
 # Needs: boot-root already flashed (permissive su domain), device reachable over adb.
 # Touches: /system/hassmic/ (new), /system/etc/init/hassmic.rc (new), /sepolicy (allow rules added; old copy kept as
 # /sepolicy.pre-hassmic), /data/local/hassmic/hassmic.conf (new).
-# Later versions go over Wi-Fi with scripts/ota-push.sh (approved ones also renew the factory copy and the bootstrap); this
+# Later versions go over Wi-Fi with scripts/ota-push.sh (each also renews the factory copy and the bootstrap once it passed its self test); this
 # script is only needed once per device, and again if secrets/update.key is lost or the SELinux policy has to change.
 # Undo: scripts/install-system.sh --uninstall, or delete /data/local/hassmic/hassmic.conf (boot.sh then does nothing).
 #   install-system.sh [--twrp] [name]        e.g. install-system.sh "Kitchen"; default DEFAULT_NAME of the model

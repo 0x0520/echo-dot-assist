@@ -7,7 +7,6 @@
  *   otatool install PUBLIC BUNDLE SIG DESTDIR           verify, then unpack into DESTDIR (must not exist yet)
  *   otatool push    HOST PORT BUNDLE SIG                send to a running hassmic, print its answer (exit 0 on "OK ...")
  *   otatool adb     HOST PORT SECRET                    open adb over Wi-Fi on it for 30 min (sign its challenge)
- *   otatool factory HOST PORT SECRET VERSION            make its installed update VERSION the factory copy (approve it)
  *   otatool remount rw|ro PATH                          remount the file system PATH lives on (device, root)
  *
  * The device runs "install" as root from the read-only system partition, with the public key from there, so whatever
@@ -203,12 +202,7 @@ int main(int argc, char **argv)
     if (argc == 6 && !strcmp(argv[1], "push")) return push(argv[2], argv[3], argv[4], argv[5]);
     if (argc == 6 && !strcmp(argv[1], "install")) return verify_install(argv[2], argv[3], argv[4], argv[5]);
     if (argc == 5 && !strcmp(argv[1], "adb")) return challenge(argv[2], argv[3], argv[4], "HMOTA-ADB1\n");
-    if (argc == 6 && !strcmp(argv[1], "factory")) {
-        char req[100];
-        if (snprintf(req, sizeof req, "HMOTA-FACTORY1 %s\n", argv[5]) >= (int)sizeof req) { fprintf(stderr, "otatool: version too long\n"); return 2; }
-        return challenge(argv[2], argv[3], argv[4], req);
-    }
     if (argc == 4 && !strcmp(argv[1], "remount")) return remount(argv[2], argv[3]);
-    fprintf(stderr, "usage: otatool keygen SECRET PUBLIC | push HOST PORT BUNDLE SIG | adb HOST PORT SECRET | factory HOST PORT SECRET VERSION | pack SECRET VERSION OUT FILE[:MODE]... | verify PUBLIC BUNDLE SIG | install PUBLIC BUNDLE SIG DESTDIR | remount rw|ro PATH\n");
+    fprintf(stderr, "usage: otatool keygen SECRET PUBLIC | push HOST PORT BUNDLE SIG | adb HOST PORT SECRET | pack SECRET VERSION OUT FILE[:MODE]... | verify PUBLIC BUNDLE SIG | install PUBLIC BUNDLE SIG DESTDIR | remount rw|ro PATH\n");
     return 2;
 }

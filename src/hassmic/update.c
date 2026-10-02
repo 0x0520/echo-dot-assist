@@ -13,8 +13,9 @@
  * are opened by us, as the group the egress lock lets out (net_socket); libcurl's own would only reach the LAN.
  *
  * Looked at a minute after start, then every 6 hours, on a change of channel and when Home Assistant asks (the
- * entity's "check").  Release: /releases/latest, the newest that is not a prerelease.  Beta: /releases?per_page=1, the
- * newest of all.  Versions are the commit's time in UTC (2026.10.02.091530), the same for a commit published as beta
+ * entity's "check").  Release: /releases/latest, the newest that is not a prerelease.  Beta: the highest version among
+ * /releases?per_page=10, the newest of all: GitHub's list is not newest first (it starts with the release it marks
+ * latest; 2026-10-02 an Echo on beta was offered the release before a newer beta that way).  Versions are the commit's time in UTC (2026.10.02.091530), the same for a commit published as beta
  * (tag v<version>-beta) and as release (v<version>): Home Assistant compares them as numbers and offers what is newer
  * than what runs, so a release of the commit a beta user runs already is not offered again.  Install takes whatever is
  * newest on the channel.
@@ -210,6 +211,30 @@ static int json_get(const char *p, const char *end, const char *key, char *out, 
     return 0;
 }
 
+/* Element I of the JSON array at P, an object, as [*s, *e); 0 if there is none.  Strings are skipped whole. */
+static int json_item(const char *p, const char *end, int i, const char **s, const char **e)
+{
+    int depth = 0, n = -1;
+    while (p < end && isspace((unsigned char)*p)) p++;
+    if (p >= end || *p != '[') return 0;
+    for (; p < end; p++) {
+        if (*p == '"') { for (p++; p < end && *p != '"'; p++) if (*p == '\\') p++; continue; }
+        if (*p == '{' || *p == '[') { if (++depth == 2 && *p == '{' && ++n == i) *s = p; }
+        else if (*p == '}' || *p == ']') {
+            if (--depth == 1 && n == i && *p == '}') { *e = p + 1; return 1; }
+            if (depth <= 0) return 0;
+        }
+    }
+    return 0;
+}
+
+/* v2026.10.02.091530-beta -> 2026.10.02.091530: the tag says the channel, the version is the same on both */
+static void tag_version(const char *t, char *v, size_t cap)
+{
+    snprintf(v, cap, "%s", t + (t[0] == 'v'));
+    char *beta = strstr(v, "-beta"); if (beta && !beta[5]) *beta = 0;
+}
+
 static int version_ok(const char *v)    /* goes into URLs and, through root, into file names */
 {
     if (!*v || strlen(v) > 60) return 0;
@@ -232,15 +257,26 @@ static void set_failed(const char *what, const char *why)
 static int look(int ch)
 {
     char url[400], err[300], t[64], page[192], body[1024], *notes = body; struct buf b = { 0 }; int found;
-    snprintf(url, sizeof url, ch == UPDATE_RELEASE ? "%s/releases/latest" : "%s/releases?per_page=1", api_base());
+    snprintf(url, sizeof url, ch == UPDATE_RELEASE ? "%s/releases/latest" : "%s/releases?per_page=10", api_base());
     if (fetch(url, &b, 1u << 20, 0, err, sizeof err)) {
         set_failed("could not look for updates", strstr(err, "HTTP 404") && ch == UPDATE_RELEASE ? "no release published yet" : err);
         free(b.p); return -1;
     }
-    found = b.p && json_get((char *)b.p, (char *)b.p + b.n, "tag_name", t, sizeof t);
+    const char *rs = (const char *)b.p, *re = rs + b.n;   /* the release: the answer itself, or (beta) one of the list */
+    if (ch == UPDATE_BETA) {
+        /* the highest version: they are fixed width, so string order is time order */
+        const char *s = NULL, *e = NULL; char best[64] = "", v[64];
+        rs = NULL;
+        for (int i = 0; b.p && json_item((char *)b.p, (char *)b.p + b.n, i, &s, &e); i++) {
+            if (!json_get(s, e, "tag_name", t, sizeof t) || !version_ok(t)) continue;
+            tag_version(t, v, sizeof v);
+            if (strlen(v) == strlen(best) ? strcmp(v, best) > 0 : !best[0]) { snprintf(best, sizeof best, "%s", v); rs = s; re = e; }
+        }
+    }
+    found = rs && json_get(rs, re, "tag_name", t, sizeof t);
     if (found) {
-        if (!json_get((char *)b.p, (char *)b.p + b.n, "html_url", page, sizeof page)) page[0] = 0;
-        if (!json_get((char *)b.p, (char *)b.p + b.n, "body", body, sizeof body)) body[0] = 0;
+        if (!json_get(rs, re, "html_url", page, sizeof page)) page[0] = 0;
+        if (!json_get(rs, re, "body", body, sizeof body)) body[0] = 0;
     }
     free(b.p);
     if (!found) { set_failed("could not look for updates", ch == UPDATE_BETA ? "nothing published yet" : "unexpected answer from GitHub"); return -1; }
@@ -248,8 +284,7 @@ static int look(int ch)
     while (isspace((unsigned char)*notes)) notes++;
     pthread_mutex_lock(&ulock);
     snprintf(tag, sizeof tag, "%s", t);
-    snprintf(st.latest, sizeof st.latest, "%s", t + (t[0] == 'v'));
-    char *beta = strstr(st.latest, "-beta"); if (beta && !beta[5]) *beta = 0;      /* the tag says the channel, not the version */
+    tag_version(t, st.latest, sizeof st.latest);
     snprintf(st.url, sizeof st.url, "%s", page);
     /* Home Assistant takes 255 characters of summary; cut at a character, not inside one */
     size_t n = strlen(notes);

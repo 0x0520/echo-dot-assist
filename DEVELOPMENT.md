@@ -14,8 +14,9 @@ Boot integration (`scripts/system/`): `hassmic.rc` (init) starts `boot.sh` (fixe
 copy or a verified push update and runs `main.sh` (updatable): `main.sh firewall` keeps the egress lock in place and is
 the root side of push updates, `main.sh satellite` stops Alexa, updater and telemetry and keeps hassmic running.
 No `hassmic.conf` = stock behaviour. `sysinstall.sh` writes the system partition from the running OS (`otatool remount`;
-dm-verity is off): for `install-system.sh`, and for a push update the owner tried and approved (`ota-push.sh` asks;
-`HMOTA-FACTORY1` in `ota.c`), which renews the factory copy and the bootstrap (`boot.sh`, `otatool`, `hassmic.rc`) over Wi-Fi.
+dm-verity is off): for `install-system.sh`, and for every update (pushed or online) once it passed its self test
+(`main.c`: wake word engine loaded, ports bound, a second of mic audio; `ota_healthy()` leaves `state/ota/healthy`, root's
+`ota_watch` promotes), which renews the factory copy and the bootstrap (`boot.sh`, `otatool`, `hassmic.rc`) over Wi-Fi.
 
 Everything that differs between Echo models lives in `devices/<codename>/`: build settings, hardware constants linked
 into the daemon (`board.c`), service names and install method for the scripts (`device.conf`), init rc and SELinux

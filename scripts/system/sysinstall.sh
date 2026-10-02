@@ -4,7 +4,7 @@
 #   sysinstall.sh install SRC      what scripts/install-system.sh puts there: SRC holds the files of /system/hassmic, plus
 #                                  hassmic.rc and optionally sepolicy (the patched policy).  Files in /system/hassmic that
 #                                  SRC lacks are removed (update.pub stays if SRC has none).
-#   sysinstall.sh factory SRC      a push update the owner tried and approved (SRC = its directory; main.sh, factory())
+#   sysinstall.sh factory SRC      an update that passed its self test (SRC = its directory; main.sh, factory())
 #                                  becomes the factory copy: its files, boot.sh and hassmic.rc.  Never the update key or
 #                                  the policy: those change only through install-system.sh, with adb.  The release key
 #                                  (online updates) does come along: it is part of every build.

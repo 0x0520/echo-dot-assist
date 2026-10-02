@@ -93,10 +93,10 @@ netwatch() {
 # from bundles that verified, and so a new release key can come with an update signed by the old one.
 release_pub() { for k in $D/release.pub $SYS/release.pub; do [ -s $k ] && { echo $k; return; }; done; }
 rejected() { echo "== update rejected: $1"; rm -rf $new; echo "FAILED $1" > $IN/result.tmp; }
-# The owner tried the installed update and approved it (ota-push.sh asks; the approval is signed with the update key,
-# for this version, see ota.c): it becomes the factory copy on the system partition, bootstrap included.  Only if it is
-# the update installed now and the hassmic running is its binary, i.e. what the owner tried is what gets written: not
-# after a fall back to the factory copy, not with a test binary from deploy.sh in /data.
+# The installed update passed its self test (hassmic left state/ota/healthy: started, wake word engine loaded, a second
+# of microphone audio; main.c): it becomes the factory copy on the system partition, bootstrap included, so the Echo
+# falls back to the last version that worked.  Only if it is the update installed now and the hassmic running is its
+# binary: not after a fall back to the factory copy, not with a test binary from deploy.sh in /data.
 factory() {
     want=$1 cur=$(readlink $OTA/current)
     have=$(cat $cur/VERSION 2>/dev/null)
@@ -112,11 +112,13 @@ factory() {
 ota_watch() {
     IN=/data/local/hassmic/state/ota
     while sleep 2; do
-        if [ -f $IN/factory ]; then
-            want=$(cat $IN/factory); rm -f $IN/factory
-            case "$want" in *[!A-Za-z0-9.+_-]*|"") r="FAILED bad version";; *) r=$(factory "$want");; esac    # its stderr: the log
-            echo "== factory copy: $r"
-            echo "$r" > $IN/factory-result.tmp; chown $DAEMON_USER $IN/factory-result.tmp; mv $IN/factory-result.tmp $IN/factory-result
+        if [ -f $IN/healthy ]; then
+            rm -f $IN/healthy
+            cur=$(readlink $OTA/current)
+            # every start says so; only an update that is not the factory copy yet has anything to do
+            if [ -n "$cur" ] && [ -f $cur/VERSION ] && ! cmp -s $cur/VERSION $SYS/VERSION; then
+                echo "== factory copy: $(factory "$(cat $cur/VERSION)")"      # its stderr: the log
+            fi
         fi
         [ -f $IN/request ] || continue
         rm -f $IN/request $IN/result
@@ -134,8 +136,8 @@ ota_watch() {
         elif ! { chmod 755 $new && [ -f $new/main.sh ] && $new/runas $DAEMON_USER shell $new/hassmic -T > /dev/null 2>&1; }; then  # the daemon's user can really run it
             rejected "version $ver does not run as the daemon's user (self-check failed), not installed"
         elif [ -f $new/otatool ] && ! $new/otatool verify $key $IN/bundle $IN/bundle.sig > /dev/null 2>&1; then
-            # Approved, its otatool becomes the one on the system partition that checks every later update: so it must
-            # pass that check itself.
+            # Once it passes its self test, its otatool becomes the one on the system partition that checks every later
+            # update: so it must pass that check itself.
             rejected "version $ver brings an otatool that does not verify it; not installed"
         else
             old=$(readlink $OTA/current)

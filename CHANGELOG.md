@@ -10,8 +10,11 @@ What changed for people using the Echo, newest first. Details and measurements a
   installs it with one click, without a PC. The builds come from the project's GitHub releases; the Echo only installs
   them if they are signed with the project's release key, and goes back to the previous version by itself if the new
   one does not stay up. Echos installed before this need one push from the PC (or a fresh install) first, to bring that
-  key along. Versions are now the
-  date and time of the build's code (UTC), like `2026.10.02.091530`.
+  key along. Versions are now the date and time of the build's code (UTC), like `2026.10.02.091530`.
+
+- **Updates become the fallback by themselves.** Every update, pushed from the PC or installed from Home Assistant,
+  checks itself as it starts (wake word engine, network ports, a second of microphone audio) and, once that passes, is
+  what the Echo falls back to from then on. `scripts/ota-push.sh` no longer asks, and `--approve` is gone.
 
 ## 2026-10-01
 

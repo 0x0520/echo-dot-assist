@@ -178,8 +178,7 @@ build's commit in UTC (`2026.10.02.091530`), on both channels. Its install butto
 bundle for this model from the project's GitHub releases and installs it, as a push from your PC would: the Echo
 checks the release key's signature (`keys/release.pub`, in every build) and falls back by itself if the new version
 does not stay up. Only an encrypted connection to Home Assistant, with the key Home Assistant set, may switch the
-channel or install. An online update does not become the fallback copy by itself; that takes your update key, from the PC:
-`build/otatool-host factory <echo-ip> 28929 secrets/update.key <version>`.
+channel or install. Once the new version passes its self test it also becomes the copy the Echo falls back to, as for a push.
 ESPHome mode only. The release key arrives with the install or with the first push from a build that has it; until
 then the entity says so.
 
@@ -197,10 +196,9 @@ scripts/ota-push.sh <echo-ip>        # remembers the address
 Builds, signs, pushes over Wi-Fi (TCP 28929). The Echo installs only what verifies against your key, restarts hassmic,
 and falls back to the installed copy by itself if the new one does not stay up. What changed: [CHANGELOG.md](CHANGELOG.md).
 
-Then it asks you to try it. Once you say yes, the Echo makes it the installed copy (the fallback), start script and
-update checker included; answer no if something is off, and the old fallback stays. To approve later:
-`scripts/ota-push.sh --approve <echo-ip>` (the version last pushed there from this PC; the Echo refuses unless that
-version is the one running).
+Every update, pushed or online, runs a self test as it starts: wake word engine loaded, ports open, a second of
+microphone audio. Once it passes (a few seconds), the Echo makes it the installed copy, start script and update checker
+included: the version it falls back to from then on is always the last one that worked.
 
 ## Configuration
 
@@ -297,7 +295,7 @@ Open issues and measurements: [PLAN.md](PLAN.md).
 - **Updates**: only bundles signed with your `secrets/update.key` (pushed from your PC) or with the project's release key
   (`keys/release.pub`; downloaded by hassmic itself, only once "Online updates" is switched on) are installed. Root
   checks the signature with the tool and keys from the system partition or the installed copy before anything is
-  unpacked. Your key also opens adb over Wi-Fi and approves the fallback copy; the release key does neither.
+  unpacked. Your key also opens adb over Wi-Fi; the release key does not.
 - **Bluetooth**: keys in `state/ble_bonds` (proxy) and `state/bt_keys` (speaker), both under `/data/local/hassmic/`.
 
 ## Development

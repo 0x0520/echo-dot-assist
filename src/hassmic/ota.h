@@ -2,8 +2,8 @@
 #ifndef OTA_H
 #define OTA_H
 int ota_start(int port);        /* listener thread; does nothing useful without /system/hassmic/update.pub.  Also
-                                   opens adb over Wi-Fi, and makes an approved update the factory copy, for whoever
-                                   holds the update key (ota.c) */
+                                   opens adb over Wi-Fi for whoever holds the update key (ota.c) */
+void ota_healthy(void);         /* the self test passed: root makes the update that runs the factory copy (main.sh) */
 #include <stddef.h>
 #include <stdint.h>
 /* A bundle hassmic downloaded itself (update.c), signed with the release key: checked against that key, handed to root's

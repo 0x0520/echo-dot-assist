@@ -1,0 +1,15 @@
+U __emutls_get_address
+T PryonDecoder_PushClientEvents
+T PryonDecoder_NewPryonMultichannelAudioFormat_Default
+T PryonModelSet_New
+T PryonApi_SetAcousticEventDetectionResultCallback
+T PryonDecoder_NewSpotterAudioDecoder
+T PryonApi_SetEnumeratedResultCallback
+T PryonDecoder_SessionEnd
+T PryonApi_GetAttributes
+T PryonModelSet_Delete
+T PryonDecoder_NewMultichannelAudioDecoder
+T PryonDecoder_BacklogWait
+T PryonDecoder_Delete
+T PryonDecoder_PushAudioEventSamples
+T PryonApi_SetLoggingCallback

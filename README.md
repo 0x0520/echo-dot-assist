@@ -57,7 +57,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Sound detection (smoke alarm, glass, dog, …)  | ✅ Alexa Guard, checked in Amazon's cloud | optional, off by default: on the Echo only, less reliable ([details](#sound-detection)) | ❌ |
 | Encrypted link to Home Assistant              | –                       | ✅ key set by Home Assistant                 | ❌ plain TCP             |
 | Talks to Amazon                               | always                  | never (firewalled)                           | never (firewalled)       |
-| Updates                                       | automatic, from Amazon  | signed, pushed from your PC                  | signed, pushed from your PC |
+| Updates                                       | automatic, from Amazon  | signed: pushed from your PC, or online from Home Assistant (off by default) | signed, pushed from your PC |
 
 Details:
 
@@ -165,6 +165,30 @@ the same model. The model's page has the same steps written out.
 
 ## Updating
 
+### From Home Assistant (online updates)
+
+Off by default. Pick a channel in the Echo's "Online updates" select:
+
+- `release`: releases only (built from the `release` branch);
+- `beta`: every build of `main`, plus every release;
+- `off`: nothing is fetched (the default).
+
+The Echo's "Firmware" update entity then shows the newest build on that channel. Versions are the time of the
+build's commit in UTC (`2026.10.02.091530`), on both channels. Its install button downloads the
+bundle for this model from the project's GitHub releases and installs it, as a push from your PC would: the Echo
+checks the release key's signature (`keys/release.pub`, in every build) and falls back by itself if the new version
+does not stay up. Only an encrypted connection to Home Assistant, with the key Home Assistant set, may switch the
+channel or install. An online update does not become the fallback copy by itself; that takes your update key, from the PC:
+`build/otatool-host factory <echo-ip> 28929 secrets/update.key <version>`.
+ESPHome mode only. The release key arrives with the install or with the first push from a build that has it; until
+then the entity says so.
+
+Turning online updates on means trusting the project's releases: they are built and signed by GitHub Actions
+(`.github/workflows/build.yml`), in a job that only runs for the `main` and `release` branches; its secret is the only
+copy of the release key besides the maintainer's.
+
+### From your PC
+
 ```sh
 git pull
 scripts/ota-push.sh <echo-ip>        # remembers the address
@@ -270,7 +294,10 @@ Open issues and measurements: [PLAN.md](PLAN.md).
   Assistant and allowed to act take part; the key travels encrypted to the receiving Echo, so it is not readable in
   Home Assistant's traces or logbook. Rounds are authenticated with the key and cannot be replayed. The keys are in
   `state/arb_key` and `state/arbitration`.
-- **Updates**: only bundles signed with your `secrets/update.key` are installed. The same key opens adb over Wi-Fi.
+- **Updates**: only bundles signed with your `secrets/update.key` (pushed from your PC) or with the project's release key
+  (`keys/release.pub`; downloaded by hassmic itself, only once "Online updates" is switched on) are installed. Root
+  checks the signature with the tool and keys from the system partition or the installed copy before anything is
+  unpacked. Your key also opens adb over Wi-Fi and approves the fallback copy; the release key does neither.
 - **Bluetooth**: keys in `state/ble_bonds` (proxy) and `state/bt_keys` (speaker), both under `/data/local/hassmic/`.
 
 ## Development

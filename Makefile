@@ -10,17 +10,32 @@ include devices/$(DEVICE)/device.mk
 NDK     ?= $(CURDIR)/toolchain/android-ndk-r21e
 CC      := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin/$(TARGET)-clang
 STOCK   := $(CURDIR)/firmware/$(DEVICE)/rootfs/system/lib
+# STUBS=1: link against stand-ins for the stock libraries, built from devices/$(DEVICE)/stubs/*.syms (tools/mkstubs.sh):
+# same soname, the same function names, empty.  The binaries come out byte-identical; CI builds this way, without the
+# firmware.
+ifeq ($(STUBS),1)
+STOCK   := $(CURDIR)/build/stubs/$(DEVICE)
+endif
 OUT     := build/$(DEVICE)
 BOARD   := devices/$(DEVICE)/board.c
-BUILD   := $(shell git describe --always --dirty 2>/dev/null || echo nogit)
-CFLAGS  := -O2 -Wall -Wextra -fPIE -Isrc/include -DBUILD='"$(BUILD)"'
+# the commit id (the tags are versions: git describe would put the newest in front)
+BUILD   := $(shell git describe --always --dirty --exclude='*' 2>/dev/null || echo nogit)
+# "compiled" in ESPHome's device info: the commit's time rather than the clock's, so that a build can be repeated byte
+# for byte (CI's release against a local one, a stub link against the firmware's: tools/mkstubs.sh)
+BUILD_TIME := $(shell LC_ALL=C git log -1 --format=%cd --date=format:'%b %e %Y %H:%M:%S' 2>/dev/null || echo unknown)
+# The version is the commit's time in UTC, 2026.10.02.091530: it only goes up, beta and release share it, and Home
+# Assistant compares it as numbers.  A build CI publishes (RELEASE=1) reports just that; any other reports
+# VERSION+BUILD (git describe), which online updates take for that version.
+VERSION := $(shell TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y.%m.%d.%H%M%S 2>/dev/null || echo 0)
+DEFS    := -DVERSION='"$(VERSION)"' -DBUILD='"$(BUILD)"' -DBUILD_TIME='"$(BUILD_TIME)"' $(if $(RELEASE),-DRELEASE)
+CFLAGS  := -O2 -Wall -Wextra -fPIE -Isrc/include $(DEFS)
 LDFLAGS := -pie -fuse-ld=lld -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs
 STOCK_LIBS = $(addprefix $(STOCK)/,$(filter $(LIBS),$(1)))
 
 # The build id is compiled in; make must notice when it changes (a new commit), not only when sources change.
 # Same for the model the PC builds stand in for (they sit in build/, not build/$(DEVICE)/).
 build/.build-id: FORCE
-	@mkdir -p build; echo '$(BUILD)' | cmp -s - $@ || echo '$(BUILD)' > $@
+	@mkdir -p build; echo '$(DEFS)' | cmp -s - $@ || echo '$(DEFS)' > $@
 build/.device: FORCE
 	@mkdir -p build; echo '$(DEVICE)' | cmp -s - $@ || echo '$(DEVICE)' > $@
 FORCE:
@@ -33,8 +48,18 @@ BIN := $(OUT)/hassmic $(OUT)/runas $(OUT)/otatool \
 .DEFAULT_GOAL := all
 all: $(BIN)
 
+ifeq ($(STUBS),1)
+# Written in the list's order, as assembly: the linker lists what it exports from the executable in the order it meets the
+# names in the libraries, and the integrated assembler would sort them by name; GNU as (still in r21e) keeps them.
+# Symbol table with a plain SysV hash for the same reason: a GNU hash table reorders it by bucket.
+$(STOCK)/%.so: devices/$(DEVICE)/stubs/%.syms
+	@mkdir -p $(STOCK)
+	awk 'BEGIN { print ".syntax unified\n.arch armv7-a\n.text" } $$1 == "T" { print ".globl " $$2 "\n.type " $$2 ", %function\n" $$2 ": bx lr" } $$1 == "U" { print ".pushsection .data\n.word " $$2 "\n.popsection" }' $< > $(STOCK)/$*.s
+	$(CC) -fno-integrated-as -shared -nostdlib -fuse-ld=lld -Wl,--hash-style=sysv -Wl,-soname,$*.so $(STOCK)/$*.s -o $@
+else
 $(STOCK)/%.so:
-	@echo "missing $@: unpack the $(DEVICE) firmware first (devices/$(DEVICE)/README.md)"; exit 1
+	@echo "missing $@: unpack the $(DEVICE) firmware first (devices/$(DEVICE)/README.md), or build with STUBS=1"; exit 1
+endif
 
 $(OUT)/mixcap $(OUT)/mixplay: $(OUT)/%: src/tools/%.c src/include/mixer_api.h src/include/netio.h $(STOCK)/libmixerAPI.so
 	@mkdir -p $(OUT)
@@ -85,7 +110,7 @@ SOUND := $(if $(filter %wake_pryon.c,$(WAKE)),src/hassmic/sound_pryon.c,src/hass
 
 RNNOISE := $(addprefix src/third_party/rnnoise/,denoise.c rnn.c rnn_data.c pitch.c kiss_fft.c celt_lpc.c)
 HASSMIC := src/hassmic/main.c src/hassmic/wyoming.c src/hassmic/proto_wyoming.c src/hassmic/proto_esphome.c src/hassmic/buttons.c \
-           src/hassmic/sendspin.c src/hassmic/arb.c src/hassmic/ble.c src/hassmic/ble_crypto.c src/hassmic/a2dp.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/hassmic/btout.c src/hassmic/ota.c src/hassmic/adbwifi.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/hassmic/hash.c src/hassmic/sounds.c src/hassmic/micgain.c src/hassmic/micdenoise.c \
+           src/hassmic/sendspin.c src/hassmic/arb.c src/hassmic/ble.c src/hassmic/ble_crypto.c src/hassmic/a2dp.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/hassmic/btout.c src/hassmic/ota.c src/hassmic/update.c src/hassmic/adbwifi.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/hassmic/hash.c src/hassmic/sounds.c src/hassmic/micgain.c src/hassmic/micdenoise.c \
            src/third_party/monocypher.c src/third_party/freeaptx.c $(RNNOISE)
 HASSMIC_H := $(wildcard src/hassmic/*.h src/include/*.h) build/.build-id
 
@@ -96,7 +121,7 @@ $(OUT)/hassmic: $(HASSMIC) $(BOARD) $(AUDIO) $(WAKE) $(SOUND) $(HASSMIC_H) $(add
 # PC build for protocol tests: file audio backend, no wake word (SIGUSR1 triggers), fake sound detection, identity of $(DEVICE).
 build/hassmic-host: $(HASSMIC) $(BOARD) src/hassmic/audio_file.c src/hassmic/wake_none.c src/hassmic/sound_none.c $(HASSMIC_H) build/.device
 	@mkdir -p build
-	cc -O2 -Wall -Wextra -DBUILD='"$(BUILD)"' -Isrc/include -Isrc/hassmic $(filter %.c,$^) -o $@ -lpthread -lm -ldl -lopus
+	cc -O2 -Wall -Wextra $(DEFS) -Isrc/include -Isrc/hassmic $(filter %.c,$^) -o $@ -lpthread -lm -ldl -lopus
 
 # ARM build with file audio but the device's wake word engine, for running under qemu-arm (tools/qrun.sh).
 $(OUT)/hassmic-qemu: $(HASSMIC) $(BOARD) src/hassmic/audio_file.c $(WAKE) $(SOUND) $(HASSMIC_H) $(call STOCK_LIBS,libpryon.so libopus.so libz.so)
@@ -120,7 +145,11 @@ unit:
 	cc -O2 -Wall -Isrc/hassmic tests/unit/a2dp_codecs_test.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/third_party/freeaptx.c -lm -ldl -lopus -o build/a2dp_codecs_test && build/a2dp_codecs_test
 	if command -v sbcenc >/dev/null; then tests/unit/sbc_ref.sh; else echo "sbc: sbcenc/sbcdec (package sbc) missing, skipped"; fi
 
+# what the daemon reports, and what bundles are called (ota-push.sh, CI)
+version:
+	@echo $(VERSION)$(if $(RELEASE),,+$(BUILD))
+
 clean:
 	rm -rf build
 
-.PHONY: all host unit clean FORCE
+.PHONY: all host unit version clean FORCE

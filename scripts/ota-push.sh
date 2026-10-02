@@ -32,11 +32,8 @@ if [ -n "$APPROVE" ]; then
 fi
 
 make -s all build/otatool-host DEVICE=$DEVICE
-VERSION="$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' src/hassmic/core.h)+$(git describe --always --dirty 2>/dev/null || echo nogit)"
-build/otatool-host pack secrets/update.key "$VERSION" $OUT/hassmic.bundle \
-    $OUT/hassmic $OUT/runas $OUT/otatool $(ls $OUT/latency $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $DDIR/device.conf:644 \
-    scripts/system/main.sh scripts/system/boot.sh scripts/system/sysinstall.sh $DDIR/hassmic.rc:644 \
-    scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh
+VERSION=$(make -s version)                  # the commit's time and id: what hassmic will report
+scripts/bundle.sh secrets/update.key "$VERSION"
 echo "pushing $DEVICE build to $HOST ..."
 build/otatool-host push "$HOST" $PORT $OUT/hassmic.bundle $OUT/hassmic.bundle.sig
 mkdir -p secrets; echo "$HOST" > secrets/ota.host; echo "$VERSION" > "$PUSHED"

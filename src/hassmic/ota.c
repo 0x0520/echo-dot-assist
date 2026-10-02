@@ -24,6 +24,9 @@
  *   <- "NONCE <64 hex digits>\n"
  *   -> <64 byte signature over "HMOTA-FACTORY1 <version>\n" + the 32 nonce bytes>
  *   <- one line: "OK ..." once written | "FAILED <why>"
+ *
+ * Online updates (update.c) come the same way to root, signed with the project's release key instead of the owner's:
+ * ota_handoff() checks that one and leaves the bundle where a push leaves it.  This port takes the owner's key only.
  */
 #include "ota.h"
 #include <errno.h>
@@ -43,7 +46,11 @@
 #define MAX_BUNDLE (16u << 20)
 static int port;
 
+static pthread_mutex_t handoff_lock = PTHREAD_MUTEX_INITIALIZER;     /* one bundle in state/ota/ at a time: push or download */
+
 static const char *pub_path(void) { const char *e = getenv("HASSMIC_UPDATE_PUB"); return e ? e : "/system/hassmic/update.pub"; }
+/* main.sh names the release key of the copy that runs (an update may bring a new one), else the factory copy's */
+static const char *release_pub_path(void) { const char *e = getenv("HASSMIC_RELEASE_PUB"); return e && *e ? e : "/system/hassmic/release.pub"; }
 static const char *state_dir(void) { const char *e = getenv("HASSMIC_STATE"); return e ? e : "/data/local/hassmic/state"; }
 
 static void reply(int fd, const char *line) { char b[300]; int n = snprintf(b, sizeof b, "%s\n", line); write_all(fd, b, n); fprintf(stderr, "update: %s\n", line); }
@@ -57,9 +64,9 @@ static int store(const char *dir, const char *name, const void *data, size_t len
     return rename(tmp, path);
 }
 
-static int load_pub(uint8_t pk[32])
+static int load_key(const char *path, uint8_t pk[32])
 {
-    FILE *f = fopen(pub_path(), "rb");
+    FILE *f = fopen(path, "rb");
     int ok = f && fread(pk, 1, 32, f) == 32;
     if (f) fclose(f);
     return ok;
@@ -80,15 +87,47 @@ static int challenge(int fd, const uint8_t pk[32], const char *line)
     return 0;
 }
 
-/* Wait for root's answer in DIR/NAME (the installer loop looks every 2 s) and relay it. */
-static void relay(int fd, const char *dir, const char *name, int secs)
+/* Root's answer in DIR/NAME (the installer loop looks every 2 s), waited for up to SECS. */
+static void answer(const char *dir, const char *name, int secs, char *res, size_t cap)
 {
     char path[300]; FILE *f; snprintf(path, sizeof path, "%s/%s", dir, name);
     for (int t = 0; t < secs * 2; t++) {
-        if ((f = fopen(path, "r"))) { char res[256] = ""; if (fgets(res, sizeof res, f)) res[strcspn(res, "\n")] = 0; fclose(f); reply(fd, res[0] ? res : "FAILED empty result"); return; }
+        if ((f = fopen(path, "r"))) {
+            res[0] = 0; if (fgets(res, cap, f)) res[strcspn(res, "\n")] = 0;
+            fclose(f);
+            if (!res[0]) snprintf(res, cap, "FAILED empty result");
+            return;
+        }
         usleep(500000);
     }
-    reply(fd, "FAILED the installer did not answer (is the hassmic_fw service running?)");
+    snprintf(res, cap, "FAILED the installer did not answer (is the hassmic_fw service running?)");
+}
+
+static void relay(int fd, const char *dir, const char *name, int secs)
+{
+    char res[256]; answer(dir, name, secs, res, sizeof res); reply(fd, res);
+}
+
+/* Bundle and signature into state/ota/ with a request for root's installer; 0 if stored. */
+static int stage(const uint8_t *b, size_t len, const uint8_t sig[64], char *dir, size_t dircap)
+{
+    char path[300];
+    snprintf(dir, dircap, "%s/ota", state_dir()); mkdir(dir, 0700);
+    snprintf(path, sizeof path, "%s/result", dir); unlink(path);
+    return store(dir, "bundle", b, len) || store(dir, "bundle.sig", sig, 64) || store(dir, "request", "1\n", 2) ? -1 : 0;
+}
+
+int ota_handoff(const uint8_t *b, size_t len, const uint8_t sig[64], char *res, size_t cap)
+{
+    uint8_t pk[32]; char dir[280];
+    if (!load_key(release_pub_path(), pk)) { snprintf(res, cap, "FAILED no release key on this device (%s): an update with it pushed or installed first", release_pub_path()); return -1; }
+    if (crypto_eddsa_check(sig, pk, b, len)) { snprintf(res, cap, "FAILED signature does not verify against the release key"); return -1; }
+    pthread_mutex_lock(&handoff_lock);
+    if (stage(b, len, sig, dir, sizeof dir)) snprintf(res, cap, "FAILED cannot store the bundle");
+    else { fprintf(stderr, "update: %zu bytes downloaded, signed with the release key, handed to the installer\n", len); answer(dir, "result", 60, res, cap); }
+    pthread_mutex_unlock(&handoff_lock);
+    fprintf(stderr, "update: %s\n", res);
+    return strncmp(res, "OK", 2) ? -1 : 0;
 }
 
 static void factory(int fd, const uint8_t pk[32], const char *line, const char *version)
@@ -116,7 +155,7 @@ static void adb_open(int fd, const uint8_t pk[32])
 
 static void handle(int fd)
 {
-    char line[128], version[64] = "", dir[280], path[300]; size_t i = 0; unsigned long len = 0; uint8_t sig[64], pk[32], *b; int used = 0;
+    char line[128], version[64] = "", dir[280]; size_t i = 0; unsigned long len = 0; uint8_t sig[64], pk[32], *b; int used = 0;
     struct timeval tv = { 30, 0 }; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     while (i < sizeof line - 1 && read(fd, line + i, 1) == 1 && line[i] != '\n') i++;
     line[i] = 0;
@@ -124,19 +163,18 @@ static void handle(int fd)
     /* versions as ota-push.sh makes them (0.3.0+aa353bb-dirty): nothing that means anything to the shell reading them */
     int fac = !strncmp(line, "HMOTA-FACTORY1 ", 15) && sscanf(line + 15, "%63[A-Za-z0-9.+_-]%n", version, &used) == 1 && !line[15 + used];
     if (!adb && !fac && (sscanf(line, "HMOTA-PUSH1 %lu", &len) != 1 || !len || len > MAX_BUNDLE)) { reply(fd, "FAILED bad request"); return; }
-    if (!load_pub(pk)) { reply(fd, "FAILED this device has no update key (install-system.sh installs it)"); return; }
+    if (!load_key(pub_path(), pk)) { reply(fd, "FAILED this device has no update key (install-system.sh installs it)"); return; }
     if (adb) { adb_open(fd, pk); return; }
     if (fac) { factory(fd, pk, line, version); return; }
     if (!(b = malloc(len))) { reply(fd, "FAILED out of memory"); return; }
     if (read_full(fd, sig, 64) != 64 || read_full(fd, b, len) != (ssize_t)len) { reply(fd, "FAILED upload incomplete"); free(b); return; }
     if (crypto_eddsa_check(sig, pk, b, len)) { reply(fd, "FAILED signature does not verify against this device's update key"); free(b); return; }
 
-    snprintf(dir, sizeof dir, "%s/ota", state_dir()); mkdir(dir, 0700);
-    snprintf(path, sizeof path, "%s/result", dir); unlink(path);
-    if (store(dir, "bundle", b, len) || store(dir, "bundle.sig", sig, 64) || store(dir, "request", "1\n", 2)) { reply(fd, "FAILED cannot store the bundle"); free(b); return; }
+    pthread_mutex_lock(&handoff_lock);
+    if (stage(b, len, sig, dir, sizeof dir)) reply(fd, "FAILED cannot store the bundle");
+    else { fprintf(stderr, "update: %lu bytes received, signature good, handed to the installer\n", len); relay(fd, dir, "result", 60); }
+    pthread_mutex_unlock(&handoff_lock);
     free(b);
-    fprintf(stderr, "update: %lu bytes received, signature good, handed to the installer\n", len);
-    relay(fd, dir, "result", 60);
 }
 
 static void *listener(void *arg)

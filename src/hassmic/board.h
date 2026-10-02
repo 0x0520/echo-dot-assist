@@ -12,6 +12,7 @@ struct board {
     const char *project;            /* ESPHome "project_name" */
     const char *product;            /* Sendspin "product_name" */
     const char *default_name;       /* friendly name when -n is not given */
+    const char *codename;           /* devices/<codename>: names this model's bundle in a release (online updates) */
 
     /* inputs */
     const char *keypad;             /* input device with action and volume keys (-b overrides) */

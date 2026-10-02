@@ -8,6 +8,7 @@ const struct board board = {
     .project = "hassmic.echo-dot-2",
     .product = "Echo Dot 2 (hassmic)",
     .default_name = "Echo Dot",
+    .codename = "biscuit",
 
     /* event1 "mtk-kpd": action (•) = KEY_HELP, mic mute = KEY_MUTE, volume down; event2 "keys": volume ± (getevent -il) */
     .keypad = "/dev/input/event1",

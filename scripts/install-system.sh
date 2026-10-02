@@ -54,7 +54,7 @@ if [ "$1" != --uninstall ]; then
     WANT=$(md5sum $OUT/sepolicy.hassmic | cut -d' ' -f1)
 fi
 # What goes into /system/hassmic, whichever way it gets there.
-FILES="$OUT/hassmic $OUT/runas $(ls $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $OUT/otatool secrets/update.pub $DDIR/device.conf
+FILES="$OUT/hassmic $OUT/runas $(ls $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $OUT/otatool secrets/update.pub keys/release.pub $DDIR/device.conf
        scripts/system/boot.sh scripts/system/main.sh scripts/system/sysinstall.sh scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh"
 
 if [ -z "$TWRP" ]; then
@@ -118,7 +118,7 @@ echo "sepolicy patched"
 t "rm -rf $MNT/system/hassmic; mkdir -p $MNT/system/hassmic"
 adb push $FILES $MNT/system/hassmic/ >/dev/null
 adb push $DDIR/hassmic.rc $MNT/system/etc/init/hassmic.rc >/dev/null
-t "chown -R 0:2000 $MNT/system/hassmic; chmod 755 $MNT/system/hassmic $MNT/system/hassmic/*; chmod 644 $MNT/system/hassmic/update.pub $MNT/system/hassmic/device.conf
+t "chown -R 0:2000 $MNT/system/hassmic; chmod 755 $MNT/system/hassmic $MNT/system/hassmic/*; chmod 644 $MNT/system/hassmic/update.pub $MNT/system/hassmic/release.pub $MNT/system/hassmic/device.conf
    chown 0:0 $MNT/system/etc/init/hassmic.rc; chmod 644 $MNT/system/etc/init/hassmic.rc
    chcon -R u:object_r:system_file:s0 $MNT/system/hassmic $MNT/system/etc/init/hassmic.rc $MNT/sepolicy.pre-hassmic
    ls -lZ $MNT/system/hassmic $MNT/system/etc/init/hassmic.rc $MNT/sepolicy $MNT/system/etc/init/fosflags.rc

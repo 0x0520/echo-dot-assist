@@ -18,8 +18,9 @@ and refuse a mismatch.
 | File | Used by | What |
 |---|---|---|
 | `device.mk` | `Makefile` | compiler target (NDK API level), audio and wake word backends, stock libraries to link against |
-| `board.c` | `hassmic` (linked in) | `struct board` from `src/hassmic/board.h`: identity towards Home Assistant, input devices, mute latch, Bluetooth device node and address, stock wake word and earcon paths, thermal zone, light sensor, LED volume steps |
+| `board.c` | `hassmic` (linked in) | `struct board` from `src/hassmic/board.h`: identity towards Home Assistant, the codename (names the model's bundle in a release), input devices, mute latch, Bluetooth device node and address, stock wake word and earcon paths, thermal zone, light sensor, LED volume steps |
 | `device.conf` | PC scripts (`scripts/lib/device.sh`) and, shipped next to them, the scripts on the Echo | product and firmware id, firmware file and checksum, files to compare in `probe.sh`, install method, the daemon's user and groups, names of the stock services to stop |
+| `stubs/*.syms` | `make STUBS=1` (CI) | per stock library in `LIBS`, the symbols our binaries need of it, written by `tools/mkstubs.sh` from the firmware: stand-ins to link against without it |
 | `hassmic.rc` | `install-system.sh` → `/system/etc/init/` | init services, and the trigger that starts the satellite once the audio stack is up |
 | `sepolicy.rules` | `install-system.sh` | allow rules added to the stock policy so init can start the scripts |
 | `README.md` | people | what is known about the model, and its install instructions (requirements, downloads, unlock, root, install) |
@@ -83,7 +84,9 @@ Rough order. Each step is safe to stop at.
    button presses) is a short `todo` or `tell`, never a paragraph. A step first checks whether its result is there
    already. Mark a model not tried on a real Echo with `UNTESTED=1`. End with
    `install` (`install_satellite`) and `wakeword` (`artifacts_run setup`). Try it with `scripts/setup.sh <codename> --dry-run`.
-6. Add the model to the table above, to the root `README.md` and to `CHANGELOG.md`.
+6. `tools/mkstubs.sh <codename>` for the stub lists, and the codename in the build matrix of
+   `.github/workflows/build.yml`: CI builds and publishes the model's bundle from then on.
+7. Add the model to the table above, to the root `README.md` and to `CHANGELOG.md`.
 
 Shared code stays free of `#ifdef DEVICE_...`. When a model needs more than a different value, add a field to
 `struct board`, a variable to `device.conf`, or a backend, and give `donut` its current behaviour there.

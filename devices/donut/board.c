@@ -6,6 +6,7 @@ const struct board board = {
     .project = "hassmic.echo-dot-3",
     .product = "Echo Dot 3 (hassmic)",
     .default_name = "Echo Dot",
+    .codename = "donut",
 
     .keypad = "/dev/input/event3",                                  /* gpio-keys: action, volume */
     .privacy_state = "/sys/devices/platform/gpio-privacy/state",

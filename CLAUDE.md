@@ -22,6 +22,7 @@ without them only the host targets build. Extraction steps: `devices/donut/READM
 
 ```sh
 make [DEVICE=donut]      # ARM binaries into build/donut/ (hassmic, mixcap, mixplay, pryon_test, aed_test, runas, latency, otatool)
+make DEVICE=donut STUBS=1  # same, without firmware/: links against stand-ins from devices/<codename>/stubs/*.syms (byte-identical)
 make host                # build/hassmic-host (PC: file audio + no wake word, SIGUSR1 triggers wake; board.c of DEVICE),
                          # build/donut/hassmic-qemu (ARM + real Pryon, run via tools/qrun.sh), build/otatool-host. Needs libopus
 make unit                # C unit tests; ws/noise are checked against Python reference impls in .venv
@@ -36,8 +37,19 @@ aioesphomeapi, wyoming, aiosendspin, noiseprotocol, aiohttp):
 .venv/bin/python tests/fake_ha_arbitration.py # two Echos under one fake HA: wake word arbitration, join security
 .venv/bin/python tests/fake_ha.py [--qemu]    # Wyoming; --qemu uses the ARM build + stock Pryon model under qemu-arm
 .venv/bin/python tests/fake_ma_sendspin.py    # Sendspin, as Music Assistant
+.venv/bin/python tests/fake_ha_update.py      # online updates: HA select + update entity, fake GitHub, root's installer
 tests/ota_push_test.sh                        # signed push-update path end to end
 ```
+
+`.venv` from `tests/requirements.txt`. CI (`.github/workflows/build.yml`, DEVELOPMENT.md "CI and releases"): every model with
+`STUBS=1`, PC tests, then a push to `main` publishes `v<version>-beta` (prerelease), a push to `release` publishes
+`v<version>`; version = commit time in UTC, `2026.10.02.091530` (`make version`; local builds add `+<commit id>`, CI
+passes `RELEASE=1` for the bare one), bundles `hassmic-<codename>.bundle(.sig)`
+signed in the `release` job only (secret `RELEASE_SIGNING_KEY` of the GitHub environment `release`, main/release only;
+build jobs sign with a throwaway key) with the release key (base64 of `secrets/release.key`; public half `keys/release.pub`,
+shipped in every bundle). `tools/mkstubs.sh` regenerates the stub lists from the firmware and checks byte-identity; rerun it
+when code starts using another stock library function. Builds are reproducible (`BUILD_TIME` = commit time). Test the
+workflow with `act push` (publishing is a dry run under act).
 
 There is no single-test selector: run one unit test by building/running its line from the `unit` target in the Makefile.
 `tools/qrun.sh [-t secs] <arm-binary> args` runs a device binary on the PC under qemu-arm against `firmware/$DEVICE/rootfs`
@@ -85,6 +97,7 @@ There is no single-test selector: run one unit test by building/running its line
   names). Sourced by PC scripts and shipped to the Echo next to `main.sh`/`lockdown.sh`/`alexa-off.sh`; push bundles
   carry it, and `main.sh` refuses a bundle whose `PRODUCT` is not the Echo's.
 - `hassmic.rc`, `sepolicy.rules`: installed by `install-system.sh`.
+- `stubs/*.syms`: what our binaries need of each stock library (`tools/mkstubs.sh`), for `make STUBS=1` / CI.
 - `README.md` (model facts + install steps by hand) and `setup.sh` (same steps for the guided `scripts/setup.sh`:
   `STEPS` list + `step_<id>` functions using `scripts/lib/setup.sh`; `--dry-run` walks them without running). Keep
   the two in step.
@@ -127,7 +140,12 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 - **adb over Wi-Fi** (`adbwifi.c`): the HA switch only writes a request for root's firewall watcher, as `ota.c` does
   for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key.
 - **Push updates**: `ota.c` receives bundles on the device; `src/tools/otatool.c` is the same code for pack/sign (PC)
-  and verify/unpack (device), with monocypher.
+  and verify/unpack (device), with monocypher. `scripts/bundle.sh` packs (ota-push.sh and CI).
+- **Online updates** (`update.c`): HA select "Online updates" (off default / beta / release, settings field 15) and an
+  ESPHome update entity; checks GitHub's releases API, downloads `hassmic-<board.codename>.bundle` through the firmware's
+  libcurl (dlopen; sockets via `net_socket` so the egress lock lets them out), hands it to root through `ota_handoff`.
+  Root (`main.sh` ota_watch) accepts the owner's `update.pub` or the release key (`release.pub` of the running copy, else
+  the system partition). Channel change and install only over the keyed connection.
 - `src/include/`: headers for the reversed Amazon libraries (`mixer_api.h`, `pryon_api.h`, `aipc_api.h`) and `netio.h`.
 - `src/tools/`: standalone device tools (`mixcap`, `mixplay`, `pryon_test`, `aed_test`, `latency`, `runas` — AIPC refuses uid 0 and
   the image has no `su`; `curlspy`, `hciscan`, `a2dpprobe` not in `all`).

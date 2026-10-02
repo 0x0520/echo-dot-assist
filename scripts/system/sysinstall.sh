@@ -6,7 +6,8 @@
 #                                  SRC lacks are removed (update.pub stays if SRC has none).
 #   sysinstall.sh factory SRC      a push update the owner tried and approved (SRC = its directory; main.sh, factory())
 #                                  becomes the factory copy: its files, boot.sh and hassmic.rc.  Never the update key or
-#                                  the policy: those change only through install-system.sh, with adb.
+#                                  the policy: those change only through install-system.sh, with adb.  The release key
+#                                  (online updates) does come along: it is part of every build.
 #   sysinstall.sh uninstall SRC    what install-system.sh --uninstall does (SRC: where otatool is)
 # The factory copy is what boot.sh falls back to, and boot.sh is what init starts: if it breaks, neither service starts,
 # there is no egress lock, and Amazon's updaters can reach the internet.  So nothing is written unless every script
@@ -74,7 +75,7 @@ for f in "$SRC"/*; do
     case "$n" in
     hassmic.rc|sepolicy) continue;;
     update.pub) [ "$MODE" = install ] || continue; m=644;;
-    device.conf|VERSION) m=644;;
+    device.conf|VERSION|release.pub) m=644;;
     *) m=755;;
     esac
     new $H/$n "$f" $m 0:2000 $SYSLABEL

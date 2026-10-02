@@ -26,6 +26,8 @@
  *                    `homeassistant.action` sends).  Home Assistant only runs it with "Allow the device to perform Home
  *                    Assistant actions" ticked in the device's options; otherwise it raises a repair saying so.
  *   debug access     a switch opens adb over Wi-Fi for 30 min (adbwifi.c); only taken over the connection with the key
+ *   online updates   a select (off by default, beta, release) and an update entity with the newest build on that channel
+ *                    and an install button (update.c); channel and install only over the connection with the key
  */
 #include <ctype.h>
 #include <errno.h>
@@ -52,6 +54,7 @@
 #include "hash.h"
 #include "noise.h"
 #include "sendspin.h"
+#include "update.h"
 #include "net.h"
 #include "netio.h"
 #define MINIMP3_IMPLEMENTATION
@@ -71,7 +74,9 @@ enum {
     BLE_READ, BLE_WRITE_REQ, BLE_READ_DESC_REQ, BLE_WRITE_DESC_REQ, BLE_NOTIFY_REQ, BLE_NOTIFY_DATA, BLE_CONN_FREE_REQ,
     BLE_CONN_FREE, BLE_GATT_ERROR, BLE_WRITTEN, BLE_NOTIFY, BLE_PAIRED, BLE_UNPAIRED, BLE_UNSUBSCRIBE, BLE_CACHE_CLEARED,
     BLE_RAW_ADV = 93, BLE_SCANNER_STATE = 126, BLE_SCANNER_SET_MODE = 127, LIST_EVENT = 107, EVENT = 108,
+    LIST_UPDATE = 116, UPDATE_STATE, UPDATE_COMMAND,
 };
+enum { UPDATE_CMD_INSTALL = 1, UPDATE_CMD_CHECK = 2 };
 /* Proxy features: passive scan, active connections, remote caching (Home Assistant keeps the GATT database and writes the
  * notification descriptors itself), pairing, raw advertisements, scanner state and mode.  Not: cache clearing (there is
  * no cache on the Echo), connection parameters.  Scanner state: idle / running; mode: passive / active.
@@ -85,7 +90,7 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
        KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS, KEY_SOUND_DETECTION, KEY_SOUND,
-       KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY };
+       KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_UPDATE_CHANNEL, KEY_UPDATE };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -308,23 +313,28 @@ static const struct bt_lang { const char *code, *name, *on, *off, *on_any, *off_
 };
 #define BT_LANGS (int)(sizeof bt_langs / sizeof bt_langs[0])
 static int bt_lang;                     /* lock held: index into bt_langs */
+/* Settings fields 13 and 14 belong to Wi-Fi motion, which only builds of main have (switch, sensitivity): written back
+ * as read, so that an Echo going between the channels keeps them, and the update channel stays field 15 */
+static int kept[2] = { 0, 5 };          /* lock held */
 static int have_light;                  /* a light sensor answered at start: illuminance and auto brightness are listed */
 
 static const char *settings_path(void) { const char *p = getenv("HASSMIC_SETTINGS"); return p ? p : "/data/local/hassmic/state/settings"; }
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
+    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, uc = UPDATE_OFF; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
     if (!f) { core_mic_level(mic_level); return; }
     /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
-     * which ignored them; unused since), 9 (before LED brightness: auto, as stock), 11 (before sound detection: off). */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd) >= 5) {
+     * which ignored them; unused since), 9 (before LED brightness: auto, as stock), 11 (before sound detection: off), 12
+     * (before the two of Wi-Fi motion, which this version does not have: kept as they are), 14 (before online updates: off). */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &kept[0], &kept[1], &uc) >= 5) {
         if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
         if (!la) { if (lb >= 0) core_led_brightness(lb); else core_led_auto(0); }  /* ledcontroller started its auto at boot */
         core_sound(sd != 0);
+        update_channel(uc);
     }
     fclose(f);
     core_mic_level(mic_level);
@@ -334,8 +344,8 @@ static void settings_save(void)
 {
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
-    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
-            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1));
+    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d %d %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
+            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), kept[0], kept[1], update_channel(-1));
     fclose(f);
 }
 
@@ -366,6 +376,13 @@ static void send_setting(int key)       /* lock held */
     case KEY_BT_OUT_STATUS:
         if (ble_present()) { PB(t, 160); char st[120]; a2dp_out_status(st, sizeof st); pb_fixed32(&t, 1, key); pb_str(&t, 2, st); send_state(TEXT_SENSOR_STATE, &t); }
         break;
+    case KEY_UPDATE_CHANNEL: pb_str(&b, 2, update_channels[update_channel(-1)]); send_state(SELECT_STATE, &b); break;
+    case KEY_UPDATE: {
+        PB(u, 768); struct update_state us; update_get(&us);
+        pb_fixed32(&u, 1, key); pb_uint(&u, 3, us.in_progress); pb_uint(&u, 4, us.in_progress); pb_float(&u, 5, us.progress);
+        pb_str(&u, 6, us.current); pb_str(&u, 7, us.latest); pb_str(&u, 8, "hassmic"); pb_str(&u, 9, us.summary); pb_str(&u, 10, us.url);
+        send_state(UPDATE_STATE, &u);
+    } break;
     }
 }
 
@@ -564,6 +581,12 @@ static void send_setting_entities(void)
         { PB(b, 128); pb_str(&b, 1, "arbitration_peers"); pb_fixed32(&b, 2, KEY_ARB_PEERS); pb_str(&b, 3, "Arbitration peers");
           pb_str(&b, 5, "mdi:access-point-network"); pb_uint(&b, 13, 2); send_msg(LIST_SENSOR, &b); }
     }
+    /* online updates (update.c): off unless chosen here; the entity says what is new on the channel and installs it */
+    { PB(b, 192); pb_str(&b, 1, "online_updates"); pb_fixed32(&b, 2, KEY_UPDATE_CHANNEL); pb_str(&b, 3, "Online updates");
+      pb_str(&b, 5, "mdi:cloud-download"); for (int i = 0; i < 3; i++) pb_str(&b, 6, update_channels[i]);
+      pb_uint(&b, 8, 1); send_msg(LIST_SELECT, &b); }
+    { PB(b, 128); pb_str(&b, 1, "firmware"); pb_fixed32(&b, 2, KEY_UPDATE); pb_str(&b, 3, "Firmware");
+      pb_uint(&b, 7, 1); pb_str(&b, 8, "firmware"); send_msg(LIST_UPDATE, &b); }
     send_light_entities();
     send_diag_entities();
 }
@@ -602,6 +625,15 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         send_setting(key); return;
     }
     else if (type == SWITCH_COMMAND && key == KEY_SOUND_DETECTION) { core_sound(on); settings_save(); send_setting(key); return; }
+    else if (type == SELECT_COMMAND && key == KEY_UPDATE_CHANNEL) {
+        /* what this Echo runs is root's business: only Home Assistant with the key picks where it comes from */
+        int c = client_of(reply_fd);
+        for (int i = 0; i < 3; i++) if (!strcmp(opt, update_channels[i])) {
+            if (i == UPDATE_OFF || (c >= 0 && clients[c].keyed)) { update_channel(i); settings_save(); fprintf(stderr, "update: online updates %s\n", opt); }
+            else fprintf(stderr, "update: channel change refused, the request did not come over the keyed connection\n");
+        }
+        send_setting(key); send_setting(KEY_UPDATE); return;            /* the entity follows through update_changed */
+    }
     else if (type == SWITCH_COMMAND && key == KEY_LED_AUTO && have_light) {
         core_led_auto(on); settings_save(); send_setting(key); return;              /* the level follows through light_thread */
     }
@@ -930,6 +962,7 @@ static void bt_changed(void)
     pthread_mutex_unlock(&core_lock);
 }
 static void adb_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_ADB_WIFI); pthread_mutex_unlock(&core_lock); }
+static void update_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_UPDATE); pthread_mutex_unlock(&core_lock); }
 
 static const struct ble_handler ble_handler = {
     .adverts = ble_adverts, .scan_changed = ble_changed, .slots_changed = ble_slots, .connection = ble_connection, .services = ble_db,
@@ -1127,7 +1160,7 @@ static void on_mp_command(const unsigned char *p, const unsigned char *end)
 static void send_device_info(void)
 {
     PB(b, 512);
-    pb_str(&b, 2, node_name()); pb_str(&b, 3, mac()); pb_str(&b, 4, "2025.5.0"); pb_str(&b, 5, __DATE__ " " __TIME__);
+    pb_str(&b, 2, node_name()); pb_str(&b, 3, mac()); pb_str(&b, 4, "2025.5.0"); pb_str(&b, 5, BUILD_TIME);
     pb_str(&b, 6, board.model); pb_str(&b, 8, board.project); pb_str(&b, 9, VERSION);
     pb_str(&b, 12, "Amazon"); pb_str(&b, 13, core_name);
     if (ble_present()) { pb_uint(&b, 11, 5); pb_uint(&b, 15, BLE_FEATURES); pb_str(&b, 18, ble_mac()); }    /* 11: legacy "active connections" */
@@ -1209,8 +1242,17 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
         send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS); send_setting(KEY_BT_OUT_DELAY);
+        send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE);
         send_token_state(); send_light_states(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: on_setting(type, p, end); break;
+    case UPDATE_COMMAND: {
+        unsigned key = 0, cmd = 0;
+        while (pb_next(&p, end, &f)) { if (f.field == 1) key = (unsigned)f.v; else if (f.field == 2) cmd = (unsigned)f.v; }
+        if (key != KEY_UPDATE) break;
+        if (cmd == UPDATE_CMD_CHECK) update_check();
+        else if (cmd == UPDATE_CMD_INSTALL && c >= 0 && clients[c].keyed) update_install();
+        else if (cmd == UPDATE_CMD_INSTALL) fprintf(stderr, "update: install refused, the request did not come over the keyed connection\n");
+    } break;
     case SUBSCRIBE_HA_ACTIONS: if (c >= 0) clients[c].actions = 1; break;
     case EXECUTE_SERVICE: {
         /* only from Home Assistant itself: a client holding the device key (without one, anyone on the network could
@@ -1332,7 +1374,7 @@ static void serve(int fd)
     { static int loaded; if (!loaded) { loaded = 1; have_light = !isnan(core_lux()); settings_load(); key_load();
                                        pthread_t t; pthread_create(&t, NULL, diag_thread, NULL); pthread_detach(t);
                                        pthread_create(&t, NULL, light_thread, NULL); pthread_detach(t);
-                                       adbwifi_start(adb_changed);
+                                       adbwifi_start(adb_changed); update_start(update_changed);
                                        if (core_bluetooth(-1)) { ble_start(&ble_handler); a2dp_start(bt_changed); } } }
     for (int i = 0; i < MAX_CLIENTS; i++) { if (clients[i].fd < 0 && slot < 0) slot = i; n += clients[i].fd >= 0; }
     if (slot >= 0) { clients[slot].fd = fd; clients[slot].states = clients[slot].enc = clients[slot].keyed = clients[slot].ble = clients[slot].ble_free = clients[slot].ble_user = clients[slot].actions = 0; if (!n) core_link(1, 0); }

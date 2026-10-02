@@ -1,0 +1,15 @@
+#!/bin/sh
+# Packs and signs an update bundle from a build of one model: what scripts/ota-push.sh pushes and CI publishes.
+#   [DEVICE=<codename>] scripts/bundle.sh KEY VERSION       -> build/<codename>/hassmic.bundle and hassmic.bundle.sig
+# Needs `make all build/otatool-host` for that model first.  keys/release.pub rides along: the key of the project's
+# releases, which the Echo then accepts for the updates hassmic downloads itself, once they are switched on in Home
+# Assistant (scripts/system/main.sh).
+set -e
+cd "$(dirname "$0")/.."
+. scripts/lib/device.sh; device_load
+[ $# = 2 ] || die "usage: [DEVICE=<codename>] scripts/bundle.sh KEY VERSION"
+build/otatool-host pack "$1" "$2" $OUT/hassmic.bundle \
+    $OUT/hassmic $OUT/runas $OUT/otatool $(ls $OUT/latency $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $DDIR/device.conf:644 \
+    keys/release.pub:644 \
+    scripts/system/main.sh scripts/system/boot.sh scripts/system/sysinstall.sh $DDIR/hassmic.rc:644 \
+    scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh

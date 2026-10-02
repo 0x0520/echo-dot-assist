@@ -898,6 +898,33 @@ Run in this order. Each step says what it proves.
       up, puffin stopped. Setup's unlock step now takes an Echo already unlocked (Fire OS on adb: stock has none) to
       TWRP with `adb reboot recovery` instead of asking for the unlock (biscuit: "unlocked already", TWRP up; donut's
       kamakiri and radar's amonet also leave TWRP on the recovery partition). Not tried: donut and radar first installs.
+- [ ] Online updates and CI (2026-10-02, issue #3: "centralized config/update instead of the OTA command line").
+      `.github/workflows/build.yml`: main -> prerelease `v<version>-beta`, release -> `v<version>`, bundles
+      per model signed with a release key (secret `RELEASE_SIGNING_KEY` of environment `release`, main/release only, used by
+      the release job alone: build jobs run PR code and sign with a throwaway key; public `keys/release.pub`, generated 2026-10-02 with
+      `otatool keygen`). No firmware in CI: `make STUBS=1` links against stand-ins built from `devices/<codename>/stubs/*.syms`.
+      First stub lists (one shared list, empty C functions) gave different binaries on biscuit: the stock libraries also
+      define or refer to `main`, `_end`, `_edata`, `__bss_start`, `__emutls_get_address`, so lld exports those from the
+      executable, in the order it meets them in the libraries (and the GNU hash table orders a library's dynsym by bucket,
+      the integrated assembler sorts symbols by name). Now per model, in each library's own order, as GNU as assembly
+      linked with a SysV hash: all 18 binaries (6 x 3 models) byte-identical to the firmware link (`tools/mkstubs.sh`).
+      That needed reproducible builds: ESPHome's "compiled" time is the commit's (`BUILD_TIME`, `LC_ALL=C`: "Okt" vs "Oct").
+      Device side (`update.c`): HA select "Online updates" off/beta/release (settings field 15, off by default) and an
+      ESPHome update entity (messages 116-118); GitHub's API (`/releases/latest`, `/releases?per_page=1`), bundle download
+      through the firmware's libcurl 7.50.1 (dlopen; OpenSSL, CA store has USERTrust/DigiCert/ISRG roots), sockets opened
+      by us as group 3990 (curl's own would be firewalled), `ota_handoff` -> root, which takes `update.pub` or the release key.
+      `tests/fake_ha_update.py` (fake GitHub + aioesphomeapi + installer): 19 checks, incl. unkeyed channel/install refused,
+      wrong-key bundle refused before root, channel kept across restarts. fake_ha_esphome 93/93, ota_push_test all good.
+      The firmware's libcurl under qemu-arm (donut rootfs, names given with CURLOPT_RESOLVE: no netd there):
+      api.github.com TLS 1.2 ECDHE-ECDSA-AES128-GCM, Sectigo chain verified from /system/etc/security/cacerts, 200; the
+      download's 302 to release-assets.githubusercontent.com followed, 200 (ECDHE-RSA-CHACHA20).
+      Versions: first semver `0.3.0-rc.<commit count>`, which needed VERSION bumped after every release (HA ranks 0.3.0
+      above its candidates). Now the commit time in UTC, `2026.10.02.091530`, the same for beta and release of a commit:
+      AwesomeVersion 25 (HA's) takes it as CalVer and orders it right across day and month boundaries; a suffix of any
+      kind (`+sha`, `-dev`, `.dev0`) makes it "unknown" and incomparable, so local builds (`+<commit id>`) are offered
+      whatever is on the channel (HA: incomparable and different = update available).
+      Secret set 2026-10-02 (environment `release`). Open: branch protection on main/release, first real beta; on a device: DNS through netd and the egress lock's group match
+      on curl's sockets.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

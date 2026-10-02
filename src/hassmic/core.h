@@ -4,9 +4,14 @@
 #include <pthread.h>
 #include <stddef.h>
 
-#define VERSION "0.3.0"
+#ifndef VERSION
+#define VERSION "0"            /* the Makefile passes the commit's time in UTC, 2026.10.02.091530 */
+#endif
 #ifndef BUILD
 #define BUILD "dev"            /* the Makefile passes git describe */
+#endif
+#ifndef BUILD_TIME
+#define BUILD_TIME __DATE__ " " __TIME__   /* the Makefile passes the commit's time: builds repeat byte for byte */
 #endif
 
 enum state { IDLE, LISTENING, THINKING, SPEAKING };

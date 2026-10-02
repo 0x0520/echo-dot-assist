@@ -127,12 +127,12 @@ unsigned mdns_resolve4(const char *host)
 
 /* A socket owned by the real group, if runas -r gave us one: the egress lock lets that group reach any address, while
  * the effective group stays what the mixer wants.  The filesystem group is per thread and switched back at once. */
-static int net_socket(int family)
+int net_socket(int family, int type, int protocol)
 {
     gid_t r, e, s; int fd;
-    if (getresgid(&r, &e, &s) || r == e) return socket(family, SOCK_STREAM, 0);
+    if (getresgid(&r, &e, &s) || r == e) return socket(family, type, protocol);
     setfsgid(r);
-    fd = socket(family, SOCK_STREAM, 0);
+    fd = socket(family, type, protocol);
     setfsgid(e);
     return fd;
 }
@@ -157,7 +157,7 @@ int net_connect(const char *host, const char *port, int timeout_s)
     int fd = -1;
     for (struct addrinfo *p = list; p && fd < 0; p = p->ai_next) {
         struct timeval tv = { timeout_s, 0 };           /* connect() obeys the send timeout */
-        if ((fd = net_socket(p->ai_family)) < 0) continue;
+        if ((fd = net_socket(p->ai_family, SOCK_STREAM, 0)) < 0) continue;
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv); setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         if (connect(fd, p->ai_addr, p->ai_addrlen)) { close(fd); fd = -1; }
     }

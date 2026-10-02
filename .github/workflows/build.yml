@@ -1,0 +1,205 @@
+# Builds every model, runs the PC tests, and publishes the update bundles that online updates install (src/hassmic/update.c).
+#   push to main     prerelease  v<version>-beta  (the "beta" channel)
+#   push to release  release     v<version>       (the "release" channel)
+#   pull request     build and test only
+# The version is the commit's time in UTC, 2026.10.02.091530 (make version): nothing to bump, and a commit published
+# as beta and later as release has the same version, so an Echo on beta is not offered the same build again.
+# The firmware is not public: device binaries link against stand-ins for the stock libraries (make STUBS=1,
+# devices/<codename>/stubs/, tools/mkstubs.sh), which gives the same binaries byte for byte.  Bundles are signed with the
+# release key (secret RELEASE_SIGNING_KEY: base64 of secrets/release.key); Echos check them against keys/release.pub.
+# The key is a secret of the environment "release", which only main and release may use: only the release job names
+# it, so builds of pull requests and other branches never run with it, and their bundles are signed with a throwaway key.
+# Under nektos/act everything runs except the publishing itself, which only says what it would do.
+name: build
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NDK_URL: https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip
+  NDK_SHA256: ad7ce5467e18d40050dc51b8e7affc3e635c85bd8c59be62de32352328ed467e
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                # earlier tags
+      - id: v
+        run: |
+          version=$(make -s version RELEASE=1)
+          case "$version" in 20[0-9][0-9].[01][0-9].[0-3][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) echo "::error::odd version '$version'"; exit 1;; esac
+          if [ "$GITHUB_REF" = refs/heads/release ]; then tag=v$version prerelease=false; else tag=v$version-beta prerelease=true; fi
+          publish=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && { [ "$GITHUB_REF" = refs/heads/main ] || [ "$GITHUB_REF" = refs/heads/release ]; }; then
+              publish=true
+              # a run again for the same commit (re-run, or a push that only moved the branch back)
+              if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then echo "::notice::$tag is published already"; publish=false; fi
+          fi
+          echo "version=$version tag=$tag prerelease=$prerelease publish=$publish"
+          { echo "version=$version"; echo "tag=$tag"; echo "prerelease=$prerelease"; echo "publish=$publish"; } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [donut, biscuit, radar]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                # git describe, compiled in
+
+      # Under act the toolchains are on a volume shared by the jobs (DEVELOPMENT.md): that is the cache there, and a
+      # restore would unpack over a compiler another job is running ("Text file busy").
+      - name: NDK cache
+        if: ${{ !env.ACT }}
+        id: ndk
+        uses: actions/cache@v4
+        with:
+          path: toolchain/android-ndk-r21e
+          key: ndk-r21e
+      - name: NDK r21e
+        if: steps.ndk.outputs.cache-hit != 'true'
+        run: |
+          [ -x toolchain/android-ndk-r21e/ndk-build ] && exit 0      # act with toolchain/ on a volume (DEVELOPMENT.md)
+          mkdir -p toolchain
+          curl -fsSL -o ndk.zip "$NDK_URL"
+          echo "$NDK_SHA256  ndk.zip" | sha256sum -c -
+          unzip -q ndk.zip -d toolchain && rm ndk.zip
+
+      - name: Build
+        run: |
+          make -j"$(nproc)" DEVICE=${{ matrix.device }} STUBS=1 RELEASE=1 all build/otatool-host
+          [ "$(make -s version RELEASE=1)" = "${{ needs.version.outputs.version }}" ]
+
+      # The bundling as the release job does it, with a key of its own: checks the build is complete.  The release key
+      # is not here: this job runs whatever code the branch or pull request brings.
+      - name: Bundle (throwaway key)
+        run: |
+          mkdir -p secrets
+          build/otatool-host keygen secrets/throwaway.key secrets/throwaway.pub
+          DEVICE=${{ matrix.device }} scripts/bundle.sh secrets/throwaway.key "${{ needs.version.outputs.version }}"
+          build/otatool-host verify secrets/throwaway.pub build/${{ matrix.device }}/hassmic.bundle build/${{ matrix.device }}/hassmic.bundle.sig
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.device }}
+          path: |
+            build/${{ matrix.device }}/hassmic
+            build/${{ matrix.device }}/runas
+            build/${{ matrix.device }}/otatool
+            build/${{ matrix.device }}/latency
+            build/${{ matrix.device }}/mixcap
+            build/${{ matrix.device }}/mixplay
+            build/${{ matrix.device }}/pryon_test
+          if-no-files-found: error
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libopus-dev libcurl4 netcat-openbsd ffmpeg sbc-tools > /dev/null
+          python -m venv .venv && .venv/bin/pip install -q -r tests/requirements.txt
+      - name: Build
+        run: make build/hassmic-host build/otatool-host
+      - name: Unit tests
+        run: make unit
+      - name: Push updates
+        run: sh tests/ota_push_test.sh
+      - name: Online updates
+        run: .venv/bin/python tests/fake_ha_update.py
+      - name: ESPHome native API
+        run: .venv/bin/python tests/fake_ha_esphome.py
+
+  release:
+    needs: [version, build, test]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: release                # the signing key; the environment admits main and release only
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: build
+          pattern: build-*
+      - name: Sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          [ -n "$RELEASE_SIGNING_KEY" ] || { echo "::error::secret RELEASE_SIGNING_KEY missing in the environment release"; exit 1; }
+          make -s build/otatool-host
+          mkdir -p secrets dist
+          (umask 077; echo "$RELEASE_SIGNING_KEY" | base64 -d > secrets/release.key)
+          for a in build/build-*; do
+              d=${a#build/build-}
+              mkdir -p build/$d; cp -r $a/. build/$d/       # the artifacts as the build left them (otatool pack sets modes)
+              DEVICE=$d scripts/bundle.sh secrets/release.key "$VERSION"
+              build/otatool-host verify keys/release.pub build/$d/hassmic.bundle build/$d/hassmic.bundle.sig > /dev/null ||
+                  { echo "::error::$d: bundle does not verify against keys/release.pub: secret and public key differ"; rm -f secrets/release.key; exit 1; }
+              cp build/$d/hassmic.bundle dist/hassmic-$d.bundle; cp build/$d/hassmic.bundle.sig dist/hassmic-$d.bundle.sig
+          done
+          rm -f secrets/release.key
+          [ "$(ls dist | wc -l)" = $(( 2 * $(ls -d build/build-* | wc -l) )) ] || { echo "::error::a bundle is missing"; ls -l dist; exit 1; }
+          ls -l dist
+      - name: Notes
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          # what changed since the last release; for a beta, since the last beta or release
+          prev=$(git tag -l 'v*' --sort=-creatordate | grep -vx "$TAG" | { [ "$PRERELEASE" = true ] && cat || grep -v -e '-beta$'; } | head -1)
+          {
+              if [ "$PRERELEASE" = true ]; then echo "Beta, from main ($(git rev-parse --short HEAD))."
+              else echo "Release ($(git rev-parse --short HEAD))."; fi
+              echo
+              git log --no-merges --format='- %s' ${prev:+$prev..}HEAD | head -40
+              echo
+              echo "Install from Home Assistant: the Echo's \"Online updates\" select, then its firmware update entity. Bundles are signed with the release key (keys/release.pub)."
+          } > notes.md
+          cat notes.md; ls -l dist
+      - name: Publish
+        if: ${{ !env.ACT }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then flags="--prerelease --latest=false" title="$VERSION (beta)"; else flags="--latest" title=$VERSION; fi
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$title" --notes-file notes.md $flags
+      - name: Publish (act, dry run)
+        if: ${{ env.ACT }}
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: echo "would create release $TAG (prerelease=$PRERELEASE) at $GITHUB_SHA with $(ls dist | tr '\n' ' ')"

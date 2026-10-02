@@ -87,6 +87,11 @@ netwatch() {
 # check is the one that counts - unpacked into a fresh root-owned directory and made current, if it was built for this
 # model (its device.conf names the product this Echo reports).  This runs in the firewall service so that it can restart
 # the satellite service.
+# Two keys count: the owner's (update.pub, written by install-system.sh: push updates) and the project's release key
+# (keys/release.pub, in every build: the online updates hassmic downloads once the owner switches them on in Home
+# Assistant, update.c).  The release key of the copy that runs wins over the factory copy's: both are root's, written
+# from bundles that verified, and so a new release key can come with an update signed by the old one.
+release_pub() { for k in $D/release.pub $SYS/release.pub; do [ -s $k ] && { echo $k; return; }; done; }
 rejected() { echo "== update rejected: $1"; rm -rf $new; echo "FAILED $1" > $IN/result.tmp; }
 # The owner tried the installed update and approved it (ota-push.sh asks; the approval is signed with the update key,
 # for this version, see ota.c): it becomes the factory copy on the system partition, bootstrap included.  Only if it is
@@ -116,14 +121,19 @@ ota_watch() {
         [ -f $IN/request ] || continue
         rm -f $IN/request $IN/result
         new=$OTA/v$(cut -d. -f1 /proc/uptime)-$$
+        key=
+        for k in $SYS/update.pub $(release_pub); do
+            [ -s $k ] && $SYS/otatool verify $k $IN/bundle $IN/bundle.sig > /dev/null 2>&1 && { key=$k; break; }
+        done
         if [ ! -f $SYS/update.pub ]; then echo "FAILED no update key on this device (install-system.sh puts it there)" > $IN/result.tmp
-        elif ! ver=$($SYS/otatool install $SYS/update.pub $IN/bundle $IN/bundle.sig $new 2>&1); then
+        elif [ -z "$key" ]; then rejected "the signature verifies against neither the update key nor the release key"
+        elif ! ver=$($SYS/otatool install $key $IN/bundle $IN/bundle.sig $new 2>&1); then
             rejected "$(echo "$ver" | tail -1)"
         elif prod=$(. $new/device.conf 2>/dev/null && echo "$PRODUCT"); [ "$prod" != "$(getprop ro.product.device)" ]; then
             rejected "version $ver is built for ${prod:-an unknown model}, this Echo is $(getprop ro.product.device); not installed"
         elif ! { chmod 755 $new && [ -f $new/main.sh ] && $new/runas $DAEMON_USER shell $new/hassmic -T > /dev/null 2>&1; }; then  # the daemon's user can really run it
             rejected "version $ver does not run as the daemon's user (self-check failed), not installed"
-        elif [ -f $new/otatool ] && ! $new/otatool verify $SYS/update.pub $IN/bundle $IN/bundle.sig > /dev/null 2>&1; then
+        elif [ -f $new/otatool ] && ! $new/otatool verify $key $IN/bundle $IN/bundle.sig > /dev/null 2>&1; then
             # Approved, its otatool becomes the one on the system partition that checks every later update: so it must
             # pass that check itself.
             rejected "version $ver brings an otatool that does not verify it; not installed"
@@ -132,7 +142,7 @@ ota_watch() {
             ln -sfn $new $OTA/current                   # toybox: replaces the link itself (checked on the device); no mv -T there
             echo 0 > $OTA/tries
             for d in $OTA/v*; do [ "$d" = "$new" ] || [ "$d" = "$old" ] || rm -rf "$d"; done        # keep the previous one
-            echo "== update $ver installed, restarting"
+            echo "== update $ver installed (signed with ${key##*/}), restarting"
             echo "OK $ver" > $IN/result.tmp
         fi
         rm -f $IN/bundle $IN/bundle.sig
@@ -181,6 +191,8 @@ satellite)
     } >> $LOG 2>&1
     # A binary in /data wins over the installed one: lets a new build be tried without a trip through TWRP.
     BIN=$D/hassmic; [ -x /data/local/hassmic/hassmic ] && BIN=/data/local/hassmic/hassmic
+    # online updates: hassmic checks downloads against the key root will check them against (ota.c)
+    export HASSMIC_RELEASE_PUB=$(release_pub)
     netwatch >> $LOG 2>&1 &
     # mDNS through the stock avahi-daemon: hassmic prints the service file for its protocol, name and MAC address.
     # The MAC in it is how Home Assistant tells devices apart.  On radar wlan0 appears only later in the boot, hassmic

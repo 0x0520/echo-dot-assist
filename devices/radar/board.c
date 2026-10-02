@@ -8,6 +8,7 @@ const struct board board = {
     .project = "hassmic.echo-2",
     .product = "Echo 2 (hassmic)",
     .default_name = "Echo",
+    .codename = "radar",
 
     /* mtk-kpd: action (•) = KEY_HELP, mic mute = KEY_MUTE (and a volume key); "keys": volume ± (donut's event3 does
      * not exist here, so no button worked) */

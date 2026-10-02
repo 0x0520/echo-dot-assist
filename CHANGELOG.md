@@ -2,6 +2,17 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-10-02
+
+- **Online updates from Home Assistant** ([issue #3](https://github.com/Gamer92000/echo-dot-assist/issues/3)), off by
+  default. A new "Online updates" select picks a channel: `release` (releases only), `beta` (every build of the main
+  branch, plus releases) or `off`. The Echo's "Firmware" update entity then shows when there is something newer and
+  installs it with one click, without a PC. The builds come from the project's GitHub releases; the Echo only installs
+  them if they are signed with the project's release key, and goes back to the previous version by itself if the new
+  one does not stay up. Echos installed before this need one push from the PC (or a fresh install) first, to bring that
+  key along. Versions are now the
+  date and time of the build's code (UTC), like `2026.10.02.091530`.
+
 ## 2026-10-01
 
 - **First install fixed** ([issue #2](https://github.com/Gamer92000/echo-dot-assist/issues/2)). Installing on an

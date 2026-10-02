@@ -71,6 +71,7 @@ jobs:
             kernel_sha256: 629d5661dc3b554fb0214b4635d80bb20f7977c6e814810945de31cfa86d1a0f
             kcc: aarch64-linux-android-4.9
             kcross: aarch64-linux-android-
+            kcc_sha256: 6465e57d85ac645a5ebe5fe0537dc3f868f85ea6bbd8d7e1d0de06b349168067
             kcc_url: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/961622e926a1b21382dba4dd9fe0e5fb3ee5ab7c.tar.gz
           - device: biscuit
             ksrc: linux-3.18.19
@@ -78,6 +79,7 @@ jobs:
             kernel_sha256: 3d80d3b8d98c3141d9e26f6c25d73575d688f1c1651b8076f0f2bfd76325b7c9
             kcc: arm-eabi-4.8
             kcross: arm-eabi-
+            kcc_sha256: fcd6082697317cfa44c0b876e5ca8285a07a13c763c59c7a962e44273e0668a0
             kcc_url: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.8/+archive/26e93f6af47f7bd3a9beb5c102a5f45e19bfa38a.tar.gz
           - device: radar
             ksrc: linux-3.18.19
@@ -85,6 +87,7 @@ jobs:
             kernel_sha256: 3d80d3b8d98c3141d9e26f6c25d73575d688f1c1651b8076f0f2bfd76325b7c9
             kcc: arm-eabi-4.8
             kcross: arm-eabi-
+            kcc_sha256: fcd6082697317cfa44c0b876e5ca8285a07a13c763c59c7a962e44273e0668a0
             kcc_url: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.8/+archive/26e93f6af47f7bd3a9beb5c102a5f45e19bfa38a.tar.gz
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +110,8 @@ jobs:
           mkdir -p toolchain
           curl -fsSL -o ndk.zip "$NDK_URL"
           echo "$NDK_SHA256  ndk.zip" | sha256sum -c -
-          unzip -q ndk.zip -d toolchain && rm ndk.zip
+          unzip -q ndk.zip -d toolchain
+          rm ndk.zip
 
       - name: Kernel build tools
         if: matrix.kernel
@@ -125,11 +129,27 @@ jobs:
         if: matrix.kernel && steps.kernel.outputs.cache-hit != 'true'
         run: |
           [ -f toolchain/${{ matrix.ksrc }}/Makefile ] && [ -x toolchain/${{ matrix.kcc }}/bin/${{ matrix.kcross }}gcc ] && exit 0
+          # googlesource cuts or throttles a download now and then (2026-10-02: two of three jobs, tar on a broken stream):
+          # into a file, retried, and checked before anything is unpacked
+          fetch() {
+              for i in 1 2 3 4 5; do
+                  code=$(curl -sSL --retry 3 --retry-all-errors -o "$2" -w '%{http_code}' "$1") && [ "$code" = 200 ] && $3 "$2" && return 0
+                  echo "::warning::$1: try $i failed (HTTP ${code:-none}, $(stat -c %s "$2" 2>/dev/null || echo 0) bytes)"; sleep $((i * 15))
+              done
+              echo "::error::$1: no complete download"; return 1
+          }
+          kernel_ok() { echo "${{ matrix.kernel_sha256 }}  $1" | sha256sum -c --quiet -; }
+          # one command a line: bash -e does not stop at a failure inside a && list
           mkdir -p toolchain/${{ matrix.kcc }}
-          curl -fsSL -o kernel.tar.xz "${{ matrix.kernel }}"
-          echo "${{ matrix.kernel_sha256 }}  kernel.tar.xz" | sha256sum -c -
-          tar xf kernel.tar.xz -C toolchain && rm kernel.tar.xz
-          curl -fsSL "${{ matrix.kcc_url }}" | tar xz -C toolchain/${{ matrix.kcc }}
+          fetch "${{ matrix.kernel }}" kernel.tar.xz kernel_ok
+          tar xf kernel.tar.xz -C toolchain
+          rm kernel.tar.xz
+          # googlesource makes the archive anew each time (the gzip differs), so the pin is on what it holds: every file
+          fetch "${{ matrix.kcc_url }}" kcc.tar.gz "gzip -t"
+          tar xzf kcc.tar.gz -C toolchain/${{ matrix.kcc }}
+          rm kcc.tar.gz
+          digest=$(cd toolchain/${{ matrix.kcc }} && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+          [ "$digest" = "${{ matrix.kcc_sha256 }}" ] || { echo "::error::${{ matrix.kcc }}: files differ from the pinned ones ($digest)"; exit 1; }
           # aarch64-linux-android-4.9's gcc and g++ are Python 2 wrappers (/usr/bin/python) that only exec real-<name>
           # (and goma): go direct
           cd toolchain/${{ matrix.kcc }}/bin
@@ -178,7 +198,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libopus-dev libcurl4 netcat-openbsd ffmpeg sbc-tools > /dev/null
-          python -m venv .venv && .venv/bin/pip install -q -r tests/requirements.txt
+          python -m venv .venv
+          .venv/bin/pip install -q -r tests/requirements.txt
       - name: Build
         run: make build/hassmic-host build/otatool-host
       - name: Unit tests

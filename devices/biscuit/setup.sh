@@ -73,12 +73,16 @@ step_unlock() {
         task "Restarting into TWRP" adb reboot recovery || return 1
         wait_adb recovery; return
     fi
+    local adir
     [ -d $FW/amonet ] || task "Unpacking amonet" unzip -q $FW/$AMONET -d $FW/amonet || return 1
+    # run fastbrick.sh from wherever the zip put it (the release zip keeps it in a folder amonet/ of its own)
+    adir=$(find $FW/amonet -name fastbrick.sh -print -quit 2>/dev/null); adir=${adir%/*}
+    [ -n "$adir" ] || [ -n "$DRY" ] || { fail "no fastbrick.sh in $FW/amonet; delete that folder and try again"; return 1; }
     tell "Put the Echo into fastboot mode" "Hold the action button (•) and plug the power in." \
         "Keep holding until the ring shows a green light."
     waitfor "Waiting for fastboot|Fastboot" '[ -n "$(fastboot devices)" ]' "No green light? Unplug the power and try again." || return 1
     tell "amonet asks you to type YES, and for a key press at the end" "${RED}${B}Do not interrupt it once it runs: that can brick the Echo.$N"
-    live "amonet fastbrick (about a minute)" in_dir $FW/amonet/amonet ./fastbrick.sh || return 1
+    live "amonet fastbrick (about a minute)" in_dir "$adir" ./fastbrick.sh || return 1
     wait_adb recovery
 }
 

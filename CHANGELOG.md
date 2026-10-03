@@ -2,6 +2,14 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-10-03
+
+- **Guided setup: Echo Dot 3 unlock fixed.** `scripts/setup.sh` stopped at "Waiting for the Echo's bootrom" with
+  "./bootrom-step.sh: No such file or directory": the kamakiri zip unpacks into a folder of its own, and the step looked
+  for its scripts one level too high. It now finds them wherever the zip puts them, and answers the Enter that
+  kamakiri asks for after the handshake. If you hit this, run `scripts/setup.sh` again; nothing needs deleting. The
+  Echo Dot 2 and Echo 2 steps find amonet the same way now, in case a later zip is laid out differently.
+
 ## 2026-10-02
 
 - **Online updates from Home Assistant** ([issue #3](https://github.com/Gamer92000/echo-dot-assist/issues/3)), off by

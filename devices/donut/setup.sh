@@ -78,13 +78,18 @@ step_unlock() {
         task "Restarting into TWRP" adb reboot recovery || return 1
         wait_adb recovery; return
     fi
+    local kdir
     [ -d $FW/kamakiri ] || task "Unpacking kamakiri" unzip -q $FW/$KAMAKIRI -d $FW/kamakiri || return 1
+    # the zip may keep its scripts in a folder of their own: run them from wherever bootrom-step.sh landed
+    kdir=$(find $FW/kamakiri -name bootrom-step.sh -print -quit 2>/dev/null); kdir=${kdir%/*}
+    [ -n "$kdir" ] || [ -n "$DRY" ] || { fail "no bootrom-step.sh in $FW/kamakiri; delete that folder and try again"; return 1; }
     tell "Hold the action button (•) and plug the USB cable in" "Keep holding until the next line turns green."
-    task "Waiting for the Echo's bootrom, handshake" in_dir $FW/kamakiri ./bootrom-step.sh || return 1
+    # bootrom-step.sh asks for Enter after the handshake; task's stdin is /dev/null, so answer it here
+    task "Waiting for the Echo's bootrom, handshake" in_dir "$kdir" sh -c "yes '' | ./bootrom-step.sh" || return 1
     say "${B}Release the button.$N"
     waitfor "Waiting for hacked fastboot (rainbow ring)|Hacked fastboot" '[ -n "$(fastboot devices)" ]' \
         "No rainbow? Unplug everything and try this step again." || return 1
-    task "Flashing TWRP" in_dir $FW/kamakiri ./fastboot-step.sh || return 1
+    task "Flashing TWRP" in_dir "$kdir" ./fastboot-step.sh || return 1
     wait_adb recovery
 }
 

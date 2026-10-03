@@ -131,8 +131,10 @@ step_root() {
 
 step_build() {
     if [ ! -d $FW/rootfs/system/lib ]; then
+        # rdump does not create its target, and debugfs exits 0 whatever happens: the result is checked by hand (issue #4)
         task "Unpacking the firmware" sh -c "unzip -o -q $FW/$FIRMWARE_FILE payload.bin -d $FW &&
-            python3 tools/payload_dump.py $FW/payload.bin $FW/images && debugfs -R 'rdump / $FW/rootfs' $FW/images/system.img" || return 1
+            python3 tools/payload_dump.py $FW/payload.bin $FW/images && mkdir -p $FW/rootfs &&
+            debugfs -R 'rdump / $FW/rootfs' $FW/images/system.img && [ -d $FW/rootfs/system/lib ]" || return 1
     fi
     [ -d $FW/boot-root ] || task "Unpacking boot-root" unzip -q $FW/$BOOTROOT -d $FW/boot-root || return 1
     task "Building" make -s all DEVICE=$DEVICE || return 1

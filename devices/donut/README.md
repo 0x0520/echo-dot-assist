@@ -104,6 +104,7 @@ The tools link against Amazon's libraries, so the firmware is unpacked on the PC
 ```sh
 unzip firmware/donut/update-kindle-*.bin payload.bin -d firmware/donut/
 python3 tools/payload_dump.py firmware/donut/payload.bin firmware/donut/images
+mkdir -p firmware/donut/rootfs        # debugfs does not create it
 debugfs -R "rdump / firmware/donut/rootfs" firmware/donut/images/system.img
 unzip firmware/donut/boot-root.zip -d firmware/donut/boot-root    # the installer uses its patch/magiskpolicy32
 make                                      # ARM binaries into build/donut/

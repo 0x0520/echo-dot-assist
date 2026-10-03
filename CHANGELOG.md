@@ -16,6 +16,11 @@ What changed for people using the Echo, newest first. Details and measurements a
   you: hold the dot button, plug in, and when it asks, release the button and press Enter. Nothing is written to the
   Echo before that point, so an Echo stuck there is unchanged; unplug it and run `scripts/setup.sh` again.
 
+- **Guided setup: the Echo Dot 3's build step unpacks the firmware again** ([issue
+  #4](https://github.com/Gamer92000/echo-dot-assist/issues/4)). On a PC where `firmware/donut/rootfs` did not exist yet,
+  the unpack silently wrote nothing and the build then stopped with "missing .../libmixerAPI.so". The folder is now
+  created first, and the step fails if the firmware did not come out. The manual steps in the README had the same gap.
+
 - **`scripts/probe.sh` says when there is no Echo on adb** instead of listing every file as different. A stock Echo
   has no adb until it is rooted, so this check only works after that.
 

@@ -68,10 +68,10 @@ Keep the Echo unplugged (no power, no USB) until step 1 asks for it.
 
 ```sh
 sudo cp scripts/51-echo-unlock.rules /etc/udev/rules.d/ && sudo udevadm control --reload   # USB without sudo; keeps ModemManager off the bootrom
-cd firmware/donut && unzip kamakiri-donut-v1.0.0.zip -d kamakiri && cd kamakiri
-./bootrom-step.sh          # start it, THEN plug the Echo in while holding the action (dot) button
-./fastboot-step.sh         # when the ring shows a rotating rainbow; ends in TWRP (white ring)
-cd ../../..
+unzip firmware/donut/kamakiri-donut-v1.0.0.zip -d firmware/donut/kamakiri
+K=$(dirname "$(find firmware/donut/kamakiri -name bootrom-step.sh)")   # the zip keeps its scripts in a folder of their own
+(cd "$K" && ./bootrom-step.sh)    # start it, THEN plug the Echo in while holding the action (dot) button
+(cd "$K" && ./fastboot-step.sh)   # when the ring shows a rotating rainbow; ends in TWRP (white ring)
 ```
 
 Flash the firmware into both A/B slots, then root:

@@ -9,7 +9,8 @@ from aioesphomeapi.model import UpdateInfo, UpdateState, UpdateCommand
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT, GH_PORT = 16963, 16964
-OTATOOL = f"{ROOT}/build/otatool-host"
+OTATOOL = f"{ROOT}/build/otatool-host"              # the Echo's, for root's installer
+PCTOOL = [sys.executable, f"{ROOT}/scripts/otatool.py"]    # the PC's, as CI signs releases
 fails = 0
 
 
@@ -77,13 +78,13 @@ async def wait_for(pred, secs=10):
 async def main():
     tmp = tempfile.mkdtemp(); state = os.path.join(tmp, "state"); os.makedirs(state)
     pub, sec = os.path.join(tmp, "release.pub"), os.path.join(tmp, "release.key")
-    subprocess.run([OTATOOL, "keygen", sec, pub], check=True)
-    subprocess.run([OTATOOL, "keygen", sec + ".evil", pub + ".evil"], check=True)
+    subprocess.run(PCTOOL + ["keygen", sec, pub], check=True)
+    subprocess.run(PCTOOL + ["keygen", sec + ".evil", pub + ".evil"], check=True)
     main_sh = os.path.join(tmp, "main.sh"); open(main_sh, "w").write("#!/bin/sh\necho main\n")
     # as CI tags them: v<commit time, UTC>, and -beta behind it for the beta channel; the bundle has the bare version
     for tag, key in (("v2099.01.02.120000-beta", sec), ("v2099.01.01.093000", sec), ("v2099.01.03.000000-beta", sec + ".evil")):
         out = os.path.join(tmp, f"{tag}.bundle")
-        subprocess.run([OTATOOL, "pack", key, tag[1:].removesuffix("-beta"), out, main_sh], check=True, capture_output=True)
+        subprocess.run(PCTOOL + ["pack", key, tag[1:].removesuffix("-beta"), out, main_sh], check=True, capture_output=True)
         GitHub.files[(tag, "hassmic-donut.bundle")] = open(out, "rb").read()
         GitHub.files[(tag, "hassmic-donut.bundle.sig")] = open(out + ".sig", "rb").read()
     GitHub.releases = [release("v2099.01.02.120000-beta", True, "Release candidate über \"main\".\n" + "x" * 400), release("v2099.01.01.093000", False, "A release.")]

@@ -28,11 +28,12 @@ rules. `DEVICE` picks one (default `donut`). The adb scripts check it against th
 | Path | What |
 |---|---|
 | `devices/` | one directory per Echo model (`donut`, `biscuit`, `radar`): `device.mk`, `board.c`, `device.conf`, `hassmic.rc`, `sepolicy.rules`, `setup.sh`, install instructions |
-| `src/hassmic/` | the daemon: core (capture, wake word, playback, LEDs, buttons), `sound_pryon.c` (optional sound detection, `docs/re-aed.md`), `proto_esphome.c`, `proto_wyoming.c`, `arb.c` (wake word arbitration between Echos), `micdenoise.c` (RNNoise on the mic audio sent to the pipeline), `micgain.c` (gain of the mic audio sent to the pipeline), `sendspin.c`, `a2dp.c` (Bluetooth speaker both ways), `btout.c` (playing on a Bluetooth speaker: the mixer's A2DP route, `docs/re-a2dp-source.md`), `ble.c`, push updates (`ota.c`), online updates (`update.c`), `adbwifi.c` (the debug access switch) |
+| `src/hassmic/` | the daemon: core (capture, wake word, playback, LEDs, buttons), `sound_pryon.c` (optional sound detection, `docs/re-aed.md`), `proto_esphome.c`, `proto_wyoming.c`, `arb.c` (wake word arbitration between Echos), `micdenoise.c` (RNNoise on the mic audio sent to the pipeline), `micgain.c` (gain of the mic audio sent to the pipeline), `sendspin.c`, `a2dp.c` (Bluetooth speaker both ways), `btout.c` (playing on a Bluetooth speaker: the mixer's A2DP route, `docs/re-a2dp-source.md`), `ble.c`, push updates (`ota.c`), online updates (`update.c`), `adbwifi.c` (the debug access switch), `wifimotion.c` (experimental motion sensor from the Wi-Fi driver's receive level) |
+| `src/kmod/` | kernel modules for Wi-Fi motion, hooking the Wi-Fi driver's receive path: `hassmic_rcpi.c` (biscuit, radar), `hassmic_rcpi4m.c` (donut); built by `make` when the model's kernel sources and compiler are in `toolchain/`, see below |
 | `src/tools/` | `mixcap`, `mixplay`, `pryon_test`, `aed_test` (stock sound detector, `docs/re-aed.md`), `latency`, `otatool`, `runas` (AIPC refuses uid 0, the image has no `su`), `curlspy`, `hciscan` (raw HCI on `/dev/stpbt`), `a2dpprobe` (stands in for the Bluetooth stack on the mixer's A2DP output) |
 | `src/include/` | C headers for the reversed `libmixerAPI.so` and `libpryon.so` |
 | `src/third_party/` | monocypher 4.0.2, `dr_flac.h`, `minimp3.h`, libfreeaptx 0.2.2, RNNoise 0.1.1 (own licences, see README) |
-| `scripts/` | PC side: `setup.sh` (guided install), `artifacts.sh` (Amazon artifacts for an installed Echo: more wake words, the sound detection model), `deploy.sh`, `probe.sh`, `capture-test.sh`, `mic-compare.sh` (micRaw against micAsr on a running Echo), `wifi-join.sh`, `install-system.sh`, `ota-push.sh`, `bundle.sh` (packs and signs an update; also CI's), `adb-wifi.sh` (adb over Wi-Fi with the update key); `lib/device.sh` picks the model, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
+| `scripts/` | PC side: `setup.sh` (guided install), `artifacts.sh` (Amazon artifacts for an installed Echo: more wake words, the sound detection model), `deploy.sh`, `probe.sh`, `capture-test.sh`, `mic-compare.sh` (micRaw against micAsr on a running Echo), `wifi-join.sh`, `install-system.sh`, `ota-push.sh`, `bundle.sh` (packs and signs an update; also CI's), `otatool.py` (bundles on the PC: keys, signing, checking, pushing; the Echo's own is `src/tools/otatool.c`), `adb-wifi.sh` (adb over Wi-Fi with the update key); `lib/device.sh` picks the model, `lib/build.sh` builds the Echo's binaries or takes the commit's release build, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
 | `scripts/device/`, `scripts/system/` | run on the Echo, reading the model's `device.conf` next to them; boot integration (`boot.sh`, `main.sh`) |
 | `tools/` | `mkstubs.sh` (stand-ins for the stock libraries, for building without the firmware), OTA payload dumper, Thumb disassembly helpers, `qrun.sh` (device binaries under qemu-arm), `davs-fetch.py` |
 | `tests/` | protocol tests against the reference implementations |
@@ -55,13 +56,51 @@ make unit                                         # C unit tests
 .venv/bin/python tests/fake_ha.py [--qemu]        # Wyoming (wyoming)
 .venv/bin/python tests/fake_ma_sendspin.py        # Sendspin, as Music Assistant (aiosendspin)
 tests/ota_push_test.sh                            # signed push-update path end to end
+tests/otatool_test.sh                             # the PC's otatool (Python) against the Echo's (C)
 .venv/bin/python tests/fake_ha_update.py          # online updates: Home Assistant, GitHub and root's installer in one
 ```
 
 `tools/qrun.sh [-t secs] <arm-binary> args` runs a device binary on the PC under qemu-arm against
 `firmware/$DEVICE/rootfs`.
 
+The Wi-Fi motion kernel modules (`src/kmod/`) need the model's kernel sources and compiler in `toolchain/`; without
+them `make` leaves the module out and says so, and that Echo gets no Wi-Fi motion (donut falls back to its driver's
+`RX_STAT`, the last frame from anyone). `make kernel-tools` downloads them (`scripts/kernel-tools.sh`, about 115 MB,
+770 MB unpacked; the guided setup does it in its downloads step, CI before every build); the kernel needs `bc` to
+build:
+
+```sh
+make kernel-tools DEVICE=donut      # kernel 4.4.22 (arm64), aarch64-linux-android-4.9
+make kernel-tools DEVICE=radar      # biscuit, radar: kernel 3.18.19 (ARM), arm-eabi-4.8
+```
+
+The pins are in `device.mk` (`KSRC_URL`, `KSRC_SHA256`, `KCC_URL`, `KCC_DIGEST`), or the Makefile's defaults for the
+3.18 models: the sources by their checksum, the compiler by a digest over its files, since googlesource packs its
+archive anew for every download.
+
+The compilers are the ones Amazon built those kernels with (their version strings say so). The kernel config is in
+the repository: biscuit's and radar's `devices/<codename>/kconfig` is their kernel's own (IKCONFIG, read out of the
+firmware's `boot.img` with `scripts/extract-ikconfig`; device.mk `KCONFIG`); donut's kernel carries none, so its
+`devices/donut/kconfig` is a fragment on top of the arm64 defconfig (`KFRAG`), with what donut's own modules show
+(vermagic, no modversions, no signature).
+
 Trial runs on the device: `scripts/deploy.sh`, then `adb shell sh /data/local/hassmic/run.sh`.
+
+**The release build instead** (`scripts/lib/build.sh`): the scripts that need the Echo's binaries (`deploy.sh`,
+`install-system.sh`, `ota-push.sh`, the guided setup) take the bundle CI published of the checked-out commit when
+there is no NDK here, or with `PREBUILT=1` (`PREBUILT=0`: always build). That needs the tag CI made of the commit
+(`v<version>[-beta]`) to point at `HEAD` and no changes to tracked files; the bundle must verify against
+`keys/release.pub` (`scripts/otatool.py`), and its binaries go into `build/<codename>/`, listed in `PREBUILT` there,
+so a later build here replaces them instead of taking them as up to date. They are the same bytes as a build here
+(reproducible). `scripts/probe.sh` checks the Echo's libraries against `devices/<codename>/probe.md5`, the pinned
+firmware's checksums, so that path needs no unpacked firmware either; regenerate it when the firmware pin changes
+(command in `probe.sh`).
+
+**otatool on the PC is Python** (`scripts/otatool.py`, standard library only), so a prebuilt install needs no
+compiler at all. Monocypher's EdDSA is Ed25519 with BLAKE2b where Ed25519 has SHA-512, which no Python package offers;
+the arithmetic is RFC 8032's. The Echo keeps the C `otatool` (`src/tools/otatool.c`), which is what checks a bundle
+there, so the two are held to each other: `tests/otatool_test.sh` (signatures byte for byte, each one's bundles
+installed by the other), and CI checks every bundle it signs with both before it publishes.
 
 ## CI and releases
 
@@ -88,6 +127,10 @@ exports them in). They come out byte-identical to a firmware link. `tools/mkstub
 firmware and checks exactly that, for every binary of every model; run it when the code starts using another function
 of a stock library (a stub build then fails to link until it has). For the same reason the build is reproducible:
 ESPHome's "compiled" time is the commit's (`BUILD_TIME`), not the clock's.
+
+Wi-Fi motion's kernel module is built in CI for every model, against kernel.org's sources and the pinned AOSP compiler
+(`make kernel-tools`, as the guided setup), with the config from the repository; a model whose module does not build fails the job rather than ship without it.
+The modules come out byte-identical to local builds.
 
 **The release key.** `keys/release.pub` is in every build and install; root accepts bundles signed with it, next to the
 owner's `update.pub` (`scripts/system/main.sh`), but hassmic only downloads any once the owner picks a channel in Home

@@ -16,6 +16,7 @@
 set -e
 cd "$(dirname "$0")/.."
 . scripts/lib/device.sh; device_load adb
+. scripts/lib/build.sh
 [ "$INSTALL" = twrp-ab ] || die "$DEVICE installs with INSTALL=$INSTALL, which this script does not do ($DDIR/README.md)"
 MNT=/mnt/hm_system
 STAGE=/data/local/tmp/hm-install
@@ -26,10 +27,10 @@ TWRP=; [ "$1" = --twrp ] && { TWRP=1; shift; }
 if [ "$1" != --uninstall ]; then
     NAME=${1:-$DEFAULT_NAME}
     [ "$(adb get-state 2>/dev/null)" = device ] && device_check_firmware
-    make -s all build/otatool-host DEVICE=$DEVICE
+    build_binaries                      # built here or this commit's release build (PREBUILT, scripts/lib/build.sh)
     # Signing key for push updates.  The public half goes onto the read-only system partition and is what the device trusts.
     mkdir -p secrets
-    [ -f secrets/update.key ] || { build/otatool-host keygen secrets/update.key secrets/update.pub; echo "new update signing key: secrets/update.key (keep it, back it up)"; }
+    [ -f secrets/update.key ] || { python3 scripts/otatool.py keygen secrets/update.key secrets/update.pub; echo "new update signing key: secrets/update.key (keep it, back it up)"; }
     # Backup of the policy as boot-root left it, and the config boot.sh reads.  Both need the running OS.
     if [ "$(adb get-state 2>/dev/null)" = device ]; then
         mkdir -p device-logs/backup
@@ -53,8 +54,9 @@ if [ "$1" != --uninstall ]; then
     BASE=$(cut -d' ' -f1 $OUT/sepolicy.hassmic.base)
     WANT=$(md5sum $OUT/sepolicy.hassmic | cut -d' ' -f1)
 fi
-# What goes into /system/hassmic, whichever way it gets there.
-FILES="$OUT/hassmic $OUT/runas $(ls $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $OUT/otatool secrets/update.pub keys/release.pub $DDIR/device.conf
+# What goes into /system/hassmic, whichever way it gets there.  The tools and the Wi-Fi motion module are optional (no
+# kernel toolchain, no .ko): `|| true`, since an assignment takes the substitution's status and set -e would end here.
+FILES="$OUT/hassmic $OUT/runas $(ls $OUT/mixcap $OUT/mixplay $OUT/pryon_test $OUT/*.ko 2>/dev/null || true) $OUT/otatool secrets/update.pub keys/release.pub $DDIR/device.conf
        scripts/system/boot.sh scripts/system/main.sh scripts/system/sysinstall.sh scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh"
 
 if [ -z "$TWRP" ]; then

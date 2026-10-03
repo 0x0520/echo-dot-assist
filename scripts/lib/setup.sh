@@ -221,6 +221,7 @@ _pkg() {
     pacman:sqlite3|dnf:sqlite3) echo sqlite;;
     *:cc) echo gcc;;
     *:sha256sum) echo coreutils;;
+    apt:xz) echo xz-utils;;
     *) echo "$1";;
     esac
 }
@@ -288,6 +289,36 @@ need_files() {
         for i in {1..20}; do _tick "Waiting for ${#miss[@]} download(s)" $t0; sleep 0.1; done
     done
     _clr
+}
+
+# build_mode: where the Echo's binaries come from (scripts/lib/build.sh), asked once and kept in $OUT/setup.build: the
+# release build CI made of this commit, where GitHub has one (nothing to compile, so no NDK, kernel tools or firmware
+# unpacking), or a build here.  Sets BUILD_MODE and exports PREBUILT for the scripts the steps run.
+build_mode() {
+    local t m
+    if [ -f $OUT/setup.build ]; then m=$(cat $OUT/setup.build)
+    elif t=$(prebuilt_tag); then
+        ok "GitHub has a release build of this commit ($t)"
+        menu m "Use it (recommended): nothing to compile" "Build it here (Android NDK, 1 GB, and a compiler)"
+        [ "$m" = 0 ] && m=prebuilt || m=source
+    else
+        info "no release build of this commit on GitHub (changes here, or not published yet): it is built here"
+        m=source
+    fi
+    [ -n "$DRY" ] || echo $m > $OUT/setup.build
+    build_mode_set $m
+}
+build_mode_set() { BUILD_MODE=$1; if [ "$1" = prebuilt ]; then export PREBUILT=1; else export PREBUILT=0; fi; }
+
+# kernel_tools: what Wi-Fi motion's kernel module is built with (make kernel-tools: the model's kernel sources and the
+# compiler Amazon used), so that the build has it as CI's does.  Without them `make` quietly leaves the module out, and
+# the install once stopped over the missing file (issue #5).
+kernel_tools() {
+    [ -z "$DRY" ] && KERNEL_TOOLS_CHECK=1 make -s kernel-tools DEVICE=$DEVICE > /dev/null 2>&1 &&
+        { ok "kernel sources and compiler (Wi-Fi motion)"; return 0; }
+    mkdir -p toolchain
+    TASK_NOTE="du -ch toolchain/.kernel-tools.* 2>/dev/null | tail -1 | cut -f1" \
+        task "Downloading kernel sources and compiler for Wi-Fi motion (115 MB)" make -s kernel-tools DEVICE=$DEVICE
 }
 
 # USB_ONLY (the guided setup): the Echo being set up is the one on USB; installed ones on adb over Wi-Fi must not be

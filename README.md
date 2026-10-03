@@ -55,6 +55,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Equalizer (bass, mid, treble)                 | ✅ (Alexa app)          | ✅ sliders in HA                             | ❌                       |
 | Light ring follows the room's light           | ✅                      | ✅ same, or a fixed level from HA; illuminance sensor | ❌ (stock's automatic only) |
 | Sound detection (smoke alarm, glass, dog, …)  | ✅ Alexa Guard, checked in Amazon's cloud | optional, off by default: on the Echo only, less reliable ([details](#sound-detection)) | ❌ |
+| Motion sensor                                 | ❌                      | **experimental**, off by default: from the Wi-Fi signal ([details](#wifi-motion)) | ❌ |
 | Encrypted link to Home Assistant              | –                       | ✅ key set by Home Assistant                 | ❌ plain TCP             |
 | Talks to Amazon                               | always                  | never (firewalled)                           | never (firewalled)       |
 | Updates                                       | automatic, from Amazon  | signed: pushed from your PC, or online from Home Assistant (off by default) | signed, pushed from your PC |
@@ -75,7 +76,9 @@ Details:
   the device to perform Home Assistant actions" in each Echo's ESPHome options (Home Assistant shows a repair until
   then); give every Echo its own `NAME`. Other satellites (ESP32 and so on) are not part of it; Home Assistant itself then lets the first one
   that reports the wake word answer, and the Echo that is second now just goes quiet instead of flashing an error.
-- **Buttons**: action = talk without the wake word / pause and resume music / stop an alarm; volume in 10 % steps;
+- **Buttons**: action = talk without the wake word / pause and resume music / stop an alarm / cancel a request while
+  Home Assistant is still listening or thinking (as on a Voice PE; the wake word then cancels it too and listens
+  again; ESPHome only); volume in 10 % steps;
   mic-off is the hardware mute it always was (red ring, Alexa's own sounds). The LED ring shows listening, thinking,
   speaking, errors and mute. Silent and dark at boot.
 - **Music**: one source at a time, the newest wins. A phone starting over Bluetooth pauses Music Assistant (the whole
@@ -130,6 +133,24 @@ Details:
   - **Private**: it all happens on the Echo; nothing leaves it except the event to Home Assistant (a stock Echo uploads
     the recordings, and near misses for training). Costs about 13 % of one CPU core while on (Echo Dot 2).
   - ESPHome only, not with Wyoming. Background: [docs/re-aed.md](docs/re-aed.md).
+- **Wi-Fi motion** (**experimental**, off by default)<a id="wifi-motion"></a>: "Wi-Fi motion detection (experimental)"
+  turns the Echo into a motion sensor without any extra hardware. Someone walking between the Echo and your Wi-Fi router
+  changes how strongly the Echo receives the router, and "Wi-Fi motion (experimental)" (a motion binary sensor) goes on
+  while that happens and off 30 s after it stops, like a PIR sensor. "Wi-Fi motion sensitivity (experimental)", 1 to 10
+  (default 5), sets how much change counts. It is a first version, tried in one flat for a few minutes and one night,
+  where it mostly did what it should; please read:
+  - **Motion, not presence.** Someone sitting still does not show; an empty room and a quiet one look the same.
+  - **Only between the Echo and the router.** It sees best what crosses the path between them (also in the next room,
+    if the router is there); someone moving elsewhere in the room may not show at all.
+  - **Expect false alarms** from other Wi-Fi devices, doors and people in the router's room; how often has not been
+    counted yet. Try the sensitivity before you rely on it. On the Echo Dot 2 and Echo 2
+    also when the router switches between its faster speeds: their Wi-Fi does not say at which speed a frame came,
+    and a router sends each speed at its own strength (the Echo Dot 3 allows for that).
+  - **Through a small kernel module.** The Wi-Fi drivers do not report what this needs (the Echo Dot 3's only for the
+    last frame from any device nearby), so hassmic brings a kernel module of its own that reads the level of every
+    frame from your router in the driver. It is only loaded once you switch Wi-Fi motion on (within 10 s), and then
+    stays loaded until the Echo restarts. Running on an Echo Dot 3, an Echo Dot 2 and an Echo 2.
+  - ESPHome only. It does not use the microphones; muting the Echo does not stop it.
 - **No cloud**: Alexa client, updater and telemetry are stopped at every boot; a firewall drops everything that is not
   going to a local address. Only hassmic itself may go further, to fetch replies and music from where Home Assistant or
   Music Assistant point it. See [Security](#security).
@@ -163,6 +184,14 @@ shows the end of it and offers to try again. Ctrl-C stops it at any point and th
 `--dry-run` walks all steps and shows the commands without running any, `--restart` starts over for the next Echo of
 the same model. The model's page has the same steps written out.
 
+**Nothing to compile** on a commit that GitHub has a build of: every commit on `main` and `release` once CI has
+published it (a few minutes after the push). The setup then offers that build, the one online updates install too, and
+skips the Android NDK (1 GB), the compilers and unpacking the firmware; the build is checked against the project's
+release key (`keys/release.pub`) before anything uses it. With changes of your own in the checkout, or on a commit
+without a build, it builds here as before. The other scripts that need the Echo's programs (`deploy.sh`,
+`install-system.sh`, `ota-push.sh`) do the same: the release build where there is no NDK here, `PREBUILT=1` to insist
+on it, `PREBUILT=0` to always build.
+
 ## Updating
 
 ### From Home Assistant (online updates)
@@ -193,7 +222,7 @@ git pull
 scripts/ota-push.sh <echo-ip>        # remembers the address
 ```
 
-Builds, signs, pushes over Wi-Fi (TCP 28929). The Echo installs only what verifies against your key, restarts hassmic,
+Builds (or downloads that commit's release build, as the setup does), signs, pushes over Wi-Fi (TCP 28929). The Echo installs only what verifies against your key, restarts hassmic,
 and falls back to the installed copy by itself if the new one does not stay up. What changed: [CHANGELOG.md](CHANGELOG.md).
 
 Every update, pushed or online, runs a self test as it starts: wake word engine loaded, ports open, a second of

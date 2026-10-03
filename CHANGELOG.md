@@ -2,6 +2,56 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-10-04
+
+- **Cancel a request with the action button**, as with the center button of a Voice PE: pressed while Home Assistant is
+  still listening or thinking, the request is aborted, the conversation agent included, so a misheard command does not
+  go on to switch things it should not (a tool call already under way still finishes). The wake word said while it
+  thinks cancels too and starts a new request straight away. Before, both worked only once the reply was being
+  spoken. ESPHome only (Wyoming has no way to abort a request).
+
+## 2026-10-03
+
+- **Install without compiling anything.** On a commit that GitHub has a build of (every commit on `main` and
+  `release` once CI has published it), `scripts/setup.sh` offers that build: no Android NDK (1 GB), no compilers, no
+  unpacking of the firmware, and fewer tools to install. It is the build online updates install, and it is checked
+  against the project's release key before anything uses it. With changes of your own in the checkout it builds as
+  before. `deploy.sh`, `install-system.sh` and `ota-push.sh` take that build too when there is no NDK on the PC
+  (`PREBUILT=1` to insist on it, `PREBUILT=0` to always build).
+- **Update keys, push updates and `adb-wifi.sh` no longer need a C compiler on the PC.** The PC's side of the update
+  tool is Python now (`scripts/otatool.py`). Keys, signatures and bundles are the same as before; nothing changes on
+  the Echo.
+
+- **`scripts/install-system.sh` no longer stops silently on a build without the Wi-Fi motion module** ([issue
+  #5](https://github.com/Gamer92000/echo-dot-assist/issues/5)). That module is optional and is only built when the
+  kernel source and its toolchain are there. Without it, the install quit before writing anything and gave no message.
+  It now installs without the module. If you hit this, run the install again.
+
+- **Guided setup: Wi-Fi motion's kernel module is now part of the build.** Until now only released updates had it.
+  The downloads step now also fetches the kernel sources and the compiler the module is built with (115 MB, checked
+  against fixed checksums), so a setup build matches the released one. Building by hand: `make kernel-tools`. The
+  build needs `bc`, which the setup offers to install along with the other tools.
+
+- **Guided setup: Echo Dot 3 unlock fixed.** `scripts/setup.sh` stopped at "Waiting for the Echo's bootrom" with
+  "./bootrom-step.sh: No such file or directory": the kamakiri zip unpacks into a folder of its own, and the step looked
+  for its scripts one level too high. It now finds them wherever the zip puts them. If you hit this, run
+  `scripts/setup.sh` again; nothing needs deleting. The Echo Dot 2 and Echo 2 steps find amonet the same way now, in
+  case a later zip is laid out differently.
+
+- **Guided setup: the Echo Dot 3 unlock no longer hangs after the handshake** ([issue
+  #4](https://github.com/Gamer92000/echo-dot-assist/issues/4)). kamakiri waits for Enter right after it reaches the
+  Echo's bootrom, and the setup gave it no keyboard, so it waited forever with the ring dark. It now runs in front of
+  you: hold the dot button, plug in, and when it asks, release the button and press Enter. Nothing is written to the
+  Echo before that point, so an Echo stuck there is unchanged; unplug it and run `scripts/setup.sh` again.
+
+- **Guided setup: the Echo Dot 3's build step unpacks the firmware again** ([issue
+  #4](https://github.com/Gamer92000/echo-dot-assist/issues/4)). On a PC where `firmware/donut/rootfs` did not exist yet,
+  the unpack silently wrote nothing and the build then stopped with "missing .../libmixerAPI.so". The folder is now
+  created first, and the step fails if the firmware did not come out. The manual steps in the README had the same gap.
+
+- **`scripts/probe.sh` says when there is no Echo on adb** instead of listing every file as different. A stock Echo
+  has no adb until it is rooted, so this check only works after that.
+
 ## 2026-10-02
 
 - **Online updates from Home Assistant** ([issue #3](https://github.com/Gamer92000/echo-dot-assist/issues/3)), off by
@@ -17,6 +67,14 @@ What changed for people using the Echo, newest first. Details and measurements a
   what the Echo falls back to from then on. `scripts/ota-push.sh` no longer asks, and `--approve` is gone.
 
 ## 2026-10-01
+
+- **Wi-Fi motion, experimental.** The Echo Dot 3, Echo Dot 2 and Echo 2 can now work as a motion sensor, from their
+  Wi-Fi signal: someone walking between the Echo and the router changes it. Switch on "Wi-Fi motion detection
+  (experimental)" (off by default); "Wi-Fi motion (experimental)" then shows motion in Home Assistant, and "Wi-Fi motion
+  sensitivity (experimental)" sets how much it takes. It notices movement, not someone sitting still, and has been
+  tried for a few minutes and one night, so expect false alarms; see the README. It works through a small kernel
+  module that reads the signal of every frame from your router; the module comes with the update and is only loaded
+  once you switch Wi-Fi motion on.
 
 - **First install fixed** ([issue #2](https://github.com/Gamer92000/echo-dot-assist/issues/2)). Installing on an
   Echo for the first time stopped at the "Install" step ("No such file or directory", then "Permission denied" for

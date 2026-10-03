@@ -6,3 +6,8 @@ TARGET  := armv7a-linux-androideabi24
 AUDIO   := src/hassmic/audio_mixer.c
 WAKE    := src/hassmic/wake_pryon.c
 LIBS    := libmixerAPI.so libpryon.so libopus.so libz.so
+
+# Wi-Fi motion: the gen2 Wi-Fi driver reports no frame levels; a kernel module of our own reads them (src/kmod/).
+KMOD    := hassmic_rcpi
+# the kernel's own config (IKCONFIG of the firmware's boot.img)
+KCONFIG := devices/radar/kconfig

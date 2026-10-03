@@ -48,6 +48,58 @@ BIN := $(OUT)/hassmic $(OUT)/runas $(OUT)/otatool \
 .DEFAULT_GOAL := all
 all: $(BIN)
 
+# Kernel module for Wi-Fi motion: the Wi-Fi driver's frame levels (device.mk: KMOD, e.g. hassmic_rcpi; src/kmod/).
+# Built against kernel.org's sources of the Echo's kernel version with its own config, by the compiler Amazon built that
+# kernel with: arm-eabi-4.8 for the 3.18 kernels of biscuit and radar, whose config is their own (IKCONFIG, read out of
+# the firmware's boot.img into devices/<codename>/kconfig: device.mk KCONFIG); aarch64-linux-android-4.9 for donut's
+# 4.4, which carries none, so device.mk names a config fragment (KFRAG) that goes on top of the architecture's defconfig.  All in toolchain/ (DEVELOPMENT.md); without
+# them `all` leaves the module out and says so.  The tree is prepared out of the source directory, per model.  3.18
+# refuses GCC 4.8.0-4.8.2 (asm-offsets.c); the Echos' kernels were built with exactly that compiler, so that check goes,
+# as in their own tree.
+KVER    ?= 3.18.19
+KARCH   ?= arm
+KSRC    ?= $(CURDIR)/toolchain/linux-$(KVER)
+KCROSS  ?= $(CURDIR)/toolchain/arm-eabi-4.8/bin/arm-eabi-
+# what `make kernel-tools` downloads (scripts/kernel-tools.sh; the guided setup and CI): the sources by their checksum,
+# the compiler by the digest of its files (googlesource makes its archive anew each time)
+KSRC_URL    ?= https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.19.tar.xz
+KSRC_SHA256 ?= 3d80d3b8d98c3141d9e26f6c25d73575d688f1c1651b8076f0f2bfd76325b7c9
+KCC_URL     ?= https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.8/+archive/26e93f6af47f7bd3a9beb5c102a5f45e19bfa38a.tar.gz
+KCC_DIGEST  ?= fcd6082697317cfa44c0b876e5ca8285a07a13c763c59c7a962e44273e0668a0
+KMAKE    = $(MAKE) -s ARCH=$(KARCH) CROSS_COMPILE=$(KCROSS) HOSTCFLAGS="-fcommon -std=gnu89 -w" KCFLAGS="$(KCFLAGS)"
+ifneq ($(KMOD),)
+ifneq ($(and $(wildcard $(KSRC)/Makefile),$(wildcard $(KCROSS)gcc)),)
+all: $(OUT)/$(KMOD).ko
+else
+all: kmod-missing
+endif
+endif
+kmod-missing:
+	@echo "note: $(OUT)/$(KMOD).ko not built (Wi-Fi motion on $(DEVICE)): needs $(KSRC) and $(KCROSS)gcc: make kernel-tools DEVICE=$(DEVICE)"
+kernel-tools:
+	$(if $(KMOD),scripts/kernel-tools.sh $(KSRC) $(KCROSS) $(KSRC_URL) $(KSRC_SHA256) $(KCC_URL) $(KCC_DIGEST))
+
+ifneq ($(KCONFIG),)
+$(OUT)/ktree/.config: $(KCONFIG)
+	@mkdir -p $(OUT)/ktree
+	sed -i '/GCC_VERSION >= 40800 && GCC_VERSION < 40803/,/^#endif/d' $(KSRC)/arch/arm/kernel/asm-offsets.c
+	cp $< $@
+	$(KMAKE) -C $(KSRC) O=$(CURDIR)/$(OUT)/ktree olddefconfig modules_prepare
+else
+# the fragment last: of two lines for one option, the later counts
+$(OUT)/ktree/.config: $(KFRAG)
+	@mkdir -p $(OUT)/ktree
+	$(KMAKE) -C $(KSRC) O=$(CURDIR)/$(OUT)/ktree defconfig
+	cat $< >> $@
+	$(KMAKE) -C $(KSRC) O=$(CURDIR)/$(OUT)/ktree olddefconfig modules_prepare 2>&1 | grep -v -e 'override: reassigning' -e 'changes choice state' -e '^$$' || true
+endif
+
+$(OUT)/$(KMOD).ko: src/kmod/$(KMOD).c src/kmod/Kbuild $(OUT)/ktree/.config
+	@mkdir -p $(OUT)/kmod
+	cp src/kmod/$(KMOD).c src/kmod/Kbuild $(OUT)/kmod/
+	$(KMAKE) -C $(OUT)/ktree M=$(CURDIR)/$(OUT)/kmod HM_KMOD=$(KMOD) modules 2>&1 | grep -v -e 'Module.symvers' -e 'no dependencies and modversions' || true
+	cp $(OUT)/kmod/$(KMOD).ko $@
+
 ifeq ($(STUBS),1)
 # Written in the list's order, as assembly: the linker lists what it exports from the executable in the order it meets the
 # names in the libraries, and the integrated assembler would sort them by name; GNU as (still in r21e) keeps them.
@@ -110,7 +162,7 @@ SOUND := $(if $(filter %wake_pryon.c,$(WAKE)),src/hassmic/sound_pryon.c,src/hass
 
 RNNOISE := $(addprefix src/third_party/rnnoise/,denoise.c rnn.c rnn_data.c pitch.c kiss_fft.c celt_lpc.c)
 HASSMIC := src/hassmic/main.c src/hassmic/wyoming.c src/hassmic/proto_wyoming.c src/hassmic/proto_esphome.c src/hassmic/buttons.c \
-           src/hassmic/sendspin.c src/hassmic/arb.c src/hassmic/ble.c src/hassmic/ble_crypto.c src/hassmic/a2dp.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/hassmic/btout.c src/hassmic/ota.c src/hassmic/update.c src/hassmic/adbwifi.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/hassmic/hash.c src/hassmic/sounds.c src/hassmic/micgain.c src/hassmic/micdenoise.c \
+           src/hassmic/sendspin.c src/hassmic/arb.c src/hassmic/ble.c src/hassmic/ble_crypto.c src/hassmic/a2dp.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/hassmic/btout.c src/hassmic/ota.c src/hassmic/update.c src/hassmic/adbwifi.c src/hassmic/wifimotion.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/hassmic/hash.c src/hassmic/sounds.c src/hassmic/micgain.c src/hassmic/micdenoise.c \
            src/third_party/monocypher.c src/third_party/freeaptx.c $(RNNOISE)
 HASSMIC_H := $(wildcard src/hassmic/*.h src/include/*.h) build/.build-id
 
@@ -139,6 +191,7 @@ unit:
 	cc -O2 -Wall -Isrc/hassmic -Isrc/include tests/unit/noise_test.c $(UNIT) -lpthread -o build/noise_test
 	cc -O2 -Wall -Isrc/hassmic tests/unit/ble_crypto_test.c src/hassmic/ble_crypto.c -o build/ble_crypto_test && build/ble_crypto_test
 	cc -O2 -Wall -Isrc/hassmic tests/unit/micgain_test.c src/hassmic/micgain.c -lm -o build/micgain_test && build/micgain_test
+	cc -O2 -Wall -Isrc/hassmic tests/unit/wifimotion_test.c src/hassmic/wifimotion.c -lpthread -lm -o build/wifimotion_test && build/wifimotion_test
 	cc -O2 -Wall -Isrc/hassmic tests/unit/micdenoise_test.c src/hassmic/micdenoise.c $(RNNOISE) -lm -o build/micdenoise_test && build/micdenoise_test
 	.venv/bin/python tests/unit/ws_ref.py build/ws_test
 	.venv/bin/python tests/unit/noise_ref.py build/noise_test
@@ -152,4 +205,4 @@ version:
 clean:
 	rm -rf build
 
-.PHONY: all host unit version clean FORCE
+.PHONY: all host unit version clean kmod-missing kernel-tools FORCE

@@ -37,7 +37,10 @@ NOTES=(
 slot() { ashell bcbtool get_active | tr -d " \n"; }
 
 step_tools() {
-    need_tools adb fastboot python3 pyusb make cc unzip 7z sqlite3 curl sha256sum || return 1
+    command -v curl > /dev/null || need_tools curl || return 1
+    build_mode
+    if [ "$BUILD_MODE" = prebuilt ]; then need_tools adb fastboot python3 pyusb unzip sqlite3 curl sha256sum || return 1; return 0; fi
+    need_tools adb fastboot python3 pyusb make cc unzip 7z sqlite3 curl sha256sum bc xz || return 1
     [ "$(df -Pk . | awk 'NR == 2 { print $4 }')" -gt 5000000 ] || warn "less than 5 GB free here; the NDK and firmware need about that"
 }
 
@@ -45,10 +48,13 @@ step_files() {
     need_files $FW/$FIRMWARE_FILE $FIRMWARE_SHA256 "Fire OS $FIRMWARE_ID: $FTVDB" \
                $FW/$AMONET $AMONET_SHA256 "attachment in $XDA" \
                $FW/$BOOTROOT $BOOTROOT_SHA256 "attachment in $XDA" || return 1
-    [ -x $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang ] && { ok "Android NDK r21e"; return 0; }
-    mkdir -p toolchain
-    TASK_NOTE="du -h toolchain/ndk.zip | cut -f1" task "Downloading Android NDK r21e (1 GB)" curl -fsSL -o toolchain/ndk.zip $NDK_URL &&
-        task "Unpacking the NDK" unzip -q -o toolchain/ndk.zip -d toolchain && rm -f toolchain/ndk.zip
+    [ "$BUILD_MODE" = prebuilt ] && return 0          # nothing to build with
+    if [ -x $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang ]; then ok "Android NDK r21e"; else
+        mkdir -p toolchain
+        TASK_NOTE="du -h toolchain/ndk.zip | cut -f1" task "Downloading Android NDK r21e (1 GB)" curl -fsSL -o toolchain/ndk.zip $NDK_URL &&
+            task "Unpacking the NDK" unzip -q -o toolchain/ndk.zip -d toolchain && rm -f toolchain/ndk.zip || return 1
+    fi
+    kernel_tools
 }
 
 # lets the unlock reach the Echo without sudo, and keeps ModemManager from probing the bootrom's serial port mid-handshake
@@ -73,12 +79,16 @@ step_unlock() {
         task "Restarting into TWRP" adb reboot recovery || return 1
         wait_adb recovery; return
     fi
+    local adir
     [ -d $FW/amonet ] || task "Unpacking amonet" unzip -q $FW/$AMONET -d $FW/amonet || return 1
+    # run fastbrick.sh from wherever the zip put it (the release zip keeps it in a folder amonet/ of its own)
+    adir=$(find $FW/amonet -name fastbrick.sh -print -quit 2>/dev/null); adir=${adir%/*}
+    [ -n "$adir" ] || [ -n "$DRY" ] || { fail "no fastbrick.sh in $FW/amonet; delete that folder and try again"; return 1; }
     tell "Put the Echo into fastboot mode" "Hold the action button (•) and plug the power in." \
         "Keep holding until the ring shows a green light."
     waitfor "Waiting for fastboot|Fastboot" '[ -n "$(fastboot devices)" ]' "No green light? Unplug the power and try again." || return 1
     tell "amonet asks you to type YES, and for a key press at the end" "${RED}${B}Do not interrupt it once it runs: that can brick the Echo.$N"
-    live "amonet fastbrick (about a minute)" in_dir $FW/amonet/amonet ./fastbrick.sh || return 1
+    live "amonet fastbrick (about a minute)" in_dir "$adir" ./fastbrick.sh || return 1
     wait_adb recovery
 }
 
@@ -114,12 +124,14 @@ step_root() {
 }
 
 step_build() {
-    if [ ! -d $FW/rootfs/system/lib ]; then
+    # the firmware's libraries are only needed to link against
+    if [ "$BUILD_MODE" != prebuilt ] && [ ! -d $FW/rootfs/system/lib ]; then
         task "Unpacking the firmware" sh -c "unzip -o -q $FW/$FIRMWARE_FILE payload.bin -d $FW &&
             python3 tools/payload_dump.py $FW/payload.bin $FW/images && 7z x -o$FW/rootfs -y $FW/images/system.img" || return 1
     fi
     [ -d $FW/boot-root ] || task "Unpacking boot-root" unzip -q $FW/$BOOTROOT -d $FW/boot-root || return 1
-    task "Building" make -s all DEVICE=$DEVICE || return 1
+    if [ "$BUILD_MODE" = prebuilt ]; then task "Downloading the release build of this commit" build_binaries || return 1
+    else task "Building" build_binaries || return 1; fi
     wait_adb device || return 1
     task "Checking the Echo's firmware" sh -c 'out=$(scripts/probe.sh) && echo "$out" && ! echo "$out" | grep -q DIFFERENT' ||
         { fail "the Echo runs another firmware than $FIRMWARE_ID: redo the firmware step"; return 1; }

@@ -35,7 +35,10 @@ NOTES=(
 slot() { ashell bcbtool get_active | tr -d " \n"; }
 
 step_tools() {
-    need_tools adb fastboot python3 pyusb make cc unzip debugfs sqlite3 curl sha256sum || return 1
+    command -v curl > /dev/null || need_tools curl || return 1
+    build_mode
+    if [ "$BUILD_MODE" = prebuilt ]; then need_tools adb fastboot python3 pyusb unzip sqlite3 curl sha256sum || return 1; return 0; fi
+    need_tools adb fastboot python3 pyusb make cc unzip debugfs sqlite3 curl sha256sum bc xz || return 1
     [ "$(df -Pk . | awk 'NR == 2 { print $4 }')" -gt 5000000 ] || warn "less than 5 GB free here; the NDK and firmware need about that"
 }
 
@@ -43,10 +46,13 @@ step_files() {
     need_files $FW/$FIRMWARE_FILE $FIRMWARE_SHA256 "Fire OS $FIRMWARE_ID: $FTVDB" \
                $FW/$KAMAKIRI $KAMAKIRI_SHA256 "attachment in $XDA" \
                $FW/$BOOTROOT $BOOTROOT_SHA256 "attachment in $XDA" || return 1
-    [ -x $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang ] && { ok "Android NDK r21e"; return 0; }
-    mkdir -p toolchain
-    TASK_NOTE="du -h toolchain/ndk.zip | cut -f1" task "Downloading Android NDK r21e (1 GB)" curl -fsSL -o toolchain/ndk.zip $NDK_URL &&
-        task "Unpacking the NDK" unzip -q -o toolchain/ndk.zip -d toolchain && rm -f toolchain/ndk.zip
+    [ "$BUILD_MODE" = prebuilt ] && return 0          # nothing to build with
+    if [ -x $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang ]; then ok "Android NDK r21e"; else
+        mkdir -p toolchain
+        TASK_NOTE="du -h toolchain/ndk.zip | cut -f1" task "Downloading Android NDK r21e (1 GB)" curl -fsSL -o toolchain/ndk.zip $NDK_URL &&
+            task "Unpacking the NDK" unzip -q -o toolchain/ndk.zip -d toolchain && rm -f toolchain/ndk.zip || return 1
+    fi
+    kernel_tools
 }
 
 # lets the unlock reach the Echo without sudo, and keeps ModemManager from probing the bootrom's serial port mid-handshake
@@ -78,13 +84,23 @@ step_unlock() {
         task "Restarting into TWRP" adb reboot recovery || return 1
         wait_adb recovery; return
     fi
+    local kdir
     [ -d $FW/kamakiri ] || task "Unpacking kamakiri" unzip -q $FW/$KAMAKIRI -d $FW/kamakiri || return 1
-    tell "Hold the action button (•) and plug the USB cable in" "Keep holding until the next line turns green."
-    task "Waiting for the Echo's bootrom, handshake" in_dir $FW/kamakiri ./bootrom-step.sh || return 1
-    say "${B}Release the button.$N"
+    # the zip may keep its scripts in a folder of their own: run them from wherever bootrom-step.sh landed
+    kdir=$(find $FW/kamakiri -name bootrom-step.sh -print -quit 2>/dev/null); kdir=${kdir%/*}
+    [ -n "$kdir" ] || [ -n "$DRY" ] || { fail "no bootrom-step.sh in $FW/kamakiri; delete that folder and try again"; return 1; }
+    tell "Hold the action button (•) and plug the USB cable in" \
+        "Keep holding until it asks you to press Enter, then release the button and press Enter." \
+        "The ring stays dark until then: the Echo is in its bootrom."
+    # in the foreground: after the handshake kamakiri waits for Enter while kicking the watchdog, and again if the rpmb
+    # looks broken (a safety stop that a person answers, so no `yes` here).  Without a terminal input() hit EOF and the
+    # wait never ended, the Echo dark in bootrom (issue #4).  tee keeps the output in the log; unbuffered, or the prompt
+    # would sit in Python's pipe buffer.
+    live "Unlocking with kamakiri" in_dir "$kdir" env PYTHONUNBUFFERED=1 \
+        bash -o pipefail -c "./bootrom-step.sh 2>&1 | tee -a '$LOG'" || return 1
     waitfor "Waiting for hacked fastboot (rainbow ring)|Hacked fastboot" '[ -n "$(fastboot devices)" ]' \
         "No rainbow? Unplug everything and try this step again." || return 1
-    task "Flashing TWRP" in_dir $FW/kamakiri ./fastboot-step.sh || return 1
+    task "Flashing TWRP" in_dir "$kdir" ./fastboot-step.sh || return 1
     wait_adb recovery
 }
 
@@ -120,12 +136,16 @@ step_root() {
 }
 
 step_build() {
-    if [ ! -d $FW/rootfs/system/lib ]; then
+    # the firmware's libraries are only needed to link against
+    if [ "$BUILD_MODE" != prebuilt ] && [ ! -d $FW/rootfs/system/lib ]; then
+        # rdump does not create its target, and debugfs exits 0 whatever happens: the result is checked by hand (issue #4)
         task "Unpacking the firmware" sh -c "unzip -o -q $FW/$FIRMWARE_FILE payload.bin -d $FW &&
-            python3 tools/payload_dump.py $FW/payload.bin $FW/images && debugfs -R 'rdump / $FW/rootfs' $FW/images/system.img" || return 1
+            python3 tools/payload_dump.py $FW/payload.bin $FW/images && mkdir -p $FW/rootfs &&
+            debugfs -R 'rdump / $FW/rootfs' $FW/images/system.img && [ -d $FW/rootfs/system/lib ]" || return 1
     fi
     [ -d $FW/boot-root ] || task "Unpacking boot-root" unzip -q $FW/$BOOTROOT -d $FW/boot-root || return 1
-    task "Building" make -s all DEVICE=$DEVICE || return 1
+    if [ "$BUILD_MODE" = prebuilt ]; then task "Downloading the release build of this commit" build_binaries || return 1
+    else task "Building" build_binaries || return 1; fi
     wait_adb device || return 1
     task "Checking the Echo's firmware" sh -c 'out=$(scripts/probe.sh) && echo "$out" && ! echo "$out" | grep -q DIFFERENT' ||
         { fail "the Echo runs another firmware than $FIRMWARE_ID: redo the firmware step"; return 1; }

@@ -26,6 +26,8 @@
  *                    `homeassistant.action` sends).  Home Assistant only runs it with "Allow the device to perform Home
  *                    Assistant actions" ticked in the device's options; otherwise it raises a repair saying so.
  *   debug access     a switch opens adb over Wi-Fi for 30 min (adbwifi.c); only taken over the connection with the key
+ *   wifi motion      experimental, off by default: a switch, a motion binary sensor, its sensitivity (wifimotion.c);
+ *                    listed only where the Wi-Fi driver can do it
  *   online updates   a select (off by default, beta, release) and an update entity with the newest build on that channel
  *                    and an install button (update.c); channel and install only over the connection with the key
  */
@@ -55,6 +57,7 @@
 #include "noise.h"
 #include "sendspin.h"
 #include "update.h"
+#include "wifimotion.h"
 #include "net.h"
 #include "netio.h"
 #define MINIMP3_IMPLEMENTATION
@@ -65,7 +68,7 @@ enum {
     HELLO_REQ = 1, HELLO_RESP, CONNECT_REQ, CONNECT_RESP, DISCONNECT_REQ, DISCONNECT_RESP, PING_REQ, PING_RESP,
     DEVICE_INFO_REQ, DEVICE_INFO_RESP, LIST_ENTITIES_REQ, LIST_ENTITIES_DONE = 19, SUBSCRIBE_STATES = 20,
     SUBSCRIBE_HA_ACTIONS = 34, HA_ACTION, LIST_SERVICE = 41, EXECUTE_SERVICE,
-    LIST_SENSOR = 16, LIST_SWITCH = 17, LIST_TEXT_SENSOR = 18, SENSOR_STATE = 25, SWITCH_STATE = 26, TEXT_SENSOR_STATE = 27, SWITCH_COMMAND = 33, LIST_NUMBER = 49, NUMBER_STATE, NUMBER_COMMAND,
+    LIST_BINARY_SENSOR = 12, LIST_SENSOR = 16, LIST_SWITCH = 17, LIST_TEXT_SENSOR = 18, SENSOR_STATE = 25, SWITCH_STATE = 26, BINARY_SENSOR_STATE = 21, TEXT_SENSOR_STATE = 27, SWITCH_COMMAND = 33, LIST_NUMBER = 49, NUMBER_STATE, NUMBER_COMMAND,
     LIST_SELECT = 52, SELECT_STATE, SELECT_COMMAND,
     LIST_MEDIA_PLAYER = 63, MEDIA_PLAYER_STATE, MEDIA_PLAYER_COMMAND,
     SUBSCRIBE_VA = 89, VA_REQUEST, VA_RESPONSE, VA_EVENT, VA_AUDIO = 106, VA_TIMER_EVENT = 115,
@@ -90,7 +93,8 @@ enum { FEAT_VOICE = 1, FEAT_SPEAKER = 2, FEAT_API_AUDIO = 4, FEAT_TIMERS = 8, FE
 enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SENDSPIN_TOKEN, KEY_SOC_TEMP, KEY_CPU_USAGE, KEY_BT_PAIRING,
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
        KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS, KEY_SOUND_DETECTION, KEY_SOUND,
-       KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_UPDATE_CHANNEL, KEY_UPDATE };
+       KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_WIFI_MOTION_ON, KEY_WIFI_MOTION, KEY_WIFI_MOTION_SENS,
+       KEY_UPDATE_CHANNEL, KEY_UPDATE };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -103,11 +107,15 @@ enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3
 static struct { int fd, states, enc, keyed, ble, ble_free, ble_user, actions; struct noise_cs tx, rx; } clients[MAX_CLIENTS] = { { .fd = -1 }, { .fd = -1 }, { .fd = -1 }, { .fd = -1 } };
 static int va_fd = -1;                  /* lock held: voice assistant subscriber */
 static __thread int reply_fd = -1;      /* the client whose request this thread is handling */
+static int cancelled;                   /* lock held: the user cancelled the run; its events are dropped.  2: a new run
+                                         * was asked for, whose RUN_START ends that (TCP keeps the order) */
 static int tts_expected;                /* lock held: the reply is being fetched or played; RUN_END must not end the pipeline */
 static char tts_url[1024];              /* lock held: reply URL of the running pipeline (known from RUN_START with streaming TTS) */
 static int announcing, media_playing;   /* lock held */
 static void announce_done(void);
 static atomic_int media_busy;
+static atomic_int media_abort;          /* the run whose reply this job fetches was cancelled: drop it, touch no state */
+static int media_fd = -1;               /* lock held: the job's socket, for cancel() to cut a fetch that waits on the server */
 
 /* ---------------------------------------------------------------- protobuf */
 
@@ -313,27 +321,25 @@ static const struct bt_lang { const char *code, *name, *on, *off, *on_any, *off_
 };
 #define BT_LANGS (int)(sizeof bt_langs / sizeof bt_langs[0])
 static int bt_lang;                     /* lock held: index into bt_langs */
-/* Settings fields 13 and 14 belong to Wi-Fi motion, which only builds of main have (switch, sensitivity): written back
- * as read, so that an Echo going between the channels keeps them, and the update channel stays field 15 */
-static int kept[2] = { 0, 5 };          /* lock held */
 static int have_light;                  /* a light sensor answered at start: illuminance and auto brightness are listed */
 
 static const char *settings_path(void) { const char *p = getenv("HASSMIC_SETTINGS"); return p ? p : "/data/local/hassmic/state/settings"; }
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, uc = UPDATE_OFF; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
+    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, wm = 0, ws = WIFIMOTION_SENS_DEFAULT, uc = UPDATE_OFF; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
     if (!f) { core_mic_level(mic_level); return; }
     /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
      * which ignored them; unused since), 9 (before LED brightness: auto, as stock), 11 (before sound detection: off), 12
-     * (before the two of Wi-Fi motion, which this version does not have: kept as they are), 14 (before online updates: off). */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &kept[0], &kept[1], &uc) >= 5) {
+ * (before Wi-Fi motion: off, default sensitivity), 14 (before online updates: off). */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &wm, &ws, &uc) >= 5) {
         if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
         if (!la) { if (lb >= 0) core_led_brightness(lb); else core_led_auto(0); }  /* ledcontroller started its auto at boot */
         core_sound(sd != 0);
+        wifimotion_enable(wm != 0); wifimotion_sensitivity(ws);
         update_channel(uc);
     }
     fclose(f);
@@ -345,7 +351,7 @@ static void settings_save(void)
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
     fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d %d %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
-            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), kept[0], kept[1], update_channel(-1));
+            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), wifimotion_enable(-1), wifimotion_sensitivity(-1), update_channel(-1));
     fclose(f);
 }
 
@@ -368,6 +374,11 @@ static void send_setting(int key)       /* lock held */
     case KEY_SS_UNPAIRED: if (core_sendspin_port) { pb_uint(&b, 2, sendspin_unpaired(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_ADB_WIFI: pb_uint(&b, 2, adbwifi_open()); send_state(SWITCH_STATE, &b); break;
     case KEY_SOUND_DETECTION: pb_uint(&b, 2, core_sound(-1)); send_state(SWITCH_STATE, &b); break;
+    case KEY_WIFI_MOTION_ON: if (wifimotion_present()) { pb_uint(&b, 2, wifimotion_enable(-1)); send_state(SWITCH_STATE, &b); } break;
+    case KEY_WIFI_MOTION_SENS: if (wifimotion_present()) { pb_float(&b, 2, wifimotion_sensitivity(-1)); send_state(NUMBER_STATE, &b); } break;
+    case KEY_WIFI_MOTION:               /* unknown while switched off */
+        if (wifimotion_present()) { int m = wifimotion_motion(); pb_uint(&b, 2, m > 0); pb_uint(&b, 3, m < 0); send_state(BINARY_SENSOR_STATE, &b); }
+        break;
     case KEY_LED_AUTO: if (have_light) { pb_uint(&b, 2, core_led_auto(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_LED_BRIGHTNESS: { int v = core_led_brightness(-1); if (v >= 0) { pb_float(&b, 2, v); send_state(NUMBER_STATE, &b); } } break;
     case KEY_BT_OUT_SEARCH: if (ble_present()) { pb_uint(&b, 2, a2dp_out_searching()); send_state(SWITCH_STATE, &b); } break;
@@ -581,6 +592,17 @@ static void send_setting_entities(void)
         { PB(b, 128); pb_str(&b, 1, "arbitration_peers"); pb_fixed32(&b, 2, KEY_ARB_PEERS); pb_str(&b, 3, "Arbitration peers");
           pb_str(&b, 5, "mdi:access-point-network"); pb_uint(&b, 13, 2); send_msg(LIST_SENSOR, &b); }
     }
+    /* Wi-Fi motion (wifimotion.c): experimental, and the names say so; the switch is off by default */
+    if (wifimotion_present()) {
+        { PB(b, 192); pb_str(&b, 1, "wifi_motion_detection"); pb_fixed32(&b, 2, KEY_WIFI_MOTION_ON);
+          pb_str(&b, 3, "Wi-Fi motion detection (experimental)"); pb_str(&b, 5, "mdi:wifi-alert"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
+        { PB(b, 192); pb_str(&b, 1, "wifi_motion"); pb_fixed32(&b, 2, KEY_WIFI_MOTION); pb_str(&b, 3, "Wi-Fi motion (experimental)");
+          pb_str(&b, 5, "motion"); send_msg(LIST_BINARY_SENSOR, &b); }
+        { PB(b, 192); pb_str(&b, 1, "wifi_motion_sensitivity"); pb_fixed32(&b, 2, KEY_WIFI_MOTION_SENS);
+          pb_str(&b, 3, "Wi-Fi motion sensitivity (experimental)"); pb_str(&b, 5, "mdi:tune");
+          pb_float(&b, 6, WIFIMOTION_SENS_MIN); pb_float(&b, 7, WIFIMOTION_SENS_MAX); pb_float(&b, 8, 1); pb_uint(&b, 10, 1); pb_uint(&b, 12, 2);
+          send_msg(LIST_NUMBER, &b); }
+    }
     /* online updates (update.c): off unless chosen here; the entity says what is new on the channel and installs it */
     { PB(b, 192); pb_str(&b, 1, "online_updates"); pb_fixed32(&b, 2, KEY_UPDATE_CHANNEL); pb_str(&b, 3, "Online updates");
       pb_str(&b, 5, "mdi:cloud-download"); for (int i = 0; i < 3; i++) pb_str(&b, 6, update_channels[i]);
@@ -633,6 +655,12 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
             else fprintf(stderr, "update: channel change refused, the request did not come over the keyed connection\n");
         }
         send_setting(key); send_setting(KEY_UPDATE); return;            /* the entity follows through update_changed */
+    }
+    else if (type == SWITCH_COMMAND && key == KEY_WIFI_MOTION_ON && wifimotion_present()) {
+        wifimotion_enable(on); settings_save(); send_setting(key); return;       /* the sensor follows through wifi_changed */
+    }
+    else if (type == NUMBER_COMMAND && key == KEY_WIFI_MOTION_SENS && wifimotion_present()) {
+        wifimotion_sensitivity((int)lroundf(num)); settings_save(); send_setting(key); return;
     }
     else if (type == SWITCH_COMMAND && key == KEY_LED_AUTO && have_light) {
         core_led_auto(on); settings_save(); send_setting(key); return;              /* the level follows through light_thread */
@@ -693,6 +721,15 @@ static int http_get(const char *url)    /* returns a socket positioned at the bo
     return http_get_host(host, port, path ? path : "/");
 }
 
+static int tts_begin(unsigned rate, unsigned ch)    /* -1: cancelled, the reply must not play */
+{
+    pthread_mutex_lock(&core_lock);
+    int ok = !atomic_load(&media_abort);
+    if (ok) core_tts_begin(rate, ch);
+    pthread_mutex_unlock(&core_lock);
+    return ok ? 0 : -1;
+}
+
 static void feed(const void *pcm, size_t len)       /* queue with back pressure */
 {
     core_tts_data(pcm, len);
@@ -715,7 +752,7 @@ static int play_wav(int fd, const unsigned char *head, size_t have)
     }
     if (bits != 16 || !rate || !ch) { fprintf(stderr, "media: unsupported WAV (%u Hz, %u ch, %u bit)\n", rate, ch, bits); return -1; }
     fprintf(stderr, "media: WAV %u Hz x%u\n", rate, ch);
-    pthread_mutex_lock(&core_lock); core_tts_begin(rate, ch); pthread_mutex_unlock(&core_lock);
+    if (tts_begin(rate, ch) < 0) return -1;
     size_t odd = 0;
     for (ssize_t r; !core_tts_flushing() && (r = read(fd, buf + odd, sizeof buf - odd)) > 0; ) {
         size_t n = odd + r, use = n & ~(size_t)(2 * ch - 1);        /* whole frames only */
@@ -741,7 +778,7 @@ static int play_mp3(int fd, const unsigned char *head, size_t have)
         if (samples > 0) {
             if (!began) {
                 fprintf(stderr, "media: MP3 %d Hz x%d\n", info.hz, info.channels);
-                pthread_mutex_lock(&core_lock); core_tts_begin(info.hz, info.channels); pthread_mutex_unlock(&core_lock);
+                if (tts_begin(info.hz, info.channels) < 0) break;
                 began = 1;
             }
             feed(pcm, (size_t)samples * info.channels * 2);
@@ -765,18 +802,21 @@ static void *media_thread(void *arg)
 {
     struct media_job *job = arg; int ok = 0, began = 0;
     for (int i = 0; i < 2; i++) {
-        if (!job->url[i][0] || core_tts_flushing()) continue;
+        if (!job->url[i][0] || core_tts_flushing() || atomic_load(&media_abort)) continue;
         int fd = http_get(job->url[i]);
         if (fd < 0) continue;
-        if (play_url(fd) == 0) { began = 1; if (i == 1) ok = 1; }
+        pthread_mutex_lock(&core_lock); media_fd = fd; int gone = atomic_load(&media_abort); pthread_mutex_unlock(&core_lock);
+        if (!gone && play_url(fd) == 0) { began = 1; if (i == 1) ok = 1; }
+        pthread_mutex_lock(&core_lock); media_fd = -1; pthread_mutex_unlock(&core_lock);
         close(fd);
     }
     pthread_mutex_lock(&core_lock);
+    int stale = atomic_load(&media_abort);  /* a new run may be listening already: its pipeline is not ours to end */
     if (job->announce) {
         if (job->start_conversation && ok) core_restart_after();
         if (!began) { PB(b, 8); pb_uint(&b, 1, 0); send_va(VA_ANNOUNCE_FINISHED, &b); announcing = 0; announce_done(); }
     }
-    if (!began) { media_playing = 0; send_mp_state(); core_pipeline_finish(); atomic_store(&media_busy, 0); }
+    if (!began) { media_playing = 0; send_mp_state(); if (!stale) core_pipeline_finish(); atomic_store(&media_busy, 0); }
     pthread_mutex_unlock(&core_lock);
     if (began) core_tts_end();          /* played() below finishes the job once the audio is out */
     free(job);
@@ -793,6 +833,7 @@ static void media_start(const char *url0, const char *url1, int announce, int st
         if (announce) { PB(b, 8); pb_uint(&b, 1, 0); send_va(VA_ANNOUNCE_FINISHED, &b); }
         free(job); return;
     }
+    atomic_store(&media_abort, 0);                      /* concerned the job before, which has ended */
     if (!is_reply && (core_state() == LISTENING || core_state() == THINKING)) core_pipeline_finish();
     snprintf(job->url[0], sizeof job->url[0], "%s", url0); snprintf(job->url[1], sizeof job->url[1], "%s", url1);
     job->announce = announce; job->start_conversation = start_conversation;
@@ -962,6 +1003,7 @@ static void bt_changed(void)
     pthread_mutex_unlock(&core_lock);
 }
 static void adb_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_ADB_WIFI); pthread_mutex_unlock(&core_lock); }
+static void wifi_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_WIFI_MOTION); pthread_mutex_unlock(&core_lock); }
 static void update_changed(void) { pthread_mutex_lock(&core_lock); send_setting(KEY_UPDATE); pthread_mutex_unlock(&core_lock); }
 
 static const struct ble_handler ble_handler = {
@@ -1038,7 +1080,7 @@ static void announce_done(void) { bt_asked_ms = 0; bt_free_ms = now_ms() + 1000;
 static void start(void)
 {
     PB(b, 96);
-    tts_expected = 0; tts_url[0] = 0;
+    tts_expected = 0; tts_url[0] = 0; if (cancelled) cancelled = 2;
     pb_uint(&b, 1, 1);                                  /* start */
     pb_uint(&b, 3, core_local_wake ? 1 : 3);            /* flags: USE_VAD, plus USE_WAKE_WORD when detection is remote */
     /* audio settings: neutral.  Home Assistant ignores them today; the gain is applied here (micgain.h), and absent they
@@ -1062,6 +1104,15 @@ static void stop(void)
 {
     PB(a, 8); pb_uint(&a, 2, 1); send_va(VA_AUDIO, &a);        /* end of audio */
     send_va(VA_REQUEST, NULL);                                 /* start = false */
+}
+
+static void cancel(void)
+{
+    send_va(VA_REQUEST, NULL);                                 /* start = false: abort */
+    cancelled = 1;
+    /* A streamed reply can be on its way already (tool calls can follow its first words).  The fetch may be waiting on
+     * Home Assistant: cut its socket, or the job would hold media_busy and refuse the next run's reply */
+    if (tts_expected) { atomic_store(&media_abort, 1); if (media_fd >= 0) shutdown(media_fd, SHUT_RDWR); }
 }
 
 static void played(void)
@@ -1092,6 +1143,10 @@ static void on_event(const unsigned char *p, const unsigned char *end)
             if (!strcmp(key, "url")) snprintf(tts_url, sizeof tts_url, "%s", val);
         }
     }
+    /* Home Assistant may still report the aborted run (what was on the way: intent, TTS, end).  An error after a new
+     * start is the new run's (one refused before it starts has no RUN_START) */
+    if (cancelled == 1 || (cancelled == 2 && type != EV_RUN_START && type != EV_ERROR)) return;
+    if (type == EV_RUN_START || type == EV_ERROR) cancelled = 0;
     switch (type) {
     case EV_STT_START:  core_set_state(LISTENING); break;
     case EV_VAD_END:    core_mic_off(); if (core_state() == LISTENING) core_set_state(THINKING); break;
@@ -1242,6 +1297,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
         send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS); send_setting(KEY_BT_OUT_DELAY);
+        for (int k = KEY_WIFI_MOTION_ON; k <= KEY_WIFI_MOTION_SENS; k++) send_setting(k);
         send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE);
         send_token_state(); send_light_states(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: on_setting(type, p, end); break;
@@ -1374,7 +1430,7 @@ static void serve(int fd)
     { static int loaded; if (!loaded) { loaded = 1; have_light = !isnan(core_lux()); settings_load(); key_load();
                                        pthread_t t; pthread_create(&t, NULL, diag_thread, NULL); pthread_detach(t);
                                        pthread_create(&t, NULL, light_thread, NULL); pthread_detach(t);
-                                       adbwifi_start(adb_changed); update_start(update_changed);
+                                       adbwifi_start(adb_changed); wifimotion_start(wifi_changed); update_start(update_changed);
                                        if (core_bluetooth(-1)) { ble_start(&ble_handler); a2dp_start(bt_changed); } } }
     for (int i = 0; i < MAX_CLIENTS; i++) { if (clients[i].fd < 0 && slot < 0) slot = i; n += clients[i].fd >= 0; }
     if (slot >= 0) { clients[slot].fd = fd; clients[slot].states = clients[slot].enc = clients[slot].keyed = clients[slot].ble = clients[slot].ble_free = clients[slot].ble_user = clients[slot].actions = 0; if (!n) core_link(1, 0); }
@@ -1452,5 +1508,5 @@ static void sound(const char *event)    /* lock held */
     fprintf(stderr, "sound: %s\n", event);
 }
 
-const struct proto proto_esphome = { "esphome", 26053, 1, serve, start, audio, stop, played, volume_changed, mute_changed, print_mdns, bt_device,
+const struct proto proto_esphome = { "esphome", 26053, 1, serve, start, audio, stop, cancel, played, volume_changed, mute_changed, print_mdns, bt_device,
                                      arb_send, arb_changed, sound };

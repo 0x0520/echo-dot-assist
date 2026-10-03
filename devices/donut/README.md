@@ -68,10 +68,10 @@ Keep the Echo unplugged (no power, no USB) until step 1 asks for it.
 
 ```sh
 sudo cp scripts/51-echo-unlock.rules /etc/udev/rules.d/ && sudo udevadm control --reload   # USB without sudo; keeps ModemManager off the bootrom
-cd firmware/donut && unzip kamakiri-donut-v1.0.0.zip -d kamakiri && cd kamakiri
-./bootrom-step.sh          # start it, THEN plug the Echo in while holding the action (dot) button
-./fastboot-step.sh         # when the ring shows a rotating rainbow; ends in TWRP (white ring)
-cd ../../..
+unzip firmware/donut/kamakiri-donut-v1.0.0.zip -d firmware/donut/kamakiri
+K=$(dirname "$(find firmware/donut/kamakiri -name bootrom-step.sh)")   # the zip keeps its scripts in a folder of their own
+(cd "$K" && ./bootrom-step.sh)    # start it, THEN plug the Echo in while holding the action (dot) button
+(cd "$K" && ./fastboot-step.sh)   # when the ring shows a rotating rainbow; ends in TWRP (white ring)
 ```
 
 Flash the firmware into both A/B slots, then root:
@@ -99,13 +99,18 @@ reboot, replug the power. Back to TWRP: `adb reboot recovery`, or hold Volume Up
 
 ### 2. Unpack the firmware and build
 
-The tools link against Amazon's libraries, so the firmware is unpacked on the PC:
+The tools link against Amazon's libraries, so the firmware is unpacked on the PC. On a commit GitHub has a build of
+(any pushed commit on `main` or `release`, once CI has published it; [README](../../README.md#install)) none of this
+is needed: `export PREBUILT=1`, and the scripts below and in the next steps use that build, checked against the
+release key. Then only `boot-root` is unpacked, and `scripts/probe.sh` runs as below.
 
 ```sh
 unzip firmware/donut/update-kindle-*.bin payload.bin -d firmware/donut/
 python3 tools/payload_dump.py firmware/donut/payload.bin firmware/donut/images
+mkdir -p firmware/donut/rootfs        # debugfs does not create it
 debugfs -R "rdump / firmware/donut/rootfs" firmware/donut/images/system.img
 unzip firmware/donut/boot-root.zip -d firmware/donut/boot-root    # the installer uses its patch/magiskpolicy32
+make kernel-tools                         # kernel sources + compiler for Wi-Fi motion's module (115 MB, optional)
 make                                      # ARM binaries into build/donut/
 scripts/probe.sh                          # must not list any DIFFERENT library
 ```

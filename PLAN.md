@@ -55,6 +55,13 @@ Legend: `[x]` done, `[~]` partly done (note says what is missing), `[ ]` open. *
 - [x] Action button = manual trigger; mic-mute latch blocks triggers and drives the LED (`src/hassmic/buttons.c`)
 - [x] Volume buttons → `MainVolume` + LED volume step (switch off with `-V` if a stock daemon already does it)
 - [x] Barge-in: wake word or button while speaking cuts TTS and opens a new pipeline (tested: 0.10 s on PC)
+- [x] Cancel while listening/thinking (user request 2026-10-03, as a VPE's center button): button sends
+      `VoiceAssistantRequest start=false` (ESPHome's `voice_assistant.stop`; HA `_abort_pipeline` cancels the pipeline task,
+      LLM and pending tool calls), wake word the same plus a new pipeline. Events of the aborted run still on the wire are
+      dropped until the new run's RUN_START (`proto_esphome.c` `cancelled`); a streamed reply already being fetched has
+      its socket shut down (`media_abort`): the fetch can wait on HA for seconds, and held `media_busy` it refused the
+      next run's reply (found in review, test fails without it). Button during listening/thinking wins over music pause.
+      PC: `fake_ha_esphome.py`. Device 2026-10-04 (radar, kitchen Echo): button and wake word while thinking work (user)
 - [x] Wake earcon: generated blip on the `Earcon` stream (`-E` disables). Since 2026-09-23 Amazon's own sounds from the system image
       (`src/hassmic/sounds.c`: WAV, or MP3 through minimp3, mixed to mono): `ui_wakesound` for the wake word, `ui_wakesound_touch`
       for the action button, `state_volume_adjust_tone` for the volume keys, `state_privacy_mode_on/off` for mute; the blip stays
@@ -902,6 +909,111 @@ Run in this order. Each step says what it proves.
       up, puffin stopped. Setup's unlock step now takes an Echo already unlocked (Fire OS on adb: stock has none) to
       TWRP with `adb reboot recovery` instead of asking for the unlock (biscuit: "unlocked already", TWRP up; donut's
       kamakiri and radar's amonet also leave TWRP on the recovery partition). Not tried: donut and radar first installs.
+- [x] Ultrasound motion sensing (2026-10-01): tried, not possible with any of these Echos. donut's mics can: the two
+      TLV320AIC3101 on TDM in (`TDM_Capture`, card 0 dev 1, 4 ch S32; mixer opens it at 16 kHz) record at 48 and 96 kHz
+      with `tinycap` once `mixer` is stopped, and keys jingled over the Echo raise every band by ~40 dB up to 45 kHz. The
+      speaker cannot: a 2-23.8 kHz sweep at -24 dBFS on DL1 (pcm6p, which feeds both the TAS2770 and the line out)
+      reaches the mics at -22 dB at 2 kHz, -55 dB at 13 kHz and nothing past 13.4-13.6 kHz, the same with playback at
+      44.1 kHz and with the mics at 48 kHz (the TAS2770 follows the stream's rate, `0x0a` = 0x17 / 0x37: no resampler).
+      The DL1 loopback (`DL1_AWB_Record`) has the sweep clean up to 22.8 kHz, so the cut is the speaker or its output
+      stage. 19 / 20.5 / 22 kHz tones at -12 dBFS: nothing over the -120 dB floor. biscuit and radar: the mic PCM
+      (`amzn_mt_spi`, dev 24) is 16 kHz, 9 ch S24_3LE only (`tinypcminfo`); `TDM_Debug_Record` (dev 13) opens at 48 kHz
+      x 8 but reads all zeros. Amazon's own "Ultrasound Presence Detection" (USPD) is in donut's firmware but off:
+      `LASP_CMD_SET_ULTRASOUND*`, `UltrasonicPresenceDetector` in libasp, Alexa.MotionSensor in PuffinApp, no
+      `*Uspd.tflite` models, no ultrasound section in AFE.cfg. A `mixer` record stream `ultraSound` exists (reports
+      2000 Hz x 9 ch x 32 bit) but the HAL refuses it (`Could not open input stream -22`), and **mixer retries every 10 ms
+      for ever after the client has gone** (35 % CPU, logd 18 %) until `stop mixer; start mixer`: do not open it.
+- [~] Wi-Fi motion, experimental (2026-10-01, `wifimotion.c`): the receive level of the Wi-Fi radio as a motion sensor.
+      donut's driver (`wlan_mt76x8_sdio.ko`, MT7668, gen4m) has CSI commands: `SET_CSI <mode 0/1> <wf 0/1> <frame slot
+      0-3> <frame type 0 = beacon>` (argc 2 or 5, band fixed 0, role 1; command 0x4c to the firmware, 8 bytes) and
+      `GET_CSI 0|1` (I or Q, up to 256 values, `nicEventCSIData` registered in the event table), but on 2.4 GHz
+      channel 6 the firmware never sends any ("No CSI Data" for every variant; the RAM code is encrypted, 7.97
+      bits/byte). `RX_STAT` works, also as puffin: RCPI RX0 (RX1 = 255, one chain), SNR, frequency offset, instant
+      RSSI, FAGC, counters; ~10 answers a second from a shell loop. Recording at 10 Hz for 7.5 min (router one room
+      behind the Dot, -52 dBm): scatter of RCPI over 2 s 0.57 empty room / 0.60 someone still / 1.21 walking (to
+      2.2 crossing the path), mean RCPI 112 -> 115 and SNR 31 -> 34 while walking; single odd frames give 2.4 in an
+      empty room. SNR, wideband RSSI and FAGC separate less. Detector: median of 3, scatter of 20, at least 10 of the
+      last 20 over 1.2 x 1.15^(5 - sensitivity), 30 s hold. Replayed on the recording: motion at 18.7 s (leaving),
+      123.6 s (walking), 323.6 s (leaving), 359.7 s (unknown), nothing in the still or empty parts. Entities only where
+      the driver answers (biscuit: no private ioctls at all; radar likewise). ESPHome switch (config, off by default),
+      binary sensor `motion` (unknown while off), sensitivity 1-10; settings file fields 13 and 14. Tests:
+      `tests/unit/wifimotion_test.c`, `fake_ha_esphome.py` (HASSMIC_FAKE_WIFI). Pushed (not approved) to donut, biscuit, radar:
+      donut "available, off unless switched on", the other two "not available on this Wi-Fi driver", Home Assistant
+      connected on all three. The real ioctl path as puffin on donut (test program around wifimotion.c, 30 s): readings
+      from the first poll, "still", "moving" after 16 s (not known whether someone moved).
+      biscuit and radar (gen2 driver for the MT8163 connsys, built in): `/proc/net/wireless` makes the driver query the
+      firmware on every read (`nicCmdEventQueryLinkQuality: rRssi`, ~7/s) but prints a stale value; the firmware's own is
+      smoothed, whole dB (-57 -> -54 over 15 s), only in the kernel log; `signal_poll` is cached; Android's private
+      `RSSI` command returns nothing. The driver keeps the access point's beacon level (`scanAddToBssDesc`: RX header
+      byte 9 -> `BSS_DESC_T` +90, time in ms at +56; BSSID +8), but its entry was 4 h old: connected, the firmware
+      filters beacons. Station record RCPI (+61, 444-byte records) is only set at association and by a statistics
+      query. Data frames carry it in the same RX header (`SW_RFB_T` +16), unread. Kernel 3.18.19 (both, different
+      builds, the hook site byte-identical): modules, no signing, no modversions, `kallsyms_lookup_name`, no kprobes,
+      text writable (no DEBUG_RODATA). `src/kmod/hassmic_rcpi.c`: `b` from `nicRxProcessDataPacket`'s first
+      instruction (`push {r3-r9, lr}`, checked) to a trampoline, under `stop_machine`; reads via `probe_kernel_read`;
+      `/proc/hassmic_rcpi` "RCPI RX0 / AGE / FRAMES"; no exit. Built against kernel.org 3.18.19 + IKCONFIG from
+      `boot.img` (identical to `/proc/config.gz` on both), AOSP arm-eabi-4.8 ("gcc version 4.8 (GCC)" as in the
+      Echos' version string; its asm-offsets guard against 4.8.0-4.8.2 removed); vermagic "3.18.19 SMP preempt
+      mod_unload ARMv7 p2v8 " and `this_module` 0x170, as Amazon's perfinfo.ko. On biscuit by hand: loaded, no oops,
+      ~13 frames/s from the access point at idle, RCPI 103-104, hassmic unaffected (a wake word with arbitration
+      meanwhile); `wifimotion.c` reads it as puffin. Pushed to biscuit and radar: "available ... (through the kernel
+      module)"; main.sh loads it once the switch is on (radar: below).
+      donut the same way since (2026-10-01): RX_STAT is the firmware's last frame from anyone on the channel and one
+      firmware query per poll; `src/kmod/hassmic_rcpi4m.c` reads every frame from the access point instead. Kernel
+      4.4.22+ arm64 (`boot.img`: MTK header, gzip Image; built by "gcc version 4.9 20150123 (prerelease)"), **no IKCONFIG**,
+      no kprobes, `kallsyms_lookup_name` and `aarch64_insn_patch_text` there, `kptr_restrict` 2, SELinux enforcing
+      but `su` permissive (insmod logs the `module_load` denial, loads). Stock modules: vermagic "4.4.22+ SMP preempt
+      mod_unload aarch64", no `__versions`, no signature, `this_module` 0x300 with init at 0x158 and exit at 0x2d8:
+      kernel.org 4.4.22 arm64 defconfig + `devices/donut/kconfig` (PREEMPT, LOCALVERSION "+") gives exactly that, with
+      AOSP aarch64-linux-android-4.9 and `-fno-pic` (its default PIC clashes with modules' `-mcmodel=large`). The driver
+      is a module itself (`wlan_mt76x8_sdio.ko`, same md5 on the Echo as in the image, not stripped): gen4m
+      `nicRxFillRFB` parses the RX descriptor groups into `SW_RFB_T` (`ucGroupVLD` +32 from DW0 bits 25-28, group 3 =
+      RX vector at +64); RCPI0 = byte 0 of RXV word 3 (`nicRxGetRcpiValueFromRxv`); `nicRxProcessDataPacket` calls it
+      once at +0x50 and then copies the RXV into the AP's `STA_RECORD_T`. The module turns that `bl` into `bl hm_fill`
+      (found by target, bl-for-bl is hot-patch safe, written through `aarch64_insn_patch_text`). On donut by hand:
+      loaded, "nicRxProcessDataPacket+0x50 (call to nicRxFillRFB) hooked", ~17 frames/s at idle; 60 s beside RX_STAT
+      polled at 5 Hz: both 112-120, mean 115.0 / 115.1, scatter over 2 s 1.77 / 1.71. Pushed: hassmic "available ...
+      (through the kernel module)". main.sh now loads a module only with the link up (donut's driver loads late in
+      the boot; a failed load is not retried until reboot). Rebooted with the switch on: driver up at 19 s
+      (`initWlan`, started by wifisvc), main.sh's insmod at 52 s ("kmod: hassmic_rcpi4m.ko loaded"), hooked, no oops,
+      hassmic reporting motion. That boot joined at RCPI 92-94 (-64 dBm, before 113-115): RX_STAT says the same.
+      **Then motion all the time** (from 23:06): readings at 90-94 and 99-101, interleaved frame by frame. A second,
+      throwaway module chained onto `hm_fill` logged descriptor and RX vector per frame (231 s, 2968 frames, 12.9/s):
+      three kinds, by RX vector word 0 (bits 0-6 rate, 12-14 mode, 15-16 bandwidth): 0x1000b legacy OFDM 6 Mbit/s
+      (WTBL entry 4: broadcasts, 549 frames) at 99-101, 0x14008 VHT80 MCS 8 at 92-94, 0x14009 MCS 9 at 90-91 (entry 5,
+      the access point's unicast). The AP sends each rate at its own power. Scatter over 2 s, 10 Hz last-frame polls,
+      same recording (nobody walking through, as far as known): all frames 2.16 (63 % of windows over 1.2), unicast
+      only 0.62 (3 %), broadcasts only 0.10 but 2 a second, every frame against its own rate's running level (30 s)
+      0.21 (p90 0.44, max 0.82, none over 1.2). So the modules report KIND (packed with the RCPI in one atomic) and
+      `wm_kind_norm` feeds the detector each reading's distance from its kind's level (30 s); RX_STAT has no kind (one
+      level). donut: KIND = RX vector word 0 & 0x1f07f. Before the reboot (113-115, RX_STAT and module alike, presumably
+      2.4 GHz) the mix did not show. Replayed through the real detector (10 Hz last-frame polls): one level 96 % of
+      the time motion, rate-keyed 0 %; the labelled RX_STAT walk recording (out 0-120 s, walking 120-220, still
+      220-320, out again; phases from that session) gives the same events as before (18.7, 123.6, 323.6, 359.7 s).
+      biscuit and radar: the gen2 RX header has no rate (bytes 5-7: reorder flags, sequence number + TID, qmHandleRxPackets;
+      radar's nicRxProcessDataPacket byte-identical); data frames come as 802.3 behind the 12-byte header plus
+      (byte 4 & 3) padding, so `hassmic_rcpi.c` gives KIND = destination address bit 0 (group): the broadcast mix is
+      gone, the unicast MCS steps are not. That keying replayed on donut's recording: motion 19 % of the time at
+      sensitivity 5 (MCS 8/9 in runs of 1-5 s, 2 dB apart). Neither a step-tolerant statistic (spread after one fitted
+      step: 14 % at the threshold that keeps the walk events) nor spread AND mean successive change (0 % but at a third
+      of the threshold, 14 % just under it, and the 323 s event lost) holds up, so the detector stays. The Dot 2 and Echo 2
+      have no VHT (a/b/g/n). On them (2026-10-01, 10 Hz polls): with the old module, 60 s each, biscuit one broad hump
+      66-75 (scatter 0.99, 26 % of windows over 1.2; a weak link), radar two groups 76-80 / 83-87 (30 %): the mix
+      there too. After pushing the KIND module and a reboot (main.sh loaded it at 50-60 s on both, radar's first load
+      that way; hooked at c03aac70 / c03ad864, no oops) both sat higher (another band or AP: biscuit 97-98, radar 108).
+      3 min each: biscuit 17 frames/s, unicast 96-99, broadcasts (8 %) 96-99, no motion either way; radar 9.4/s,
+      unicast mostly 108, broadcasts (10 %) 107-109 (109 most), motion 15 % of the time keyed or not, from stretches of
+      104-107 with frame-to-frame noise (00:08:10-00:08:45 and shorter), no two-level steps: looks like movement, not
+      rates. Open: the threshold (1.2 was set on RX_STAT's 0.57 still scatter) needs a walk test on the normalised
+      readings; a gen2 recording where the router changes rate.
+      adb after a reboot: the signed open (`adb-wifi.sh`) sets the port and restarts adbd, but adbd resets every
+      connection until the HA switch goes off and on again (twice, 2026-10-01). Later the same "offline" on
+      biscuit and radar after their reboot, gone with `adb kill-server` on the PC: the PC's adb server keeps the
+      transport from before the reboot, `adb disconnect` + `connect` answer "already connected". Not the Echo.
+      User, 2026-10-01: with RX_STAT the Dot 3 triggered a lot while nobody was on its floor (what led to its module).
+      2026-10-01, all three on with the modules, user's verdict: "seems to mostly work" (not counted). Open:
+      false alarms counted over a day and a night; while music streams (more frames, other rates). Without the kernel toolchain the donut build has no module
+      and RX_STAT stays the source.
 - [ ] Online updates and CI (2026-10-02, issue #3: "centralized config/update instead of the OTA command line").
       `.github/workflows/build.yml`: main -> prerelease `v<version>-beta`, release -> `v<version>`, bundles
       per model signed with a release key (secret `RELEASE_SIGNING_KEY` of environment `release`, main/release only, used by
@@ -913,6 +1025,10 @@ Run in this order. Each step says what it proves.
       the integrated assembler sorts symbols by name). Now per model, in each library's own order, as GNU as assembly
       linked with a SysV hash: all 18 binaries (6 x 3 models) byte-identical to the firmware link (`tools/mkstubs.sh`).
       That needed reproducible builds: ESPHome's "compiled" time is the commit's (`BUILD_TIME`, `LC_ALL=C`: "Okt" vs "Oct").
+      Wi-Fi motion's module in CI for all three: biscuit's and radar's IKCONFIG committed as devices/<codename>/kconfig
+      (device.mk KCONFIG, in place of extracting it from boot.img at build time; modules byte-identical either way),
+      Linux 3.18.19 (sha256 as kernel.org lists it) and arm-eabi-4.8 pinned to marshmallow-release 26e93f6.
+      aarch64-linux-android-4.9's gcc is a Python 2 wrapper around real-*: CI links past it.
       Device side (`update.c`): HA select "Online updates" off/beta/release (settings field 15, off by default) and an
       ESPHome update entity (messages 116-118); GitHub's API (`/releases/latest`; beta: the highest version among
       `/releases?per_page=10`: first published day, the Dot 3 on beta was offered the release 150841 before the newer
@@ -930,7 +1046,16 @@ Run in this order. Each step says what it proves.
       kind (`+sha`, `-dev`, `.dev0`) makes it "unknown" and incomparable, so local builds (`+<commit id>`) are offered
       whatever is on the channel (HA: incomparable and different = update available).
       Secret set 2026-10-02 (environment `release`). Open: branch protection on main/release, first real beta; on a device: DNS through netd and the egress lock's group match
-      on curl's sockets.
+      on curl's sockets; biscuit/radar kernel module in CI.
+      2026-10-03, issue #5: setup builds lacked Wi-Fi motion's module (the setup never fetched the kernel tools);
+      `make kernel-tools` (scripts/kernel-tools.sh, pins in device.mk / Makefile) now does, for the setup and CI alike.
+      Radar module from a fresh download = one from the existing toolchain/ apart from .note.gnu.build-id (paths).
+      Prebuilt installs (scripts/lib/build.sh): the release of HEAD (tag at HEAD, clean tree) instead of a build here.
+      donut's v2026.10.03.203213-beta against `make STUBS=1 RELEASE=1` of ba40444 here: hassmic, runas, otatool, mixcap,
+      mixplay, pryon_test, latency byte-identical. The PC's otatool is Python now (scripts/otatool.py, stdlib: EdDSA as
+      Monocypher's, BLAKE2b): same keys and byte-identical signatures as the C one (tests/otatool_test.sh, 9 checks), the
+      real release bundle verifies, one flipped byte does not; ota_push_test and fake_ha_update pass with it.
+      probe.sh: devices/<codename>/probe.md5 from the pinned firmware (all three firmwares' sha256 match their pins).
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

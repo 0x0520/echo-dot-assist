@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Plays Home Assistant's side of the ESPHome native API against build/hassmic-host, using the reference
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
-import asyncio, base64, io, math, os, signal, struct, subprocess, sys, tempfile, threading, wave
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import asyncio, base64, io, math, os, random, signal, struct, subprocess, sys, tempfile, threading, time, wave
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
-from aioesphomeapi import ZERO_NOISE_PSK, EventInfo
+from aioesphomeapi import ZERO_NOISE_PSK, EventInfo, BinarySensorInfo, BinarySensorState
 from aioesphomeapi.model import Event
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
 
@@ -31,7 +31,10 @@ class Handler(BaseHTTPRequestHandler):
             body = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-ar", "24000",
                                    "-ac", "1", "-f", "mp3", "-"], capture_output=True, check=True).stdout
         self.send_response(200); self.send_header("Content-Type", "audio/wav"); self.end_headers()   # no length: like a transcoding proxy
-        self.wfile.write(body)
+        if "late" in self.path:                         # streamed TTS while the LLM still works: the audio comes later
+            self.wfile.flush(); time.sleep(6)
+        try: self.wfile.write(body)
+        except OSError: pass                            # the Echo hung up
     def log_message(self, *a): pass
 
 
@@ -51,14 +54,17 @@ async def main():
                HASSMIC_MODELS=os.path.join(state, "models"),
                HASSMIC_ADB_OPEN=os.path.join(state, "adb-open.root"),          # on the Echo: in a directory only root writes
                HASSMIC_LUX=os.path.join(state, "calibrated_lux"),              # the light sensor's sysfs file
-               HASSMIC_FAKE_SOUND="dogBark")                                    # every ~10 s window "hears" a dog (sound_none.c)
+               HASSMIC_FAKE_SOUND="dogBark",                                    # every ~10 s window "hears" a dog (sound_none.c)
+               HASSMIC_FAKE_WIFI=os.path.join(state, "rx_stat"))                # what the Wi-Fi driver answers RX_STAT (wifimotion.c)
+    rx_stat = lambda rcpi: open(env["HASSMIC_FAKE_WIFI"], "w").write(f"RX Stat:\nRX SNR (dB)          = 32\nRCPI RX0             = {rcpi}\n")
+    rx_stat(112)
     with open(env["HASSMIC_LUX"], "w") as f: f.write("67\n")
     for m in ("echo-de", "computer-en-US"):             # installed wake word models (the PC build loads none of them)
         os.makedirs(os.path.join(state, "models", m)); open(os.path.join(state, "models", m, "pryon.manifest"), "w").close()
     with open(mdns, "w") as f:                          # what main.sh does at boot
         subprocess.run([f"{ROOT}/build/hassmic-host", "-P", "esphome", "-p", str(PORT), "-n", "Echo Dot", "-S"], env=env, stdout=f, check=True)
     proc = subprocess.Popen([f"{ROOT}/build/hassmic-host", "-P", "esphome", "-p", str(PORT), "-n", "Echo Dot", "-L"], env=env)
-    httpd = HTTPServer(("127.0.0.1", HTTP_PORT), Handler)
+    httpd = ThreadingHTTPServer(("127.0.0.1", HTTP_PORT), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     await asyncio.sleep(0.5)
     try:
@@ -415,7 +421,7 @@ async def main():
         n0 = len(evs)
         async def no_pipeline(*a): return 0
         async def nothing(*a): pass
-        c.subscribe_voice_assistant(handle_start=no_pipeline, handle_stop=nothing, handle_audio=nothing,
+        unsub = c.subscribe_voice_assistant(handle_start=no_pipeline, handle_stop=nothing, handle_audio=nothing,
                                     handle_announcement_finished=nothing)      # announcements answer the assistant's client
         await asyncio.sleep(0.3)
         res = await c.send_voice_assistant_announcement_await_response(f"http://127.0.0.1:{HTTP_PORT}/a.wav", 15, "x")
@@ -429,6 +435,94 @@ async def main():
         c.switch_command(sw.key, False)
         await asyncio.sleep(0.5)
         check(last3(sw.key, SwitchState) is False and open(settings).read().split()[11:12] == ["0"], "sound detection switched off again")
+        # Wi-Fi motion (experimental): off by default, the sensor unknown while off; on, a still level is no motion, a
+        # wobbling one is, and it clears after the hold (3 s in the PC build, 30 s on the Echo)
+        wsw, wbs, wsn = by.get("wifi_motion_detection"), by.get("wifi_motion"), by.get("wifi_motion_sensitivity")
+        wstate = lambda: ([x for x in st3 if isinstance(x, BinarySensorState) and x.key == wbs.key] or [None])[-1]
+        check(isinstance(wsw, SwitchInfo) and "experimental" in wsw.name and int(wsw.entity_category) == 1
+              and isinstance(wbs, BinarySensorInfo) and wbs.device_class == "motion" and "experimental" in wbs.name
+              and isinstance(wsn, NumberInfo) and (wsn.min_value, wsn.max_value) == (1, 10) and int(wsn.entity_category) == 1,
+              "Wi-Fi motion entities listed, named experimental")
+        check(last3(wsw.key, SwitchState) is False and last3(wsn.key, NumberState) == 5 and wstate() and wstate().missing_state,
+              "Wi-Fi motion off by default, sensitivity 5, the sensor unknown")
+        c.switch_command(wsw.key, True)
+        await asyncio.sleep(3)
+        check(last3(wsw.key, SwitchState) is True and wstate() and not wstate().missing_state and wstate().state is False
+              and open(settings).read().split()[12:14] == ["1", "5"],
+              f"switched on: a steady level is no motion, kept in the settings file: {open(settings).read().strip()!r}")
+        for _ in range(60):                                 # someone walking through the path: 6 s
+            rx_stat(random.randint(106, 118)); await asyncio.sleep(0.1)
+            if wstate().state: break
+        check(wstate().state is True, "a wobbling level is motion")
+        rx_stat(112)
+        await asyncio.sleep(7)
+        check(wstate().state is False, "motion clears after the hold")
+        c.number_command(wsn.key, 8)
+        await asyncio.sleep(0.5)
+        check(last3(wsn.key, NumberState) == 8 and open(settings).read().split()[13] == "8", "sensitivity set and kept")
+        c.switch_command(wsw.key, False)
+        await asyncio.sleep(1)
+        check(last3(wsw.key, SwitchState) is False and wstate().missing_state and open(settings).read().split()[12] == "0",
+              "switched off again: the sensor unknown")
+        unsub()                                             # the real assistant again, with mic and replies
+        c.subscribe_voice_assistant(handle_start=handle_start, handle_stop=handle_stop, handle_audio=handle_audio,
+                                    handle_announcement_finished=handle_finished)
+        await asyncio.sleep(0.3)
+        # (at the end: these sleeps would move the mic checks' place in the capture loop)
+        # The action button (SIGUSR2) while Home Assistant thinks: the run is aborted (as a Voice PE's button does), and what
+        # Home Assistant still sends for it plays nothing.  The wake word instead aborts and listens again.
+        async def thinking():
+            proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
+            c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_START, None)
+            c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_END, {"text": "turn off everything"})
+            await asyncio.sleep(0.3); stopped.clear(); started.clear()
+        def late_reply():                    # the aborted run's reply, already on the way
+            c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_TTS_END, {"url": f"http://127.0.0.1:{HTTP_PORT}/reply.wav"})
+            c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_END, None)
+        before = os.path.getsize(play); started.clear(); await thinking()
+        proc.send_signal(signal.SIGUSR2); await asyncio.sleep(0.5)
+        late_reply(); await asyncio.sleep(1.0)
+        check(stopped == [True] and not started.is_set() and os.path.getsize(play) == before,
+              f"button while thinking: run aborted, nothing listens, its late reply not played (stops {stopped}, {os.path.getsize(play) - before} bytes played)")
+        started.clear(); proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
+        check(True, "wake word works again after a cancelled run")
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_ERROR, {"code": "x", "message": "end of test pipeline"})
+        await asyncio.sleep(0.5)
+
+        before = os.path.getsize(play); started.clear(); await thinking()
+        proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
+        late_reply(); await asyncio.sleep(1.0)
+        check(stopped == [True] and os.path.getsize(play) == before,
+              f"wake word while thinking: run aborted, new one started, the old reply not played (stops {stopped}, {os.path.getsize(play) - before} bytes played)")
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_START, None)
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_END, {"text": "turn on the light"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_TTS_END, {"url": f"http://127.0.0.1:{HTTP_PORT}/reply.wav"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_END, None)
+        await asyncio.sleep(2.0)
+        check(os.path.getsize(play) - before == 48000, f"the new run's reply plays: {os.path.getsize(play) - before} bytes")
+
+        # Streamed TTS: the reply's fetch already waits on Home Assistant (first words out, tool calls still running) when
+        # the wake word cancels.  The fetch is cut: the new run's reply is not refused as busy, the old one never plays.
+        before = os.path.getsize(play); started.clear()
+        proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_START, {"url": f"http://127.0.0.1:{HTTP_PORT}/late.wav"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_END, {"text": "turn off everything"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_INTENT_PROGRESS, {"tts_start_streaming": "1"})
+        await asyncio.sleep(0.5); stopped.clear(); started.clear()
+        proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_START, None)
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_END, {"text": "turn on the light"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_TTS_END, {"url": f"http://127.0.0.1:{HTTP_PORT}/reply.wav"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_END, None)
+        await asyncio.sleep(2.0)
+        check(stopped == [True] and os.path.getsize(play) - before == 48000,
+              f"wake word while a streamed reply is fetched: fetch cut, the new run's reply plays (stops {stopped}, {os.path.getsize(play) - before} bytes)")
+        await asyncio.sleep(6)
+        check(os.path.getsize(play) - before == 48000, f"the cancelled run's reply never plays: {os.path.getsize(play) - before} bytes")
+        started.clear(); proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
+        check(True, "and the wake word works after it")
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_ERROR, {"code": "x", "message": "end of test pipeline"})
+        await asyncio.sleep(0.5)
         await c.disconnect()
     finally:
         proc.terminate(); httpd.shutdown()

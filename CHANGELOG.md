@@ -6,9 +6,18 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 - **Guided setup: Echo Dot 3 unlock fixed.** `scripts/setup.sh` stopped at "Waiting for the Echo's bootrom" with
   "./bootrom-step.sh: No such file or directory": the kamakiri zip unpacks into a folder of its own, and the step looked
-  for its scripts one level too high. It now finds them wherever the zip puts them, and answers the Enter that
-  kamakiri asks for after the handshake. If you hit this, run `scripts/setup.sh` again; nothing needs deleting. The
-  Echo Dot 2 and Echo 2 steps find amonet the same way now, in case a later zip is laid out differently.
+  for its scripts one level too high. It now finds them wherever the zip puts them. If you hit this, run
+  `scripts/setup.sh` again; nothing needs deleting. The Echo Dot 2 and Echo 2 steps find amonet the same way now, in
+  case a later zip is laid out differently.
+
+- **Guided setup: the Echo Dot 3 unlock no longer hangs after the handshake** ([issue
+  #4](https://github.com/Gamer92000/echo-dot-assist/issues/4)). kamakiri waits for Enter right after it reaches the
+  Echo's bootrom, and the setup gave it no keyboard, so it waited forever with the ring dark. It now runs in front of
+  you: hold the dot button, plug in, and when it asks, release the button and press Enter. Nothing is written to the
+  Echo before that point, so an Echo stuck there is unchanged; unplug it and run `scripts/setup.sh` again.
+
+- **`scripts/probe.sh` says when there is no Echo on adb** instead of listing every file as different. A stock Echo
+  has no adb until it is rooted, so this check only works after that.
 
 ## 2026-10-02
 

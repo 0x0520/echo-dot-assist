@@ -83,10 +83,15 @@ step_unlock() {
     # the zip may keep its scripts in a folder of their own: run them from wherever bootrom-step.sh landed
     kdir=$(find $FW/kamakiri -name bootrom-step.sh -print -quit 2>/dev/null); kdir=${kdir%/*}
     [ -n "$kdir" ] || [ -n "$DRY" ] || { fail "no bootrom-step.sh in $FW/kamakiri; delete that folder and try again"; return 1; }
-    tell "Hold the action button (•) and plug the USB cable in" "Keep holding until the next line turns green."
-    # bootrom-step.sh asks for Enter after the handshake; task's stdin is /dev/null, so answer it here
-    task "Waiting for the Echo's bootrom, handshake" in_dir "$kdir" sh -c "yes '' | ./bootrom-step.sh" || return 1
-    say "${B}Release the button.$N"
+    tell "Hold the action button (•) and plug the USB cable in" \
+        "Keep holding until it asks you to press Enter, then release the button and press Enter." \
+        "The ring stays dark until then: the Echo is in its bootrom."
+    # in the foreground: after the handshake kamakiri waits for Enter while kicking the watchdog, and again if the rpmb
+    # looks broken (a safety stop that a person answers, so no `yes` here).  Without a terminal input() hit EOF and the
+    # wait never ended, the Echo dark in bootrom (issue #4).  tee keeps the output in the log; unbuffered, or the prompt
+    # would sit in Python's pipe buffer.
+    live "Unlocking with kamakiri" in_dir "$kdir" env PYTHONUNBUFFERED=1 \
+        bash -o pipefail -c "./bootrom-step.sh 2>&1 | tee -a '$LOG'" || return 1
     waitfor "Waiting for hacked fastboot (rainbow ring)|Hacked fastboot" '[ -n "$(fastboot devices)" ]' \
         "No rainbow? Unplug everything and try this step again." || return 1
     task "Flashing TWRP" in_dir "$kdir" ./fastboot-step.sh || return 1

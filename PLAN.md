@@ -59,8 +59,9 @@ Legend: `[x]` done, `[~]` partly done (note says what is missing), `[ ]` open. *
       `VoiceAssistantRequest start=false` (ESPHome's `voice_assistant.stop`; HA `_abort_pipeline` cancels the pipeline task,
       LLM and pending tool calls), wake word the same plus a new pipeline. Events of the aborted run still on the wire are
       dropped until the new run's RUN_START (`proto_esphome.c` `cancelled`); a streamed reply already being fetched has
-      its socket shut down (`media_abort`): the fetch can wait on HA for seconds, and held `media_busy` it refused the
-      next run's reply (found in review, test fails without it). Button during listening/thinking wins over music pause.
+      its socket shut down and `media_busy` released by `cancel()` itself (`media_job.aborted`): the fetch can wait on HA
+      for seconds and held the slot against the next run's reply (found in review, test fails without it); releasing it
+      only when the thread noticed still lost a reply that came at once (release CI, 2026-10-04). Button during listening/thinking wins over music pause.
       PC: `fake_ha_esphome.py`. Device 2026-10-04 (radar, kitchen Echo): button and wake word while thinking work (user)
 - [x] Wake earcon: generated blip on the `Earcon` stream (`-E` disables). Since 2026-09-23 Amazon's own sounds from the system image
       (`src/hassmic/sounds.c`: WAV, or MP3 through minimp3, mixed to mono): `ui_wakesound` for the wake word, `ui_wakesound_touch`

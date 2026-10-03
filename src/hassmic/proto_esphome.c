@@ -114,8 +114,7 @@ static char tts_url[1024];              /* lock held: reply URL of the running p
 static int announcing, media_playing;   /* lock held */
 static void announce_done(void);
 static atomic_int media_busy;
-static atomic_int media_abort;          /* the run whose reply this job fetches was cancelled: drop it, touch no state */
-static int media_fd = -1;               /* lock held: the job's socket, for cancel() to cut a fetch that waits on the server */
+static struct media_job *media_cur;    /* lock held: the job holding media_busy, for cancel() */
 
 /* ---------------------------------------------------------------- protobuf */
 
@@ -679,7 +678,10 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
 
 /* ---------------------------------------------------------------- media over http (announcements, play_media) */
 
-struct media_job { char url[2][1024]; int announce, start_conversation; };
+struct media_job {
+    char url[2][1024]; int announce, start_conversation;
+    int fd, aborted;                    /* lock held.  aborted: its run was cancelled; it plays nothing and touches no state */
+};
 
 static void send_mp_state(void)         /* lock held */
 {
@@ -721,10 +723,10 @@ static int http_get(const char *url)    /* returns a socket positioned at the bo
     return http_get_host(host, port, path ? path : "/");
 }
 
-static int tts_begin(unsigned rate, unsigned ch)    /* -1: cancelled, the reply must not play */
+static int tts_begin(struct media_job *job, unsigned rate, unsigned ch)    /* -1: cancelled, the reply must not play */
 {
     pthread_mutex_lock(&core_lock);
-    int ok = !atomic_load(&media_abort);
+    int ok = !job->aborted;
     if (ok) core_tts_begin(rate, ch);
     pthread_mutex_unlock(&core_lock);
     return ok ? 0 : -1;
@@ -736,7 +738,7 @@ static void feed(const void *pcm, size_t len)       /* queue with back pressure 
     while (core_tts_queued() > 256 * 1024 && !core_tts_flushing()) usleep(50000);
 }
 
-static int play_wav(int fd, const unsigned char *head, size_t have)
+static int play_wav(struct media_job *job, int fd, const unsigned char *head, size_t have)
 {
     unsigned char ck[8], fmt[16]; unsigned rate = 0, ch = 0, bits = 0; static unsigned char buf[8192];
     (void)head; (void)have;                             /* the 12 byte RIFF/WAVE header, already consumed */
@@ -752,7 +754,7 @@ static int play_wav(int fd, const unsigned char *head, size_t have)
     }
     if (bits != 16 || !rate || !ch) { fprintf(stderr, "media: unsupported WAV (%u Hz, %u ch, %u bit)\n", rate, ch, bits); return -1; }
     fprintf(stderr, "media: WAV %u Hz x%u\n", rate, ch);
-    if (tts_begin(rate, ch) < 0) return -1;
+    if (tts_begin(job, rate, ch) < 0) return -1;
     size_t odd = 0;
     for (ssize_t r; !core_tts_flushing() && (r = read(fd, buf + odd, sizeof buf - odd)) > 0; ) {
         size_t n = odd + r, use = n & ~(size_t)(2 * ch - 1);        /* whole frames only */
@@ -764,7 +766,7 @@ static int play_wav(int fd, const unsigned char *head, size_t have)
 
 /* Home Assistant sends TTS announcements as they come from the TTS engine, usually MP3 (it only asks for WAV once a
  * voice pipeline has run), so that has to play too. */
-static int play_mp3(int fd, const unsigned char *head, size_t have)
+static int play_mp3(struct media_job *job, int fd, const unsigned char *head, size_t have)
 {
     static unsigned char in[32768]; static mp3d_sample_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
     static mp3dec_t dec; mp3dec_frame_info_t info; size_t n = have; int began = 0, eof = 0;
@@ -778,7 +780,7 @@ static int play_mp3(int fd, const unsigned char *head, size_t have)
         if (samples > 0) {
             if (!began) {
                 fprintf(stderr, "media: MP3 %d Hz x%d\n", info.hz, info.channels);
-                if (tts_begin(info.hz, info.channels) < 0) break;
+                if (tts_begin(job, info.hz, info.channels) < 0) break;
                 began = 1;
             }
             feed(pcm, (size_t)samples * info.channels * 2);
@@ -789,34 +791,39 @@ static int play_mp3(int fd, const unsigned char *head, size_t have)
     return began ? 0 : -1;
 }
 
-static int play_url(int fd)
+static int play_url(struct media_job *job, int fd)
 {
     unsigned char h[12];
     if (read_full(fd, h, 12) != 12) { fprintf(stderr, "media: empty response\n"); return -1; }
-    if (!memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4)) return play_wav(fd, h, 12);
+    if (!memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4)) return play_wav(job, fd, h, 12);
     if (!memcmp(h, "fLaC", 4) || !memcmp(h, "OggS", 4)) { fprintf(stderr, "media: FLAC/Ogg is not supported, only WAV and MP3\n"); return -1; }
-    return play_mp3(fd, h, 12);
+    return play_mp3(job, fd, h, 12);
 }
 
 static void *media_thread(void *arg)
 {
     struct media_job *job = arg; int ok = 0, began = 0;
     for (int i = 0; i < 2; i++) {
-        if (!job->url[i][0] || core_tts_flushing() || atomic_load(&media_abort)) continue;
+        if (!job->url[i][0] || core_tts_flushing()) continue;
         int fd = http_get(job->url[i]);
         if (fd < 0) continue;
-        pthread_mutex_lock(&core_lock); media_fd = fd; int gone = atomic_load(&media_abort); pthread_mutex_unlock(&core_lock);
-        if (!gone && play_url(fd) == 0) { began = 1; if (i == 1) ok = 1; }
-        pthread_mutex_lock(&core_lock); media_fd = -1; pthread_mutex_unlock(&core_lock);
+        pthread_mutex_lock(&core_lock); job->fd = fd; int gone = job->aborted; pthread_mutex_unlock(&core_lock);
+        if (!gone && play_url(job, fd) == 0) { began = 1; if (i == 1) ok = 1; }
+        pthread_mutex_lock(&core_lock); job->fd = -1; pthread_mutex_unlock(&core_lock);
         close(fd);
     }
     pthread_mutex_lock(&core_lock);
-    int stale = atomic_load(&media_abort);  /* a new run may be listening already: its pipeline is not ours to end */
+    if (job->aborted) {                 /* cancel() has let go of it: a new run and its reply may be under way already */
+        pthread_mutex_unlock(&core_lock);
+        free(job);
+        return NULL;
+    }
+    if (media_cur == job) media_cur = NULL;
     if (job->announce) {
         if (job->start_conversation && ok) core_restart_after();
         if (!began) { PB(b, 8); pb_uint(&b, 1, 0); send_va(VA_ANNOUNCE_FINISHED, &b); announcing = 0; announce_done(); }
     }
-    if (!began) { media_playing = 0; send_mp_state(); if (!stale) core_pipeline_finish(); atomic_store(&media_busy, 0); }
+    if (!began) { media_playing = 0; send_mp_state(); core_pipeline_finish(); atomic_store(&media_busy, 0); }
     pthread_mutex_unlock(&core_lock);
     if (began) core_tts_end();          /* played() below finishes the job once the audio is out */
     free(job);
@@ -833,10 +840,10 @@ static void media_start(const char *url0, const char *url1, int announce, int st
         if (announce) { PB(b, 8); pb_uint(&b, 1, 0); send_va(VA_ANNOUNCE_FINISHED, &b); }
         free(job); return;
     }
-    atomic_store(&media_abort, 0);                      /* concerned the job before, which has ended */
     if (!is_reply && (core_state() == LISTENING || core_state() == THINKING)) core_pipeline_finish();
     snprintf(job->url[0], sizeof job->url[0], "%s", url0); snprintf(job->url[1], sizeof job->url[1], "%s", url1);
-    job->announce = announce; job->start_conversation = start_conversation;
+    job->announce = announce; job->start_conversation = start_conversation; job->fd = -1;
+    media_cur = job;
     announcing = announce; media_playing = 1; send_mp_state();
     fprintf(stderr, "media: %s%s\n", announce ? "announce " : "", url1);
     pthread_create(&t, NULL, media_thread, job); pthread_detach(t);
@@ -1111,8 +1118,15 @@ static void cancel(void)
     send_va(VA_REQUEST, NULL);                                 /* start = false: abort */
     cancelled = 1;
     /* A streamed reply can be on its way already (tool calls can follow its first words).  The fetch may be waiting on
-     * Home Assistant: cut its socket, or the job would hold media_busy and refuse the next run's reply */
-    if (tts_expected) { atomic_store(&media_abort, 1); if (media_fd >= 0) shutdown(media_fd, SHUT_RDWR); }
+     * Home Assistant: cut its socket, and let go of it here, or the job would hold media_busy until it notices and
+     * refuse the next run's reply (the gap is enough when that comes at once: seen in CI) */
+    if (tts_expected && media_cur) {
+        media_cur->aborted = 1;
+        if (media_cur->fd >= 0) shutdown(media_cur->fd, SHUT_RDWR);
+        media_cur = NULL;                                     /* the thread frees it; the slot is free now, not when it notices */
+        media_playing = 0; send_mp_state();
+        atomic_store(&media_busy, 0);
+    }
 }
 
 static void played(void)

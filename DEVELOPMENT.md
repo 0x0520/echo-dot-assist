@@ -33,7 +33,7 @@ rules. `DEVICE` picks one (default `donut`). The adb scripts check it against th
 | `src/tools/` | `mixcap`, `mixplay`, `pryon_test`, `aed_test` (stock sound detector, `docs/re-aed.md`), `latency`, `otatool`, `runas` (AIPC refuses uid 0, the image has no `su`), `curlspy`, `hciscan` (raw HCI on `/dev/stpbt`), `a2dpprobe` (stands in for the Bluetooth stack on the mixer's A2DP output) |
 | `src/include/` | C headers for the reversed `libmixerAPI.so` and `libpryon.so` |
 | `src/third_party/` | monocypher 4.0.2, `dr_flac.h`, `minimp3.h`, libfreeaptx 0.2.2, RNNoise 0.1.1 (own licences, see README) |
-| `scripts/` | PC side: `setup.sh` (guided install), `artifacts.sh` (Amazon artifacts for an installed Echo: more wake words, the sound detection model), `deploy.sh`, `probe.sh`, `capture-test.sh`, `mic-compare.sh` (micRaw against micAsr on a running Echo), `wifi-join.sh`, `install-system.sh`, `ota-push.sh`, `bundle.sh` (packs and signs an update; also CI's), `adb-wifi.sh` (adb over Wi-Fi with the update key); `lib/device.sh` picks the model, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
+| `scripts/` | PC side: `setup.sh` (guided install), `artifacts.sh` (Amazon artifacts for an installed Echo: more wake words, the sound detection model), `deploy.sh`, `probe.sh`, `capture-test.sh`, `mic-compare.sh` (micRaw against micAsr on a running Echo), `wifi-join.sh`, `install-system.sh`, `ota-push.sh`, `bundle.sh` (packs and signs an update; also CI's), `otatool.py` (bundles on the PC: keys, signing, checking, pushing; the Echo's own is `src/tools/otatool.c`), `adb-wifi.sh` (adb over Wi-Fi with the update key); `lib/device.sh` picks the model, `lib/build.sh` builds the Echo's binaries or takes the commit's release build, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
 | `scripts/device/`, `scripts/system/` | run on the Echo, reading the model's `device.conf` next to them; boot integration (`boot.sh`, `main.sh`) |
 | `tools/` | `mkstubs.sh` (stand-ins for the stock libraries, for building without the firmware), OTA payload dumper, Thumb disassembly helpers, `qrun.sh` (device binaries under qemu-arm), `davs-fetch.py` |
 | `tests/` | protocol tests against the reference implementations |
@@ -56,6 +56,7 @@ make unit                                         # C unit tests
 .venv/bin/python tests/fake_ha.py [--qemu]        # Wyoming (wyoming)
 .venv/bin/python tests/fake_ma_sendspin.py        # Sendspin, as Music Assistant (aiosendspin)
 tests/ota_push_test.sh                            # signed push-update path end to end
+tests/otatool_test.sh                             # the PC's otatool (Python) against the Echo's (C)
 .venv/bin/python tests/fake_ha_update.py          # online updates: Home Assistant, GitHub and root's installer in one
 ```
 
@@ -84,6 +85,22 @@ firmware's `boot.img` with `scripts/extract-ikconfig`; device.mk `KCONFIG`); don
 (vermagic, no modversions, no signature).
 
 Trial runs on the device: `scripts/deploy.sh`, then `adb shell sh /data/local/hassmic/run.sh`.
+
+**The release build instead** (`scripts/lib/build.sh`): the scripts that need the Echo's binaries (`deploy.sh`,
+`install-system.sh`, `ota-push.sh`, the guided setup) take the bundle CI published of the checked-out commit when
+there is no NDK here, or with `PREBUILT=1` (`PREBUILT=0`: always build). That needs the tag CI made of the commit
+(`v<version>[-beta]`) to point at `HEAD` and no changes to tracked files; the bundle must verify against
+`keys/release.pub` (`scripts/otatool.py`), and its binaries go into `build/<codename>/`, listed in `PREBUILT` there,
+so a later build here replaces them instead of taking them as up to date. They are the same bytes as a build here
+(reproducible). `scripts/probe.sh` checks the Echo's libraries against `devices/<codename>/probe.md5`, the pinned
+firmware's checksums, so that path needs no unpacked firmware either; regenerate it when the firmware pin changes
+(command in `probe.sh`).
+
+**otatool on the PC is Python** (`scripts/otatool.py`, standard library only), so a prebuilt install needs no
+compiler at all. Monocypher's EdDSA is Ed25519 with BLAKE2b where Ed25519 has SHA-512, which no Python package offers;
+the arithmetic is RFC 8032's. The Echo keeps the C `otatool` (`src/tools/otatool.c`), which is what checks a bundle
+there, so the two are held to each other: `tests/otatool_test.sh` (signatures byte for byte, each one's bundles
+installed by the other), and CI checks every bundle it signs with both before it publishes.
 
 ## CI and releases
 

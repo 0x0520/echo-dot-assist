@@ -1040,6 +1040,15 @@ Run in this order. Each step says what it proves.
       whatever is on the channel (HA: incomparable and different = update available).
       Secret set 2026-10-02 (environment `release`). Open: branch protection on main/release, first real beta; on a device: DNS through netd and the egress lock's group match
       on curl's sockets; biscuit/radar kernel module in CI.
+      2026-10-03, issue #5: setup builds lacked Wi-Fi motion's module (the setup never fetched the kernel tools);
+      `make kernel-tools` (scripts/kernel-tools.sh, pins in device.mk / Makefile) now does, for the setup and CI alike.
+      Radar module from a fresh download = one from the existing toolchain/ apart from .note.gnu.build-id (paths).
+      Prebuilt installs (scripts/lib/build.sh): the release of HEAD (tag at HEAD, clean tree) instead of a build here.
+      donut's v2026.10.03.203213-beta against `make STUBS=1 RELEASE=1` of ba40444 here: hassmic, runas, otatool, mixcap,
+      mixplay, pryon_test, latency byte-identical. The PC's otatool is Python now (scripts/otatool.py, stdlib: EdDSA as
+      Monocypher's, BLAKE2b): same keys and byte-identical signatures as the C one (tests/otatool_test.sh, 9 checks), the
+      real release bundle verifies, one flipped byte does not; ota_push_test and fake_ha_update pass with it.
+      probe.sh: devices/<codename>/probe.md5 from the pinned firmware (all three firmwares' sha256 match their pins).
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

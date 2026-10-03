@@ -37,6 +37,9 @@ NOTES=(
 slot() { ashell bcbtool get_active | tr -d " \n"; }
 
 step_tools() {
+    command -v curl > /dev/null || need_tools curl || return 1
+    build_mode
+    if [ "$BUILD_MODE" = prebuilt ]; then need_tools adb fastboot python3 pyusb unzip sqlite3 curl sha256sum || return 1; return 0; fi
     need_tools adb fastboot python3 pyusb make cc unzip 7z sqlite3 curl sha256sum bc xz || return 1
     [ "$(df -Pk . | awk 'NR == 2 { print $4 }')" -gt 5000000 ] || warn "less than 5 GB free here; the NDK and firmware need about that"
 }
@@ -45,6 +48,7 @@ step_files() {
     need_files $FW/$FIRMWARE_FILE $FIRMWARE_SHA256 "Fire OS $FIRMWARE_ID: $FTVDB" \
                $FW/$AMONET $AMONET_SHA256 "attachment in $XDA" \
                $FW/$BOOTROOT $BOOTROOT_SHA256 "attachment in $XDA" || return 1
+    [ "$BUILD_MODE" = prebuilt ] && return 0          # nothing to build with
     if [ -x $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang ]; then ok "Android NDK r21e"; else
         mkdir -p toolchain
         TASK_NOTE="du -h toolchain/ndk.zip | cut -f1" task "Downloading Android NDK r21e (1 GB)" curl -fsSL -o toolchain/ndk.zip $NDK_URL &&
@@ -120,12 +124,14 @@ step_root() {
 }
 
 step_build() {
-    if [ ! -d $FW/rootfs/system/lib ]; then
+    # the firmware's libraries are only needed to link against
+    if [ "$BUILD_MODE" != prebuilt ] && [ ! -d $FW/rootfs/system/lib ]; then
         task "Unpacking the firmware" sh -c "unzip -o -q $FW/$FIRMWARE_FILE payload.bin -d $FW &&
             python3 tools/payload_dump.py $FW/payload.bin $FW/images && 7z x -o$FW/rootfs -y $FW/images/system.img" || return 1
     fi
     [ -d $FW/boot-root ] || task "Unpacking boot-root" unzip -q $FW/$BOOTROOT -d $FW/boot-root || return 1
-    task "Building" make -s all DEVICE=$DEVICE || return 1
+    if [ "$BUILD_MODE" = prebuilt ]; then task "Downloading the release build of this commit" build_binaries || return 1
+    else task "Building" build_binaries || return 1; fi
     wait_adb device || return 1
     task "Checking the Echo's firmware" sh -c 'out=$(scripts/probe.sh) && echo "$out" && ! echo "$out" | grep -q DIFFERENT' ||
         { fail "the Echo runs another firmware than $FIRMWARE_ID: redo the firmware step"; return 1; }

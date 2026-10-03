@@ -36,7 +36,8 @@ What each model needs on the PC is also split by codename. These directories are
   `tools/qrun.sh` runs binaries under qemu against it.
 - `build/<codename>/`: the device binaries, bundles and patched policy.
 
-The PC builds for the protocol tests (`build/hassmic-host`, `build/otatool-host`) stay in `build/`. `hassmic-host`
+The PC builds for the protocol tests (`build/hassmic-host`, `build/otatool-host`) stay in `build/`. A new model also
+needs `probe.md5` (the checksums of its `PROBE_FILES` in the pinned firmware, see `scripts/probe.sh`). `hassmic-host`
 carries the `board.c` identity of `DEVICE`.
 
 ```sh

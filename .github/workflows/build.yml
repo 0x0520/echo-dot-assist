@@ -133,9 +133,12 @@ jobs:
       - name: Bundle (throwaway key)
         run: |
           mkdir -p secrets
-          build/otatool-host keygen secrets/throwaway.key secrets/throwaway.pub
+          python3 scripts/otatool.py keygen secrets/throwaway.key secrets/throwaway.pub
           DEVICE=${{ matrix.device }} scripts/bundle.sh secrets/throwaway.key "${{ needs.version.outputs.version }}"
-          build/otatool-host verify secrets/throwaway.pub build/${{ matrix.device }}/hassmic.bundle build/${{ matrix.device }}/hassmic.bundle.sig
+          # packed by the PC's otatool (Python), checked by the Echo's (C) as well
+          for v in build/otatool-host "python3 scripts/otatool.py"; do
+              $v verify secrets/throwaway.pub build/${{ matrix.device }}/hassmic.bundle build/${{ matrix.device }}/hassmic.bundle.sig
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.device }}
@@ -169,6 +172,8 @@ jobs:
         run: make build/hassmic-host build/otatool-host
       - name: Unit tests
         run: make unit
+      - name: otatool, Python against C
+        run: sh tests/otatool_test.sh
       - name: Push updates
         run: sh tests/ota_push_test.sh
       - name: Online updates
@@ -204,8 +209,11 @@ jobs:
               d=${a#build/build-}
               mkdir -p build/$d; cp -r $a/. build/$d/       # the artifacts as the build left them (otatool pack sets modes)
               DEVICE=$d scripts/bundle.sh secrets/release.key "$VERSION"
-              build/otatool-host verify keys/release.pub build/$d/hassmic.bundle build/$d/hassmic.bundle.sig > /dev/null ||
-                  { echo "::error::$d: bundle does not verify against keys/release.pub: secret and public key differ"; rm -f secrets/release.key; exit 1; }
+              # signed by the PC's otatool (Python): what the Echo's (C) checks must pass too, or nothing is published
+              for v in build/otatool-host "python3 scripts/otatool.py"; do
+                  $v verify keys/release.pub build/$d/hassmic.bundle build/$d/hassmic.bundle.sig > /dev/null ||
+                      { echo "::error::$d: bundle does not verify against keys/release.pub ($v): secret and public key differ, or the two otatools do"; rm -f secrets/release.key; exit 1; }
+              done
               cp build/$d/hassmic.bundle dist/hassmic-$d.bundle; cp build/$d/hassmic.bundle.sig dist/hassmic-$d.bundle.sig
           done
           rm -f secrets/release.key

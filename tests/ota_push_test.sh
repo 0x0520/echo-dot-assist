@@ -1,7 +1,8 @@
 #!/bin/sh
-# Push update path on the PC: real hassmic-host receiver, real otatool, and this script in the role of the root-side
-# installer loop of main.sh (same commands, temp directories).
-cd "$(dirname "$0")/.."; T=$(mktemp -d); O=build/otatool-host; fail=0
+# Push update path on the PC: real hassmic-host receiver, the PC's otatool (scripts/otatool.py) as ota-push.sh and
+# adb-wifi.sh use it, and this script in the role of the root-side installer loop of main.sh (same commands, temp
+# directories, the Echo's otatool: build/otatool-host).
+cd "$(dirname "$0")/.."; T=$(mktemp -d); O="python3 scripts/otatool.py"; E=build/otatool-host; fail=0
 ok() { if [ "$1" = 0 ]; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 $O keygen $T/k.sec $T/k.pub; $O keygen $T/evil.sec $T/evil.pub
 mkdir $T/state
@@ -11,7 +12,7 @@ installer() {        # what ota_watch in main.sh does, once
     for i in $(seq 1 40); do [ -f $T/state/ota/request ] && break; sleep 0.25; done
     [ -f $T/state/ota/request ] || return
     rm -f $T/state/ota/request
-    if v=$($O install $T/k.pub $T/state/ota/bundle $T/state/ota/bundle.sig $T/installed 2>&1); then echo "OK $v" > $T/state/ota/result; else echo "FAILED $v" > $T/state/ota/result; fi
+    if v=$($E install $T/k.pub $T/state/ota/bundle $T/state/ota/bundle.sig $T/installed 2>&1); then echo "OK $v" > $T/state/ota/result; else echo "FAILED $v" > $T/state/ota/result; fi
 }
 printf '#!/bin/sh\necho main\n' > $T/main.sh; cp build/hassmic-host $T/hassmic
 $O pack $T/k.sec 9.9.9+test $T/good.bundle $T/main.sh $T/hassmic >/dev/null

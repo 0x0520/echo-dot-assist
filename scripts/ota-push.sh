@@ -18,11 +18,11 @@ HOST=${1:-$(cat secrets/ota.host 2>/dev/null || true)}
 [ -f secrets/update.key ] || { echo "secrets/update.key missing: this key pair is created by scripts/install-system.sh"; exit 1; }
 PORT=${OTA_PORT:-28929}
 
-make -s all build/otatool-host DEVICE=$DEVICE
-VERSION=$(make -s version)                  # the commit's time and id: what hassmic will report
+. scripts/lib/build.sh; build_binaries    # built here or this commit's release build (PREBUILT)
+VERSION=$(build_version)                    # what hassmic will report: the commit's time and id, or the release's
 scripts/bundle.sh secrets/update.key "$VERSION"
 echo "pushing $DEVICE build to $HOST ..."
-build/otatool-host push "$HOST" $PORT $OUT/hassmic.bundle $OUT/hassmic.bundle.sig
+python3 scripts/otatool.py push "$HOST" $PORT $OUT/hassmic.bundle $OUT/hassmic.bundle.sig
 mkdir -p secrets; echo "$HOST" > secrets/ota.host
 
 echo

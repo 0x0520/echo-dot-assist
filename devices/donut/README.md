@@ -99,7 +99,10 @@ reboot, replug the power. Back to TWRP: `adb reboot recovery`, or hold Volume Up
 
 ### 2. Unpack the firmware and build
 
-The tools link against Amazon's libraries, so the firmware is unpacked on the PC:
+The tools link against Amazon's libraries, so the firmware is unpacked on the PC. On a commit GitHub has a build of
+(any pushed commit on `main` or `release`, once CI has published it; [README](../../README.md#install)) none of this
+is needed: `export PREBUILT=1`, and the scripts below and in the next steps use that build, checked against the
+release key. Then only `boot-root` is unpacked, and `scripts/probe.sh` runs as below.
 
 ```sh
 unzip firmware/donut/update-kindle-*.bin payload.bin -d firmware/donut/

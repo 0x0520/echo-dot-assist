@@ -182,6 +182,14 @@ shows the end of it and offers to try again. Ctrl-C stops it at any point and th
 `--dry-run` walks all steps and shows the commands without running any, `--restart` starts over for the next Echo of
 the same model. The model's page has the same steps written out.
 
+**Nothing to compile** on a commit that GitHub has a build of: every commit on `main` and `release` once CI has
+published it (a few minutes after the push). The setup then offers that build, the one online updates install too, and
+skips the Android NDK (1 GB), the compilers and unpacking the firmware; the build is checked against the project's
+release key (`keys/release.pub`) before anything uses it. With changes of your own in the checkout, or on a commit
+without a build, it builds here as before. The other scripts that need the Echo's programs (`deploy.sh`,
+`install-system.sh`, `ota-push.sh`) do the same: the release build where there is no NDK here, `PREBUILT=1` to insist
+on it, `PREBUILT=0` to always build.
+
 ## Updating
 
 ### From Home Assistant (online updates)
@@ -212,7 +220,7 @@ git pull
 scripts/ota-push.sh <echo-ip>        # remembers the address
 ```
 
-Builds, signs, pushes over Wi-Fi (TCP 28929). The Echo installs only what verifies against your key, restarts hassmic,
+Builds (or downloads that commit's release build, as the setup does), signs, pushes over Wi-Fi (TCP 28929). The Echo installs only what verifies against your key, restarts hassmic,
 and falls back to the installed copy by itself if the new one does not stay up. What changed: [CHANGELOG.md](CHANGELOG.md).
 
 Every update, pushed or online, runs a self test as it starts: wake word engine loaded, ports open, a second of

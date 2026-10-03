@@ -4,6 +4,16 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-03
 
+- **Install without compiling anything.** On a commit that GitHub has a build of (every commit on `main` and
+  `release` once CI has published it), `scripts/setup.sh` offers that build: no Android NDK (1 GB), no compilers, no
+  unpacking of the firmware, and fewer tools to install. It is the build online updates install, and it is checked
+  against the project's release key before anything uses it. With changes of your own in the checkout it builds as
+  before. `deploy.sh`, `install-system.sh` and `ota-push.sh` take that build too when there is no NDK on the PC
+  (`PREBUILT=1` to insist on it, `PREBUILT=0` to always build).
+- **Update keys, push updates and `adb-wifi.sh` no longer need a C compiler on the PC.** The PC's side of the update
+  tool is Python now (`scripts/otatool.py`). Keys, signatures and bundles are the same as before; nothing changes on
+  the Echo.
+
 - **`scripts/install-system.sh` no longer stops silently on a build without the Wi-Fi motion module** ([issue
   #5](https://github.com/Gamer92000/echo-dot-assist/issues/5)). That module is optional and is only built when the
   kernel source and its toolchain are there. Without it, the install quit before writing anything and gave no message.

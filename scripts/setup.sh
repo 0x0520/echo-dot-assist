@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 . scripts/lib/device.sh
 . scripts/lib/setup.sh
 . scripts/lib/artifacts.sh
+. scripts/lib/build.sh
 
 DRY= RESTART=
 for a in "$@"; do
@@ -64,8 +65,10 @@ device_load
 
 mkdir -p $OUT
 STATE=$PWD/$OUT/setup.done LOG=$PWD/$OUT/setup.log
-[ -n "$RESTART" ] && [ -z "$DRY" ] && rm -f $STATE $OUT/setup.env
+[ -n "$RESTART" ] && [ -z "$DRY" ] && rm -f $STATE $OUT/setup.env $OUT/setup.build
 touch $STATE
+# asked in the tools step; a rerun past it goes on as decided then
+[ -f $OUT/setup.build ] && build_mode_set "$(cat $OUT/setup.build)"
 [ -n "$DRY" ] && STATE=/dev/null LOG=/dev/null        # a dry run walks every step, and leaves the progress alone
 mapfile -t STEP_LIST < <(printf '%s\n' "$STEPS" | grep .)
 n=${#STEP_LIST[@]}

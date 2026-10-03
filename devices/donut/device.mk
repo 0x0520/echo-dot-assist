@@ -11,5 +11,9 @@ KMOD    := hassmic_rcpi4m
 KVER    := 4.4.22
 KARCH   := arm64
 KCROSS  := $(CURDIR)/toolchain/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+KSRC_URL    := https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.4.22.tar.xz
+KSRC_SHA256 := 629d5661dc3b554fb0214b4635d80bb20f7977c6e814810945de31cfa86d1a0f
+KCC_URL     := https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/961622e926a1b21382dba4dd9fe0e5fb3ee5ab7c.tar.gz
+KCC_DIGEST  := 6465e57d85ac645a5ebe5fe0537dc3f868f85ea6bbd8d7e1d0de06b349168067
 KFRAG   := devices/donut/kconfig
 KCFLAGS := -fno-pic                 # Android's GCC builds PIC by default; modules use -mcmodel=large, which refuses it

@@ -64,17 +64,18 @@ tests/ota_push_test.sh                            # signed push-update path end 
 
 The Wi-Fi motion kernel modules (`src/kmod/`) need the model's kernel sources and compiler in `toolchain/`; without
 them `make` leaves the module out and says so, and that Echo gets no Wi-Fi motion (donut falls back to its driver's
-`RX_STAT`, the last frame from anyone):
+`RX_STAT`, the last frame from anyone). `make kernel-tools` downloads them (`scripts/kernel-tools.sh`, about 115 MB,
+770 MB unpacked; the guided setup does it in its downloads step, CI before every build); the kernel needs `bc` to
+build:
 
 ```sh
-cd toolchain
-# biscuit, radar: kernel 3.18.19, ARM
-curl -LO https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.19.tar.xz && tar xf linux-3.18.19.tar.xz
-mkdir arm-eabi-4.8 && curl -L https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.8/+archive/refs/heads/marshmallow-release.tar.gz | tar xz -C arm-eabi-4.8
-# donut: kernel 4.4.22, arm64
-curl -LO https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.4.22.tar.xz && tar xf linux-4.4.22.tar.xz
-mkdir aarch64-linux-android-4.9 && curl -L https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/pie-release.tar.gz | tar xz -C aarch64-linux-android-4.9
+make kernel-tools DEVICE=donut      # kernel 4.4.22 (arm64), aarch64-linux-android-4.9
+make kernel-tools DEVICE=radar      # biscuit, radar: kernel 3.18.19 (ARM), arm-eabi-4.8
 ```
+
+The pins are in `device.mk` (`KSRC_URL`, `KSRC_SHA256`, `KCC_URL`, `KCC_DIGEST`), or the Makefile's defaults for the
+3.18 models: the sources by their checksum, the compiler by a digest over its files, since googlesource packs its
+archive anew for every download.
 
 The compilers are the ones Amazon built those kernels with (their version strings say so). The kernel config is in
 the repository: biscuit's and radar's `devices/<codename>/kconfig` is their kernel's own (IKCONFIG, read out of the
@@ -110,8 +111,8 @@ firmware and checks exactly that, for every binary of every model; run it when t
 of a stock library (a stub build then fails to link until it has). For the same reason the build is reproducible:
 ESPHome's "compiled" time is the commit's (`BUILD_TIME`), not the clock's.
 
-Wi-Fi motion's kernel module is built in CI for every model, against kernel.org's sources and the pinned AOSP compiler,
-with the config from the repository; a model whose module does not build fails the job rather than ship without it.
+Wi-Fi motion's kernel module is built in CI for every model, against kernel.org's sources and the pinned AOSP compiler
+(`make kernel-tools`, as the guided setup), with the config from the repository; a model whose module does not build fails the job rather than ship without it.
 The modules come out byte-identical to local builds.
 
 **The release key.** `keys/release.pub` is in every build and install; root accepts bundles signed with it, next to the

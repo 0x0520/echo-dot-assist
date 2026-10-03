@@ -60,6 +60,12 @@ KVER    ?= 3.18.19
 KARCH   ?= arm
 KSRC    ?= $(CURDIR)/toolchain/linux-$(KVER)
 KCROSS  ?= $(CURDIR)/toolchain/arm-eabi-4.8/bin/arm-eabi-
+# what `make kernel-tools` downloads (scripts/kernel-tools.sh; the guided setup and CI): the sources by their checksum,
+# the compiler by the digest of its files (googlesource makes its archive anew each time)
+KSRC_URL    ?= https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.19.tar.xz
+KSRC_SHA256 ?= 3d80d3b8d98c3141d9e26f6c25d73575d688f1c1651b8076f0f2bfd76325b7c9
+KCC_URL     ?= https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.8/+archive/26e93f6af47f7bd3a9beb5c102a5f45e19bfa38a.tar.gz
+KCC_DIGEST  ?= fcd6082697317cfa44c0b876e5ca8285a07a13c763c59c7a962e44273e0668a0
 KMAKE    = $(MAKE) -s ARCH=$(KARCH) CROSS_COMPILE=$(KCROSS) HOSTCFLAGS="-fcommon -std=gnu89 -w" KCFLAGS="$(KCFLAGS)"
 ifneq ($(KMOD),)
 ifneq ($(and $(wildcard $(KSRC)/Makefile),$(wildcard $(KCROSS)gcc)),)
@@ -69,7 +75,9 @@ all: kmod-missing
 endif
 endif
 kmod-missing:
-	@echo "note: $(OUT)/$(KMOD).ko not built (Wi-Fi motion on $(DEVICE)): needs $(KSRC) and $(KCROSS)gcc, see DEVELOPMENT.md"
+	@echo "note: $(OUT)/$(KMOD).ko not built (Wi-Fi motion on $(DEVICE)): needs $(KSRC) and $(KCROSS)gcc: make kernel-tools DEVICE=$(DEVICE)"
+kernel-tools:
+	$(if $(KMOD),scripts/kernel-tools.sh $(KSRC) $(KCROSS) $(KSRC_URL) $(KSRC_SHA256) $(KCC_URL) $(KCC_DIGEST))
 
 ifneq ($(KCONFIG),)
 $(OUT)/ktree/.config: $(KCONFIG)
@@ -197,4 +205,4 @@ version:
 clean:
 	rm -rf build
 
-.PHONY: all host unit version clean kmod-missing FORCE
+.PHONY: all host unit version clean kmod-missing kernel-tools FORCE

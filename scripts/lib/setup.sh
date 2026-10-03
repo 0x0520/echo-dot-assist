@@ -221,6 +221,7 @@ _pkg() {
     pacman:sqlite3|dnf:sqlite3) echo sqlite;;
     *:cc) echo gcc;;
     *:sha256sum) echo coreutils;;
+    apt:xz) echo xz-utils;;
     *) echo "$1";;
     esac
 }
@@ -288,6 +289,17 @@ need_files() {
         for i in {1..20}; do _tick "Waiting for ${#miss[@]} download(s)" $t0; sleep 0.1; done
     done
     _clr
+}
+
+# kernel_tools: what Wi-Fi motion's kernel module is built with (make kernel-tools: the model's kernel sources and the
+# compiler Amazon used), so that the build has it as CI's does.  Without them `make` quietly leaves the module out, and
+# the install once stopped over the missing file (issue #5).
+kernel_tools() {
+    [ -z "$DRY" ] && KERNEL_TOOLS_CHECK=1 make -s kernel-tools DEVICE=$DEVICE > /dev/null 2>&1 &&
+        { ok "kernel sources and compiler (Wi-Fi motion)"; return 0; }
+    mkdir -p toolchain
+    TASK_NOTE="du -ch toolchain/.kernel-tools.* 2>/dev/null | tail -1 | cut -f1" \
+        task "Downloading kernel sources and compiler for Wi-Fi motion (115 MB)" make -s kernel-tools DEVICE=$DEVICE
 }
 
 # USB_ONLY (the guided setup): the Echo being set up is the one on USB; installed ones on adb over Wi-Fi must not be

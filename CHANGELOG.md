@@ -4,6 +4,16 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-03
 
+- **`scripts/install-system.sh` no longer stops silently on a build without the Wi-Fi motion module** ([issue
+  #5](https://github.com/Gamer92000/echo-dot-assist/issues/5)). That module is optional and is only built when the
+  kernel source and its toolchain are there. Without it, the install quit before writing anything and gave no message.
+  It now installs without the module. If you hit this, run the install again.
+
+- **Guided setup: Wi-Fi motion's kernel module is now part of the build.** Until now only released updates had it.
+  The downloads step now also fetches the kernel sources and the compiler the module is built with (115 MB, checked
+  against fixed checksums), so a setup build matches the released one. Building by hand: `make kernel-tools`. The
+  build needs `bc`, which the setup offers to install along with the other tools.
+
 - **Guided setup: Echo Dot 3 unlock fixed.** `scripts/setup.sh` stopped at "Waiting for the Echo's bootrom" with
   "./bootrom-step.sh: No such file or directory": the kamakiri zip unpacks into a folder of its own, and the step looked
   for its scripts one level too high. It now finds them wherever the zip puts them. If you hit this, run

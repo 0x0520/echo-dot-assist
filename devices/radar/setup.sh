@@ -39,7 +39,7 @@ NOTES=(
 slot() { ashell bcbtool get_active | tr -d " \n"; }
 
 step_tools() {
-    need_tools adb fastboot python3 pyusb make cc unzip 7z sqlite3 curl sha256sum || return 1
+    need_tools adb fastboot python3 pyusb make cc unzip 7z sqlite3 curl sha256sum bc xz || return 1
     [ "$(df -Pk . | awk 'NR == 2 { print $4 }')" -gt 5000000 ] || warn "less than 5 GB free here; the NDK and firmware need about that"
 }
 
@@ -47,10 +47,12 @@ step_files() {
     need_files $FW/$FIRMWARE_FILE $FIRMWARE_SHA256 "Fire OS $FIRMWARE_ID: $FTVDB" \
                $FW/$AMONET $AMONET_SHA256 "attachment in $XDA" \
                $FW/$BOOTROOT $BOOTROOT_SHA256 "attachment in $XDA" || return 1
-    [ -x $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang ] && { ok "Android NDK r21e"; return 0; }
-    mkdir -p toolchain
-    TASK_NOTE="du -h toolchain/ndk.zip | cut -f1" task "Downloading Android NDK r21e (1 GB)" curl -fsSL -o toolchain/ndk.zip $NDK_URL &&
-        task "Unpacking the NDK" unzip -q -o toolchain/ndk.zip -d toolchain && rm -f toolchain/ndk.zip
+    if [ -x $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang ]; then ok "Android NDK r21e"; else
+        mkdir -p toolchain
+        TASK_NOTE="du -h toolchain/ndk.zip | cut -f1" task "Downloading Android NDK r21e (1 GB)" curl -fsSL -o toolchain/ndk.zip $NDK_URL &&
+            task "Unpacking the NDK" unzip -q -o toolchain/ndk.zip -d toolchain && rm -f toolchain/ndk.zip || return 1
+    fi
+    kernel_tools
 }
 
 # lets the unlock reach the Echo without sudo, and keeps ModemManager from probing the bootrom's serial port mid-handshake

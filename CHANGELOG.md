@@ -2,6 +2,14 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-10-04
+
+- **Cancel a request with the action button**, as with the center button of a Voice PE: pressed while Home Assistant is
+  still listening or thinking, the request is aborted, the conversation agent included, so a misheard command does not
+  go on to switch things it should not (a tool call already under way still finishes). The wake word said while it
+  thinks cancels too and starts a new request straight away. Before, both worked only once the reply was being
+  spoken. ESPHome only (Wyoming has no way to abort a request).
+
 ## 2026-10-03
 
 - **Install without compiling anything.** On a commit that GitHub has a build of (every commit on `main` and

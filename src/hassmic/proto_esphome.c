@@ -107,11 +107,15 @@ enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3
 static struct { int fd, states, enc, keyed, ble, ble_free, ble_user, actions; struct noise_cs tx, rx; } clients[MAX_CLIENTS] = { { .fd = -1 }, { .fd = -1 }, { .fd = -1 }, { .fd = -1 } };
 static int va_fd = -1;                  /* lock held: voice assistant subscriber */
 static __thread int reply_fd = -1;      /* the client whose request this thread is handling */
+static int cancelled;                   /* lock held: the user cancelled the run; its events are dropped.  2: a new run
+                                         * was asked for, whose RUN_START ends that (TCP keeps the order) */
 static int tts_expected;                /* lock held: the reply is being fetched or played; RUN_END must not end the pipeline */
 static char tts_url[1024];              /* lock held: reply URL of the running pipeline (known from RUN_START with streaming TTS) */
 static int announcing, media_playing;   /* lock held */
 static void announce_done(void);
 static atomic_int media_busy;
+static atomic_int media_abort;          /* the run whose reply this job fetches was cancelled: drop it, touch no state */
+static int media_fd = -1;               /* lock held: the job's socket, for cancel() to cut a fetch that waits on the server */
 
 /* ---------------------------------------------------------------- protobuf */
 
@@ -717,6 +721,15 @@ static int http_get(const char *url)    /* returns a socket positioned at the bo
     return http_get_host(host, port, path ? path : "/");
 }
 
+static int tts_begin(unsigned rate, unsigned ch)    /* -1: cancelled, the reply must not play */
+{
+    pthread_mutex_lock(&core_lock);
+    int ok = !atomic_load(&media_abort);
+    if (ok) core_tts_begin(rate, ch);
+    pthread_mutex_unlock(&core_lock);
+    return ok ? 0 : -1;
+}
+
 static void feed(const void *pcm, size_t len)       /* queue with back pressure */
 {
     core_tts_data(pcm, len);
@@ -739,7 +752,7 @@ static int play_wav(int fd, const unsigned char *head, size_t have)
     }
     if (bits != 16 || !rate || !ch) { fprintf(stderr, "media: unsupported WAV (%u Hz, %u ch, %u bit)\n", rate, ch, bits); return -1; }
     fprintf(stderr, "media: WAV %u Hz x%u\n", rate, ch);
-    pthread_mutex_lock(&core_lock); core_tts_begin(rate, ch); pthread_mutex_unlock(&core_lock);
+    if (tts_begin(rate, ch) < 0) return -1;
     size_t odd = 0;
     for (ssize_t r; !core_tts_flushing() && (r = read(fd, buf + odd, sizeof buf - odd)) > 0; ) {
         size_t n = odd + r, use = n & ~(size_t)(2 * ch - 1);        /* whole frames only */
@@ -765,7 +778,7 @@ static int play_mp3(int fd, const unsigned char *head, size_t have)
         if (samples > 0) {
             if (!began) {
                 fprintf(stderr, "media: MP3 %d Hz x%d\n", info.hz, info.channels);
-                pthread_mutex_lock(&core_lock); core_tts_begin(info.hz, info.channels); pthread_mutex_unlock(&core_lock);
+                if (tts_begin(info.hz, info.channels) < 0) break;
                 began = 1;
             }
             feed(pcm, (size_t)samples * info.channels * 2);
@@ -789,18 +802,21 @@ static void *media_thread(void *arg)
 {
     struct media_job *job = arg; int ok = 0, began = 0;
     for (int i = 0; i < 2; i++) {
-        if (!job->url[i][0] || core_tts_flushing()) continue;
+        if (!job->url[i][0] || core_tts_flushing() || atomic_load(&media_abort)) continue;
         int fd = http_get(job->url[i]);
         if (fd < 0) continue;
-        if (play_url(fd) == 0) { began = 1; if (i == 1) ok = 1; }
+        pthread_mutex_lock(&core_lock); media_fd = fd; int gone = atomic_load(&media_abort); pthread_mutex_unlock(&core_lock);
+        if (!gone && play_url(fd) == 0) { began = 1; if (i == 1) ok = 1; }
+        pthread_mutex_lock(&core_lock); media_fd = -1; pthread_mutex_unlock(&core_lock);
         close(fd);
     }
     pthread_mutex_lock(&core_lock);
+    int stale = atomic_load(&media_abort);  /* a new run may be listening already: its pipeline is not ours to end */
     if (job->announce) {
         if (job->start_conversation && ok) core_restart_after();
         if (!began) { PB(b, 8); pb_uint(&b, 1, 0); send_va(VA_ANNOUNCE_FINISHED, &b); announcing = 0; announce_done(); }
     }
-    if (!began) { media_playing = 0; send_mp_state(); core_pipeline_finish(); atomic_store(&media_busy, 0); }
+    if (!began) { media_playing = 0; send_mp_state(); if (!stale) core_pipeline_finish(); atomic_store(&media_busy, 0); }
     pthread_mutex_unlock(&core_lock);
     if (began) core_tts_end();          /* played() below finishes the job once the audio is out */
     free(job);
@@ -817,6 +833,7 @@ static void media_start(const char *url0, const char *url1, int announce, int st
         if (announce) { PB(b, 8); pb_uint(&b, 1, 0); send_va(VA_ANNOUNCE_FINISHED, &b); }
         free(job); return;
     }
+    atomic_store(&media_abort, 0);                      /* concerned the job before, which has ended */
     if (!is_reply && (core_state() == LISTENING || core_state() == THINKING)) core_pipeline_finish();
     snprintf(job->url[0], sizeof job->url[0], "%s", url0); snprintf(job->url[1], sizeof job->url[1], "%s", url1);
     job->announce = announce; job->start_conversation = start_conversation;
@@ -1063,7 +1080,7 @@ static void announce_done(void) { bt_asked_ms = 0; bt_free_ms = now_ms() + 1000;
 static void start(void)
 {
     PB(b, 96);
-    tts_expected = 0; tts_url[0] = 0;
+    tts_expected = 0; tts_url[0] = 0; if (cancelled) cancelled = 2;
     pb_uint(&b, 1, 1);                                  /* start */
     pb_uint(&b, 3, core_local_wake ? 1 : 3);            /* flags: USE_VAD, plus USE_WAKE_WORD when detection is remote */
     /* audio settings: neutral.  Home Assistant ignores them today; the gain is applied here (micgain.h), and absent they
@@ -1087,6 +1104,15 @@ static void stop(void)
 {
     PB(a, 8); pb_uint(&a, 2, 1); send_va(VA_AUDIO, &a);        /* end of audio */
     send_va(VA_REQUEST, NULL);                                 /* start = false */
+}
+
+static void cancel(void)
+{
+    send_va(VA_REQUEST, NULL);                                 /* start = false: abort */
+    cancelled = 1;
+    /* A streamed reply can be on its way already (tool calls can follow its first words).  The fetch may be waiting on
+     * Home Assistant: cut its socket, or the job would hold media_busy and refuse the next run's reply */
+    if (tts_expected) { atomic_store(&media_abort, 1); if (media_fd >= 0) shutdown(media_fd, SHUT_RDWR); }
 }
 
 static void played(void)
@@ -1117,6 +1143,10 @@ static void on_event(const unsigned char *p, const unsigned char *end)
             if (!strcmp(key, "url")) snprintf(tts_url, sizeof tts_url, "%s", val);
         }
     }
+    /* Home Assistant may still report the aborted run (what was on the way: intent, TTS, end).  An error after a new
+     * start is the new run's (one refused before it starts has no RUN_START) */
+    if (cancelled == 1 || (cancelled == 2 && type != EV_RUN_START && type != EV_ERROR)) return;
+    if (type == EV_RUN_START || type == EV_ERROR) cancelled = 0;
     switch (type) {
     case EV_STT_START:  core_set_state(LISTENING); break;
     case EV_VAD_END:    core_mic_off(); if (core_state() == LISTENING) core_set_state(THINKING); break;
@@ -1478,5 +1508,5 @@ static void sound(const char *event)    /* lock held */
     fprintf(stderr, "sound: %s\n", event);
 }
 
-const struct proto proto_esphome = { "esphome", 26053, 1, serve, start, audio, stop, played, volume_changed, mute_changed, print_mdns, bt_device,
+const struct proto proto_esphome = { "esphome", 26053, 1, serve, start, audio, stop, cancel, played, volume_changed, mute_changed, print_mdns, bt_device,
                                      arb_send, arb_changed, sound };

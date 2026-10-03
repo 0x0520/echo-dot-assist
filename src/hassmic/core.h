@@ -25,6 +25,8 @@ struct proto {
     void (*start)(void);                        /* ask the server to run a pipeline; mic audio follows */
     void (*audio)(const void *pcm, size_t len); /* 16 kHz mono s16le while streaming */
     void (*stop)(void);                         /* may be NULL: pipeline given up while the mic was streaming */
+    void (*cancel)(void);                       /* may be NULL: the user cancelled the run (action button); have the server
+                                                 * abort it and drop what it still sends for it.  The mic is already off */
     void (*played)(void);                       /* may be NULL: queued playback finished (not called after a flush-less error) */
     void (*volume_changed)(int percent);        /* may be NULL */
     void (*mute_changed)(int muted);            /* may be NULL: effective mute (hardware latch or soft mute) changed */

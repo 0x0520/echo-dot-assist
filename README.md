@@ -76,7 +76,9 @@ Details:
   the device to perform Home Assistant actions" in each Echo's ESPHome options (Home Assistant shows a repair until
   then); give every Echo its own `NAME`. Other satellites (ESP32 and so on) are not part of it; Home Assistant itself then lets the first one
   that reports the wake word answer, and the Echo that is second now just goes quiet instead of flashing an error.
-- **Buttons**: action = talk without the wake word / pause and resume music / stop an alarm; volume in 10 % steps;
+- **Buttons**: action = talk without the wake word / pause and resume music / stop an alarm / cancel a request while
+  Home Assistant is still listening or thinking (as on a Voice PE; the wake word then cancels it too and listens
+  again; ESPHome only); volume in 10 % steps;
   mic-off is the hardware mute it always was (red ring, Alexa's own sounds). The LED ring shows listening, thinking,
   speaking, errors and mute. Silent and dark at boot.
 - **Music**: one source at a time, the newest wins. A phone starting over Bluetooth pauses Music Assistant (the whole

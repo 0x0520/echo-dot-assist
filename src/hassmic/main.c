@@ -500,6 +500,21 @@ static void trigger(int touch)          /* touch: the action button rather than 
     if (atomic_load(&alarm_on)) {
         core_alarm(0);
         wake_cut_ms = mono_ms();
+    } else if ((state == THINKING || (touch && state == LISTENING)) && connected && proto->cancel) {
+        /* As the center button of a Voice PE: a misheard command is stopped before its tool calls run, not only its
+         * reply.  Same message as ESPHome's voice_assistant.stop; Home Assistant cancels the run's task (the LLM, and
+         * the tool calls it has not made yet).  The wake word does the same and then listens again, as during a reply */
+        fprintf(stderr, "%s: pipeline cancelled\n", touch ? "button" : "wake word");
+        barge_in = 0;
+        atomic_store(&streaming, 0);
+        proto->cancel();
+        core_pipeline_finish();
+        quiet_abort = 1;
+        if (!touch && state == IDLE && satellite_running && !core_muted()) {
+            wake_cut_ms = mono_ms();
+            sound_request(SND_WAKE);
+            pipeline_start();
+        }
     } else if (!connected || !satellite_running || core_muted()) {
         /* nothing to talk to, or privacy latch on */
     } else if (state == IDLE) {
@@ -851,11 +866,14 @@ static void *earcon_thread(void *arg)
     return NULL;
 }
 
-/* While music plays the action button pauses it (and resumes it again); otherwise it wakes the assistant. */
-/* Action button: pause what plays (Bluetooth device first, then Sendspin), or resume what the button paused, else talk */
+/* Action button: cancel a running pipeline; else pause what plays (Bluetooth device first, then Sendspin), or resume
+ * what the button paused; else talk */
 static void on_action(void)
 {
-    if (a2dp_button(0) || (core_sendspin_port && sendspin_button()) || a2dp_button(1)) return;
+    pthread_mutex_lock(&core_lock);
+    int busy = state == LISTENING || state == THINKING;
+    pthread_mutex_unlock(&core_lock);
+    if (!busy && (a2dp_button(0) || (core_sendspin_port && sendspin_button()) || a2dp_button(1))) return;
     atomic_store(&trigger_pending, 2);                  /* 2: touch */
 }
 

@@ -11,7 +11,7 @@ through the reverse-engineered C API of `libmixerAPI.so` and speaks the ESPHome 
 
 Docs: `README.md` (user-facing usage; install instructions per model in `devices/<codename>/README.md`, guided by
 `scripts/setup.sh`), `DEVELOPMENT.md` (architecture, layout, tests, contributing), `PLAN.md` (phases, open issues, every measurement), `CHANGELOG.md`
-(user-visible changes by date), `docs/` (reverse-engineering findings: `FINDINGS.md`, `re-platform.md`, `re-pryon.md`, `re-aed.md`, `re-a2dp-source.md`,
+(user-visible changes by date), `docs/` (reverse-engineering findings: `FINDINGS.md`, `re-platform.md`, `re-pryon.md`, `re-aed.md`, `re-whisper.md`, `re-a2dp-source.md`,
 `sendspin-digest.md`).
 
 ## Build and test

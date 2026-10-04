@@ -43,7 +43,7 @@ FORCE:
 # A model without the Amazon mixer or Pryon has no use for the tools built on them: they drop out with the library.
 BIN := $(OUT)/hassmic $(OUT)/runas $(OUT)/otatool \
        $(if $(filter libmixerAPI.so,$(LIBS)),$(OUT)/mixcap $(OUT)/mixplay $(OUT)/latency) \
-       $(if $(filter libpryon.so,$(LIBS)),$(OUT)/pryon_test $(OUT)/aed_test)
+       $(if $(filter libpryon.so,$(LIBS)),$(OUT)/pryon_test $(OUT)/aed_test $(OUT)/whisper_test)
 
 .DEFAULT_GOAL := all
 all: $(BIN)
@@ -154,6 +154,10 @@ $(OUT)/pryon_test: src/tools/pryon_test.c src/include/pryon_api.h $(STOCK)/libpr
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(STOCK)/libpryon.so $(STOCK)/libz.so
 
 $(OUT)/aed_test: src/tools/aed_test.c src/include/pryon_api.h $(STOCK)/libpryon.so
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(STOCK)/libpryon.so
+
+$(OUT)/whisper_test: src/tools/whisper_test.c src/include/pryon_api.h $(STOCK)/libpryon.so
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(STOCK)/libpryon.so
 

@@ -4,7 +4,8 @@
   Authorization: Bearer <access token of a registered device>
 The JSON answer carries a signed CloudFront downloadUrl that expires within minutes, so the request is the thing to keep.
   tools/davs-fetch.py [--ecids 1,2,...] <map.db> <key> [locale] [outdir]
-    key: alexa echo computer amazon ziggy, or aed for the sound detection model (docs/re-aed.md); locale default de-DE
+    key: alexa echo computer amazon ziggy, aed for the sound detection model (docs/re-aed.md), or whisper for the whisper
+         detection model (docs/re-whisper.md); locale default de-DE
     --ecids: the wake word engine compatibility ids to ask for (default: donut's NS65741 engine).  An older engine lacks
              some (radar's has no 36, 37) and gets a model set it can load only when it asks with its own list;
              `pryon_test` prints it ("wakeword_ecids" in its attributes line).
@@ -12,6 +13,12 @@ aed: the request PuffinApp's AEDInventory::createRequest (0x43d898) builds: filt
      aed_ecids, modelClass "class-10" and the region (NA, EU or FE; here from the locale). The artifact type and key are
      two global strings "AED" (0xf4274, 0xf42c0); the spelling DAVS wants is not known, so the variants are tried in turn.
      --ecids then means the aed_ecids (`aed_test` / `pryon_test` print them in the attributes line).
+whisper: AHE's request (Davs2UrlBuilder 0x665040): artifactType "alexa-hybrid", key "whisper-static", filters "ecid" ["6"]
+     (a literal in AHE) and modelClass ["odie-litespeed"] (ahe.config.json), locale only if the subscription is per locale.
+     Which of these DAVS insists on is not known, so variants are tried in turn, ending with ecid 1 (what libpryon's
+     WhisperApi_getLibraryAttributes reports).  --ecids is ignored.  Fetched 2026-10-04 for en-US with the second request
+     (with the locale).  It is one model for every language (only its thresholds are per locale), so a locale DAVS has
+     nothing for falls back to en-US.
 map.db is /data/ace/kvstorage/map.db of the registered Echo; its access token lasts an hour after the device fetched it.
 """
 import base64, json, pathlib, shutil, sqlite3, sys, tarfile, urllib.error, urllib.parse, urllib.request
@@ -21,6 +28,12 @@ ENGINE_IDS = [str(i) for i in (1, 10, 11, 12, 13, 14, 15, 16, 17, 19, 2, 20, 21,
 AED_IDS = ["1", "2", "3", "5", "6", "7"]                                 # NS65741 libpryon's aed_ecids
 AED_NAMES = [("AED", "AED"), ("aed", "aed"), ("AED", "aed"), ("aed", "AED")]
 # DAVS region by locale; PuffinApp picks one of NA, EU, FE
+# whisper: tried in this order; {loc} is the locale
+WHISPER_FILTERS = [{"ecid": ["6"], "modelClass": ["odie-litespeed"]},
+                   {"ecid": ["6"], "modelClass": ["odie-litespeed"], "locale": ["{loc}"]},
+                   {"ecid": ["6"]},
+                   {"ecid": ["1"], "modelClass": ["odie-litespeed"], "locale": ["{loc}"]},
+                   {"compatibilityId": ["6"], "modelClass": ["odie-litespeed"]}]
 REGION = {"en-US": "NA", "en-CA": "NA", "fr-CA": "NA", "es-MX": "NA", "pt-BR": "NA", "ja-JP": "FE", "en-AU": "FE", "en-IN": "FE"}
 
 def ask(token, req):
@@ -51,6 +64,18 @@ def main():
                 print(f"aed: type {typ} key {k}: HTTP {e.code} {e.read()[:200]!r}", file=sys.stderr)
         if info is None: sys.exit("aed: DAVS has no model under any of the names tried")
         dest = out / f"aed-{region}"
+    elif key == "whisper":
+        info = None
+        for loc in dict.fromkeys([locale, "en-US"]):
+            for f in WHISPER_FILTERS:
+                f = {k: [x.replace("{loc}", loc) for x in v] for k, v in f.items()}
+                try:
+                    info = ask(token, {"artifactType": "alexa-hybrid", "artifactKey": "whisper-static", "filters": f}); break
+                except urllib.error.HTTPError as e:
+                    print(f"whisper: filters {json.dumps(f)}: HTTP {e.code} {e.read()[:200]!r}", file=sys.stderr)
+            if info: break
+        if info is None: sys.exit("whisper: DAVS has no model for any of the requests tried")
+        dest = out / f"whisper-{locale}"
     else:
         req = {"artifactType": "wakeword", "artifactKey": key,
                "filters": {"engineCompatibilityIdList": ecids or ENGINE_IDS, "locale": [locale], "modelClass": ["B"]}}

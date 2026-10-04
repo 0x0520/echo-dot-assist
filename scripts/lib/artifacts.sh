@@ -50,6 +50,12 @@ token() {                              # the registered Echo's access token, pul
     for f in $(ashell "ls $MAPDB*" 2>/dev/null); do adb pull "$f" $TMP/ > /dev/null 2>&1; done
     [ -n "$(sqlite3 $TMP/map.db "select value from deviceData where key='access_token'" 2>/dev/null)" ]
 }
+# update_block: a firmware update would cost the unlock, so nothing goes on without main.sh's guard in place
+update_block() {
+    waitfor "Waiting for the update block|Firmware updates blocked" \
+        "ashell iptables -S hassmic_out | grep -q 'uid-owner.*-j DROP'" "" 60 120 ||
+        { fail "the update block is not in place: unplug the Echo's power and run this again"; return 1; }
+}
 satellite_up() { waitfor "Waiting for the satellite|Satellite running" '[ -n "$(ashell pidof hassmic)" ]' "" 60 180; }
 
 # install_model ID: load it with the Echo's engine first; only a set that loads goes into $D/models (hidden until then:
@@ -141,6 +147,16 @@ _artifacts_run() {
     # --- connect
     m_stage connect
     if [ -z "$M_SETUP" ]; then
+        # the same Echo on USB too: USB it is, as over Wi-Fi it is out of reach while stock waits in setup mode.  The
+        # same = the Wi-Fi one's serial, or (Wi-Fi unreachable) the USB one is halfway through a run (stock-online)
+        local usb=$(adb -d get-serialno 2>/dev/null) wifi
+        if [[ $ANDROID_SERIAL == *:* ]] && [ -n "$usb" ] && [ "$usb" != unknown ]; then
+            wifi=$(timeout 5 adb get-serialno 2>/dev/null)
+            if [ "$wifi" = "$usb" ] || { [ -z "$wifi" ] &&
+                adb -s "$usb" shell "grep -q '^MODE=stock-online' $D/hassmic.conf" 2>/dev/null; }; then
+                export ANDROID_SERIAL=$usb; info "this Echo is on USB too: using USB ($usb)"
+            fi
+        fi
         pick_serial
         waitfor "Waiting for the Echo on adb|Echo on adb" "adb_is device" \
             "Nothing? Connect it by USB, or open adb over Wi-Fi (scripts/adb-wifi.sh <echo-ip>) and give its address: scripts/artifacts.sh <echo-ip>" 15 || return 1
@@ -229,21 +245,27 @@ _artifacts_run() {
             task "Restarting the Echo as a stock Echo" adb reboot || return 1
             sleep 10
         fi
-        wait_adb device || return 1
-        # a firmware update would cost the unlock: nothing goes further without the guard in place
-        waitfor "Waiting for the update block|Firmware updates blocked" \
-            "ashell iptables -S hassmic_out | grep -q 'uid-owner.*-j DROP'" "" 60 120 ||
-            { fail "the update block is not in place: unplug the Echo's power and run this again"; return 1; }
-        tell "Give the Echo internet access" "If your router blocks it, allow it until this is done."
-
-        # --- register
+        # --- register.  Unregistered, stock comes up in setup mode: it drops the Wi-Fi network (dhcpcd killed, network
+        # disabled) and opens its own access point for the Alexa app (Echo Dot 2, 2026-10-04).  Over Wi-Fi the Echo is
+        # back on adb only once the app has set it up, so the app comes first and the connection is checked after it.
         m_stage register
-        if ! token; then
+        [[ $ANDROID_SERIAL == *:* ]] || { wait_adb device || return 1; }
+        local guarded=
+        if adb_is device; then update_block || return 1; guarded=1; fi
+        if [ -n "$guarded" ] && token; then ok "registered already"
+        else
             tell "Set the Echo up in the Alexa app" \
                 "Devices → + → Add device → Amazon Echo, on the Wi-Fi Home Assistant is on." \
-                "The app may show \"updating\" for a while: that is the blocked update check, it is fine."
-            waitfor "Waiting for the registration|Registered" token || return 1
-        else ok "registered already"; fi
+                "The app may show \"updating\" for a while: that is the blocked update check, it is fine." \
+                "The Echo needs internet access: if your router blocks it, allow it until this is done."
+            if [ -z "$guarded" ]; then
+                info "Until the app has set it up, the Echo is off your Wi-Fi (it runs its own setup network)."
+                waitfor "Waiting for the Echo back on Wi-Fi|Echo is back on Wi-Fi" "adb_is device" \
+                    "Set up in the app and still nothing? It may have another address now: Ctrl-C, then scripts/artifacts.sh <new-ip>." 600
+                update_block || return 1
+            fi
+            waitfor "Waiting for the registration|Registered" "adb_is device && token" || return 1      # adb_is: reconnects over Wi-Fi
+        fi
 
         # --- fetch: every download in one go, a failed one does not stop the rest
         m_stage fetch

@@ -28,12 +28,12 @@ done
 bye() {
     [ -n "$TASK_PID" ] && kill $TASK_PID 2>/dev/null
     [ -n "$TMP" ] && rm -rf "$TMP"
-    [ -n "$TTY" ] && printf '\e[?25h\r\e[K'
+    [ -n "$TTY" ] && printf '\e[?25h\e[?7h\r\e[K'
     printf '\n  %sStopped. Run scripts/setup.sh%s again to go on from here.%s\n' "$DIM" "${DEVICE:+ $DEVICE}" "$N"
     exit 130
 }
 trap bye INT TERM
-trap '[ -n "$TTY" ] && printf "\e[?25h"' EXIT
+trap '[ -n "$TTY" ] && printf "\e[?25h\e[?7h"' EXIT
 
 # The Echo being set up is on USB; an explicit ANDROID_SERIAL (e.g. to finish the last steps over Wi-Fi) wins
 [ -n "$ANDROID_SERIAL" ] || USB_ONLY=1

@@ -4,6 +4,11 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-04
 
+- **`scripts/artifacts.sh` over Wi-Fi no longer hangs** after restarting the Echo as a stock Echo. A stock Echo
+  that is not registered drops your Wi-Fi and opens its own setup network, so it now asks you to set it up in the
+  Alexa app first and waits for it to come back afterwards. With the Echo on USB as well, it uses USB.
+- **`scripts/artifacts.sh` menus** no longer get garbled when an entry is wider than the terminal.
+
 - **Cancel a request with the action button**, as with the center button of a Voice PE: pressed while Home Assistant is
   still listening or thinking, the request is aborted, the conversation agent included, so a misheard command does not
   go on to switch things it should not (a tool call already under way still finishes). The wake word said while it

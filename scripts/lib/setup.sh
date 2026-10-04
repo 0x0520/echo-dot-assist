@@ -17,7 +17,7 @@ info() { printf '  %s%s%s\n' "$DIM" "$*" "$N"; }
 ok()   { printf '  %s✓%s %s\n' "$GRN" "$N" "$*"; }
 warn() { printf '  %s!%s %s\n' "$YEL" "$N" "$*"; }
 fail() { printf '  %s✗ %s%s\n' "$RED" "$*" "$N"; }
-_clr() { [ -n "$TTY" ] && printf '\r\e[K\e[?25h'; }
+_clr() { [ -n "$TTY" ] && printf '\r\e[K\e[?25h\e[?7h'; }
 _rep() { local s; printf -v s '%*s' "$2" ''; printf '%s' "${s// /$1}"; }
 _dur() { [ "$1" -ge 60 ] && printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)) || printf '%ds' "$1"; }
 
@@ -142,7 +142,9 @@ menu() {
     local _var=$1 _n=$(($# - 1)) _sel=${MENU_SEL:-0} _i _k _k2 _d      # underscores: see prompt
     shift
     [ -n "$TTY" ] || { printf -v "$_var" '%s' $_sel; return 0; }
-    printf '\e[?25l'
+    # line wrap off while it is drawn: the redraw goes up one line per item, so an item wider than the terminal
+    # has to be cut, not wrapped
+    printf '\e[?25l\e[?7l'
     while :; do
         for ((_i = 0; _i < _n; _i++)); do
             if [ -z "${@:_i+1:1}" ]; then printf '\r\e[K\n'
@@ -162,7 +164,7 @@ menu() {
         [ $_d != 0 ] && { _sel=$(( (_sel + _n + _d) % _n )); while [ -z "${@:_sel+1:1}" ]; do _sel=$(( (_sel + _n + _d) % _n )); done; }
         printf '\e[%dA' $_n
     done
-    printf '\e[?25h'
+    printf '\e[?25h\e[?7h'
     printf -v "$_var" '%s' $_sel
 }
 
@@ -175,7 +177,7 @@ checklist() {
     for ((_i = 0; _i < _n; _i++)); do _on[_i]=1; done
     for _i in $CHECK_OFF; do _on[_i]=0; done
     if [ -n "$TTY" ]; then
-        printf '\e[?25l'
+        printf '\e[?25l\e[?7l'                  # line wrap off: see menu
         while :; do
             for ((_i = 0; _i < _n; _i++)); do
                 [ ${_on[_i]} = 1 ] && _box="[$GRN✓$N]" || _box='[ ]'
@@ -196,7 +198,7 @@ checklist() {
             esac
             printf '\e[%dA' $((_n + 2))
         done
-        printf '\e[?25h'
+        printf '\e[?25h\e[?7h'
     fi
     for ((_i = 0; _i < _n; _i++)); do [ ${_on[_i]} = 1 ] && _out="$_out $_i"; done
     printf -v "$_var" '%s' "${_out# }"

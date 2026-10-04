@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 case $1 in -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0;; esac
 [ -n "$1" ] && { export ANDROID_SERIAL=$1; [[ $1 == *:* ]] || ANDROID_SERIAL=$1:5555; }
 
-trap '[ -n "$TTY" ] && printf "\e[?25h"' EXIT
+trap '[ -n "$TTY" ] && printf "\e[?25h\e[?7h"' EXIT
 trap '[ -n "$TASK_PID" ] && kill $TASK_PID 2>/dev/null; rm -rf "$TMP"; _clr; printf "\n  %sStopped. Run scripts/artifacts.sh again to go on.%s\n" "$DIM" "$N"; exit 130' INT TERM
 LOG=build/artifacts.log; mkdir -p build; : > $LOG
 MODEL_NAME="Artifacts"

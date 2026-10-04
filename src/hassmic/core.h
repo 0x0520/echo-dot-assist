@@ -37,6 +37,7 @@ struct proto {
     int  (*arb_send)(const char *node, const char *network, const char *key);
     void (*arb_changed)(void);                  /* may be NULL: arbitration membership or peers changed */
     void (*sound)(const char *event);           /* may be NULL: sound detection heard one of core_sound_events */
+    void (*whispered)(int on);                  /* may be NULL: the request just ended was whispered or not (core_whispered) */
 };
 extern const struct proto proto_wyoming, proto_esphome;
 
@@ -82,6 +83,8 @@ int  core_led_brightness(int set);               /* 0..100; set >= 0 fixes the l
 float core_lux(void);                            /* light sensor in lux as stock reads it (no lock needed); NAN: none */
 /* Sound detection (sound.h): off by default.  The events Home Assistant may get, one per sound the model tells apart. */
 int  core_sound(int set);                        /* set: 0/1, or -1 to only read */
+int  core_whispered(void);                       /* the last request: 1 whispered, 0 not, -1 none scored yet, -2 no model
+                                                  * (whisper.h; no lock needed) */
 extern const char *const core_sound_events[];
 extern const int core_sound_nevents;
 

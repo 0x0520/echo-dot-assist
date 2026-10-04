@@ -1,8 +1,9 @@
 # Amazon's artifacts for an installed Echo, shared by scripts/artifacts.sh and the last step of scripts/setup.sh.  bash;
 # sourced from the repository root after scripts/lib/device.sh and scripts/lib/setup.sh.
 # Two kinds, both from Amazon's DAVS (Device Artifact Vending Service) and the same for every Echo: wake word model sets, installed on the Echo (Home
-# Assistant then offers each in the Echo's wake word select), and the sound detection (Alexa Guard) model, only kept on
-# the PC for tests (docs/re-aed.md).  Ones fetched before (device-logs/models/, git-ignored) are only copied over.  Each
+# Assistant then offers each in the Echo's wake word select), and other models, installed on the Echo as well: whisper
+# detection (Home Assistant's binary sensor "Last request whispered", docs/re-whisper.md), and Amazon's newest sound
+# detection model in place of the firmware's (docs/re-aed.md).  Ones fetched before (device-logs/models/, git-ignored) are only copied over.  Each
 # wake word set is first loaded by the Echo's own engine (pryon_test): an older engine (radar) cannot load every set.
 # The user ticks everything wanted first (a menu with a checklist per kind); then one run does it all.  Downloading needs the Echo registered to an
 # Amazon account once: it runs stock Alexa with the updaters cut off (MODE=stock-online) until then, and everything is
@@ -38,9 +39,14 @@ m_stage() {
     header $cur ${#list[@]} "${list[@]}"
 }
 
-# model id "echo-de-DE" -> "Echo (de-DE)", "aed-EU" -> "Sound detection (EU)"
-label() { local k=${1%%-*}; [ "$k" = aed ] && k=sound\ detection; printf '%s (%s)' "${k^}" "${1#*-}"; }
+# model id "echo-de-DE" -> "Echo (de-DE)", "aed-EU" -> "Sound detection (EU)", "whisper-de-DE" -> "Whisper detection (de-DE)"
+label() {
+    local k=${1%%-*}
+    case $k in aed) k=sound\ detection;; whisper) k=whisper\ detection;; esac
+    printf '%s (%s)' "${k^}" "${1#*-}"
+}
 is_aed() { [ "${1%%-*}" = aed ]; }
+is_whisper() { [ "${1%%-*}" = whisper ]; }
 # DAVS keeps the sound detection model by region, not by language (tools/davs-fetch.py)
 region() { case $1 in en-US|en-CA|fr-CA|es-MX|pt-BR) echo NA;; ja-JP|en-AU|en-IN) echo FE;; *) echo EU;; esac; }
 wpa() { ashell "wpa_cli -i $WLAN -p $WPA_SOCKETS $*"; }
@@ -58,11 +64,27 @@ update_block() {
 }
 satellite_up() { waitfor "Waiting for the satellite|Satellite running" '[ -n "$(ashell pidof hassmic)" ]' "" 60 180; }
 
+# install_whisper ID: into $D/whisper, apart from the wake words: the model carries a stray pryon.manifest (speaker ID)
+# that the scan of $D/models would take for one.  The hassmic started afterwards loads it.
+install_whisper() {
+    local id=$1 t=$D/.whisper-try
+    task "Copying $(label $id)" sh -c "adb shell 'rm -rf $t' && adb push $MODELS/$id/unpacked $t && adb shell 'chmod -R a+rX,go-w $t && rm -rf $D/whisper && mv $t $D/whisper'" || return 1
+    INSTALLED+=("$id")
+}
+
+# install_aed ID: Amazon's newest sound detection model into $D/aed; hassmic takes it in place of the firmware's
+# whenever sound detection starts (sound_pryon.c), and the firmware's again if it does not load.
+install_aed() {
+    local id=$1 t=$D/.aed-try
+    task "Copying $(label $id)" sh -c "adb shell 'rm -rf $t' && adb push $MODELS/$id/unpacked/AED $t && adb shell 'chmod -R a+rX,go-w $t && rm -rf $D/aed && mv $t $D/aed'" || return 1
+    INSTALLED+=("$id")
+}
+
 # install_model ID: load it with the Echo's engine first; only a set that loads goes into $D/models (hidden until then:
 # hassmic skips names starting with a dot)
 install_model() {
     local id=$1 t=$D/models/.try-$1
-    task "Copying $(label $id)" sh -c "adb shell 'rm -rf $t; mkdir -p $D/models' && adb push $MODELS/$id/unpacked $t && adb shell chmod -R a+rX $t" || return 1
+    task "Copying $(label $id)" sh -c "adb shell 'rm -rf $t; mkdir -p $D/models' && adb push $MODELS/$id/unpacked $t && adb shell chmod -R a+rX,go-w $t" || return 1
     # pryon_test: 1 = the set did not load, 3 = loaded but heard nothing (there is no audio)
     if ! task "Trying it on this Echo's engine" sh -c "adb shell '$PT -m $t/pryon.manifest /dev/null > /dev/null 2>&1; echo rc=\$?' | tee /dev/stderr | grep -qv rc=1"; then
         ashell "rm -rf $t"
@@ -76,15 +98,16 @@ install_model() {
 # installed under its own name, or by hand under the short one (echo-de)
 have() { [[ $HAVE == *" $1 "* || $HAVE == *" ${1%-*} "* ]]; }
 
-# build_lists: the wake word and the other artifacts lists for $LOC, all ticked.  An artifact that is only kept on the
-# PC is offered even when it is there already: Amazon may have a newer one since (davs-fetch.py says which).
+# build_lists: the wake word and the other artifacts lists for $LOC, all ticked but the sound detection model (the
+# newer one scored as the firmware's on every test clip).  That one is always offered: Amazon may have a newer one
+# since (davs-fetch.py says which).
 build_lists() {
     local m id k
     WW_IDS=() WW_ITEMS=() OT_IDS=() OT_ITEMS=()
     for m in $MODELS/*/unpacked/pryon.manifest; do        # downloaded before, not on this Echo yet
         [ -f "$m" ] || continue
         id=${m#$MODELS/}; id=${id%%/*}
-        have $id && continue
+        { is_aed $id || is_whisper $id || have $id; } && continue      # those may carry a pryon.manifest too
         WW_IDS+=("$id"); WW_ITEMS+=("$(label $id) ${DIM}· downloaded before: install it$N")
     done
     for k in "${WW_KEYS[@]}"; do
@@ -92,15 +115,18 @@ build_lists() {
         [ -d $MODELS/$id/unpacked ] || have $id && continue
         WW_IDS+=("$id"); WW_ITEMS+=("$(label $id) ${DIM}· download from Amazon and install it$N")
     done
-    if [ -z "$M_SETUP" ]; then          # a test artifact: not offered in the guided install
-        id=aed-$(region $LOC)
-        OT_IDS+=("$id")
-        if [ -d $MODELS/$id/unpacked ]; then
-            OT_ITEMS+=("$(label $id) model ${DIM}· on the PC since $(date -r $MODELS/$id/davs.json +%F 2>/dev/null): download again, Amazon may have a newer one$N")
-        else OT_ITEMS+=("$(label $id) model ${DIM}· download from Amazon to $MODELS/$id (hassmic does not use it yet)$N"); fi
-    fi
+    id=whisper-$LOC                     # one model for every language (only the threshold is per locale): any download will do
+    for m in $MODELS/whisper-*/unpacked/pryon_whisper.manifest; do [ -f "$m" ] && { id=${m#$MODELS/}; id=${id%%/*}; break; }; done
+    OT_IDS+=("$id")
+    if [ -n "$HAVE_WHISPER" ]; then OT_ITEMS+=("$(label $id) ${DIM}· on this Echo already: install again$N")
+    elif [ -d $MODELS/$id/unpacked ]; then OT_ITEMS+=("$(label $id) ${DIM}· downloaded before: install it$N")
+    else OT_ITEMS+=("$(label $id) ${DIM}· download and install: sensor \"Last request whispered\"$N"); fi
+    id=aed-$(region $LOC)               # by region, not language (davs-fetch.py)
+    OT_IDS+=("$id")
+    if [ -n "$HAVE_AED" ]; then OT_ITEMS+=("$(label $id) ${DIM}· Amazon's newest on this Echo already: fetch again, may be newer$N")
+    else OT_ITEMS+=("$(label $id) ${DIM}· Amazon's newest in place of the firmware's (scores the same so far)$N"); fi
     WW_ON=$(seq -s ' ' 0 $((${#WW_IDS[@]} - 1)) 2>/dev/null)
-    OT_ON=$(seq -s ' ' 0 $((${#OT_IDS[@]} - 1)) 2>/dev/null)
+    OT_ON=; [ -n "$HAVE_WHISPER" ] || OT_ON=0     # whisper unless it is there; never the sound detection model
 }
 # ticked ONVAR IDSVAR: "3 of 5 ticked"
 ticked() {
@@ -128,6 +154,7 @@ sub_list() {
 fetch_model() {
     local id=$1 key=${1%%-*} loc=${1#*-} ecids=$ECIDS
     is_aed $id && { ecids=$AED_ECIDS; loc=$LOC; }
+    [ $key = whisper ] && ecids=          # davs-fetch.py has its own list
     task "Downloading $(label $id)" python3 tools/davs-fetch.py ${ecids:+--ecids $ecids} $TMP/map.db $key $loc $MODELS
 }
 
@@ -136,7 +163,7 @@ fetch_model() {
 artifacts_run() {
     local r
     M_SETUP=$1 M_PLAN=(connect "Connect" choose "Choose") INSTALLED=() FETCHED=() FAILED=()
-    if [ -n "$DRY" ]; then info "offers the models in $MODELS/ and Amazon's; the dry run keeps \"Alexa\""; return 0; fi
+    if [ -n "$DRY" ]; then info "offers the wake words and whisper detection in $MODELS/ and Amazon's; the dry run keeps \"Alexa\" and adds nothing"; return 0; fi
     TMP=$(mktemp -d)                  # map.db is the account's device credential: never kept on the PC
     _artifacts_run; r=$?
     rm -rf "$TMP"
@@ -181,6 +208,8 @@ _artifacts_run() {
     [ -f $NETS ] || [ ! -f ${NETS/artifacts-/wakeword-} ] || mv ${NETS/artifacts-/wakeword-} $NETS   # a run before the rename
     ONLINE=; [ -n "$(ashell "grep '^MODE=stock-online' $D/hassmic.conf")" ] && ONLINE=1
     HAVE=" $(ashell "ls $D/models 2>/dev/null" | tr '\n' ' ') "
+    HAVE_WHISPER=$(ashell "ls $D/whisper/pryon_whisper.manifest 2>/dev/null")
+    HAVE_AED=$(ashell "ls $D/aed/pryon.manifest 2>/dev/null")
     [ -n "$M_SETUP" ] || ok "$MODEL_NAME${ANDROID_SERIAL:+, $ANDROID_SERIAL}"
     [ -n "$ONLINE" ] && warn "This Echo is in stock-online mode from an earlier run: going on with that."
 
@@ -196,12 +225,12 @@ _artifacts_run() {
         # the language first and apart: it decides what the lists below it offer
         local entries=("Language for downloads from Amazon: $B$LOC$N  ${DIM}· decides what the lists below offer$N" ""
                        "Wake words …        ${DIM}$(ticked WW_ON WW_IDS)$N") acts=(lang - ww)
-        [ -z "$M_SETUP" ] && { entries+=("Other artifacts …   ${DIM}$(ticked OT_ON OT_IDS)$N"); acts+=(ot); }
+        entries+=("Other artifacts …   ${DIM}$(ticked OT_ON OT_IDS)$N"); acts+=(ot)
         entries+=("" "Go on ${DIM}· shows what will happen first$N"); acts+=(- go)
         MENU_SEL=${MAIN_SEL:-0} menu c "${entries[@]}"; MAIN_SEL=$c
         case ${acts[c]} in
         ww)  sub_list "Wake words ${DIM}(installed on the Echo; Home Assistant offers each in its wake word select)$N" WW ;;
-        ot)  sub_list "Other artifacts ${DIM}(kept on the PC for tests, not installed)$N" OT ;;
+        ot)  sub_list "Other artifacts ${DIM}(installed on the Echo)$N" OT ;;
         lang) m_stage choose; say "Language for downloads from Amazon:"; printf '\n'
               MENU_SEL=$(for i in "${!LOCALES[@]}"; do [ "${LOCALES[i]}" = "$LOC" ] && echo $i; done) menu c "${LOCALES[@]}"
               LOC=${LOCALES[c]} ;;
@@ -210,7 +239,9 @@ _artifacts_run() {
     done
     WANT=() AMAZON=()
     for i in $WW_ON; do WANT+=("${WW_IDS[i]}"); [ -d $MODELS/${WW_IDS[i]}/unpacked ] || AMAZON+=("${WW_IDS[i]}"); done
-    for i in $OT_ON; do WANT+=("${OT_IDS[i]}"); AMAZON+=("${OT_IDS[i]}"); done          # always a download
+    for i in $OT_ON; do                 # the sound detection model is always fetched again (the newest); whisper only when not on the PC
+        WANT+=("${OT_IDS[i]}"); is_aed ${OT_IDS[i]} || [ ! -d $MODELS/${OT_IDS[i]}/unpacked ] && AMAZON+=("${OT_IDS[i]}")
+    done
     if [ ${#WANT[@]} = 0 ] && [ -z "$ONLINE" ]; then
         [ -n "$M_SETUP" ] && ok "wake word: Alexa" || info "nothing ticked"
         return 0
@@ -218,14 +249,15 @@ _artifacts_run() {
 
     # the plan, shown before anything changes
     local need_amazon=; [ ${#AMAZON[@]} -gt 0 ] || [ -n "$ONLINE" ] && need_amazon=1
-    local n_install=0; for id in "${WANT[@]}"; do is_aed $id || n_install=$((n_install + 1)); done
+    local n_install=${#WANT[@]}
     [ -n "$need_amazon" ] && M_PLAN+=(online "Online with Amazon" register "Register in the Alexa app" fetch "Download from Amazon")
     [ $n_install -gt 0 ] && M_PLAN+=(install "Install")
     [ -n "$need_amazon" ] && M_PLAN+=(back "Back to satellite")
     printf '\n'; say "This will:"
     for id in "${WANT[@]}"; do
-        if is_aed $id && [ -d $MODELS/$id/unpacked ]; then say "  · download $(label $id) model again: replaces $MODELS/$id if Amazon has a newer one"
-        elif is_aed $id; then say "  · download $(label $id) model to $MODELS/$id"
+        if is_aed $id; then say "  · download Amazon's newest $(label $id) model and install it"
+        elif is_whisper $id && [[ " ${AMAZON[*]} " == *" $id "* ]]; then say "  · download $(label $id) and install it"
+        elif is_whisper $id; then say "  · install $(label $id)"
         elif [[ " ${AMAZON[*]} " == *" $id "* ]]; then say "  · download wake word $(label $id) and install it"
         else say "  · install wake word $(label $id)"; fi
     done
@@ -277,13 +309,14 @@ _artifacts_run() {
             info "Not downloaded: ${FAILED[*]}. The token may have expired: wait a minute (the Echo renews it) and run this again."
     fi
 
-    # --- install every wake word that is on the PC now
+    # --- install everything that is on the PC now
     if [ $n_install -gt 0 ]; then
         m_stage install
         for id in "${WANT[@]}"; do
-            is_aed $id && continue
             [ -d $MODELS/$id/unpacked ] || continue          # its download failed
-            install_model $id || FAILED+=("$id")
+            if is_whisper $id; then install_whisper $id || FAILED+=("$id")
+            elif is_aed $id; then install_aed $id || FAILED+=("$id")
+            else install_model $id || FAILED+=("$id"); fi
         done
     fi
 
@@ -315,13 +348,23 @@ _artifacts_run() {
     fi
 
     m_stage done
-    local names=() kept=()
+    local names=()
     for id in "${INSTALLED[@]}"; do names+=("$(label $id)"); done
-    for id in "${FETCHED[@]}"; do is_aed $id && kept+=("$MODELS/$id"); done
     [ ${#names[@]} -gt 0 ] && ok "installed: ${names[*]}"
-    [ ${#kept[@]} -gt 0 ] && ok "downloaded: ${kept[*]}"
     [ ${#FAILED[@]} -gt 0 ] && fail "not done: ${FAILED[*]}"
-    [ ${#names[@]} -gt 0 ] && tell "Pick it in Home Assistant" "Settings → Devices & services → this Echo → Wake word"
+    local ww=0 wh= ae=; for id in "${INSTALLED[@]}"; do if is_whisper $id; then wh=1; elif is_aed $id; then ae=1; else ww=1; fi; done
+    [ -n "$ae" ] && tell "Sound detection takes the new model" "whenever it is on: the \"Sound detection\" switch in Home Assistant."
+    [ $ww = 1 ] && tell "Pick it in Home Assistant" "Settings → Devices & services → this Echo → Wake word"
+    if [ -n "$wh" ]; then                 # what the hassmic started last said about it
+        local said=$(ashell "grep -E 'whisper: (model|no model)' $D/boot.log | tail -1")
+        case $said in
+        *loaded*) tell "Whisper detection is on" "Home Assistant: binary sensor \"Last request whispered\" of this Echo." \
+                      "Use it in the conversation agent's instructions, e.g. {{ is_state('binary_sensor.<echo>_last_request_whispered', 'on') }}";;
+        "")       tell "Update this Echo to use it" "Its hassmic has no whisper detection yet. The model is in place:" \
+                      "Home Assistant → this Echo → Firmware (Online updates), and the sensor comes with the new version.";;
+        *)        fail "hassmic did not load the whisper model: see $D/boot.log";;
+        esac
+    fi
     printf '\n'
     [ ${#FAILED[@]} = 0 ]
 }

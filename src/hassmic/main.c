@@ -46,6 +46,7 @@
 #include "sendspin.h"
 #include "sounds.h"
 #include "sound.h"
+#include "whisper.h"
 #include "board.h"
 
 #define PIPELINE_TIMEOUT 30         /* seconds in LISTENING or THINKING before giving up */
@@ -420,6 +421,24 @@ static void on_sound(const char *const *types, int n)    /* detector thread */
     pthread_mutex_unlock(&core_lock);
 }
 
+/* Whisper detection (whisper.h, docs/re-whisper.md): each request's mic audio, from the start of streaming to Home
+ * Assistant's VAD end, is scored once; the binary sensor says whether the last one was whispered, for the conversation
+ * agent's prompt template.  The result comes within milliseconds of the end of speech, while speech to text still
+ * runs, so it is in Home Assistant before the agent's prompt is rendered.  Without the DAVS model there is no sensor. */
+static atomic_int whisper_eou;              /* core_mic_off: the end of speech came (not a cancel or timeout) */
+static atomic_int whisper_last = -2;        /* core_whispered */
+
+int core_whispered(void) { return atomic_load(&whisper_last); }
+
+static void on_whisper(int whispered, int confidence, int threshold)    /* detector thread */
+{
+    fprintf(stderr, "whisper: %s (confidence %d, threshold %d)\n", whispered ? "whispered" : "not whispered", confidence, threshold);
+    atomic_store(&whisper_last, whispered);
+    pthread_mutex_lock(&core_lock);
+    if (connected && proto->whispered) proto->whispered(whispered);
+    pthread_mutex_unlock(&core_lock);
+}
+
 static void mute_update(int was, int sound)   /* lock held: ring, sound + Home Assistant follow the effective state */
 {
     int now = core_muted();
@@ -462,7 +481,7 @@ static void mic_stopped(void)
     denoise_frames = 0; denoise_ns = 0;
 }
 
-void core_mic_off(void) { atomic_store(&streaming, 0); mic_stopped(); }
+void core_mic_off(void) { atomic_store(&whisper_eou, 1); atomic_store(&streaming, 0); mic_stopped(); }
 
 void core_restart_after(void) { barge_in = 1; }
 
@@ -1167,6 +1186,7 @@ static void *capture_thread(void *arg)
 {
     FILE *dump = NULL;
     int sound_running = 0;                  /* the decoder is open: only this thread opens, feeds and closes it */
+    int whisper_on = 0;                     /* a whisper detector takes this request's audio */
     (void)arg;
     while (!atomic_load(&quit)) {
         const void *pcm; int n = cap_read(&pcm);
@@ -1186,7 +1206,8 @@ static void *capture_thread(void *arg)
                 char path[256]; const char *dir = getenv("HASSMIC_STATE");
                 snprintf(path, sizeof path, "%s/capture.raw", dir ? dir : "/data/local/hassmic/state");
                 dump = fopen(path, "wb");
-                fprintf(stderr, "capture dump: %s %s (16 kHz mono s16le)\n", dump ? "on" : "cannot write", path);
+                fprintf(stderr, "capture dump: %s %s (16 kHz mono s16le) from capture sample %ld\n", dump ? "on" : "cannot write", path,
+                        atomic_load(&cap_bytes) / 2 - n / 2);
             }
         }
         if (dump) fwrite(pcm, 1, n, dump);
@@ -1206,6 +1227,15 @@ static void *capture_thread(void *arg)
             } else { sound_close(); sound_running = 0; }
         }
         if (sound_running) sound_feed(pcm, n / 2);
+        if (atomic_load(&whisper_last) != -2) {     /* a model: what streams to the pipeline is one request */
+            int s = atomic_load(&streaming);
+            if (s && !whisper_on) {             /* the position lines it up with the capture dump's */
+                atomic_store(&whisper_eou, 0); whisper_begin(); whisper_on = 1;
+                fprintf(stderr, "whisper: request from capture sample %ld\n", atomic_load(&cap_bytes) / 2 - n / 2);
+            }
+            if (whisper_on && s) whisper_feed(pcm, n / 2);
+            if (whisper_on && !s) { whisper_end(atomic_exchange(&whisper_eou, 0)); whisper_on = 0; }
+        }
         if (atomic_load(&streaming)) {
             pthread_mutex_lock(&core_lock);
             if (atomic_load(&streaming) && connected) send_mic(pcm, n / 2, core_local_wake ? ring_n - n / 2 : 0);
@@ -1273,6 +1303,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "cannot load wake word model %s\n", wake_words[wake_active].manifest); return 1;
         }
     }
+    if (whisper_open(on_whisper) == 0) atomic_store(&whisper_last, -1);
+    else fprintf(stderr, "whisper: no model, no whisper detection (scripts/artifacts.sh installs it)\n");
     static const struct arb_hooks arb_hooks = { arb_send_key, arb_notify };
     if (arb_port && core_local_wake && proto->arb_send && arb_start(arb_port, core_node_name(), &arb_hooks)) fprintf(stderr, "arbitration: not available\n");
 

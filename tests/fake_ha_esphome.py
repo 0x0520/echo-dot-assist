@@ -55,6 +55,7 @@ async def main():
                HASSMIC_ADB_OPEN=os.path.join(state, "adb-open.root"),          # on the Echo: in a directory only root writes
                HASSMIC_LUX=os.path.join(state, "calibrated_lux"),              # the light sensor's sysfs file
                HASSMIC_FAKE_SOUND="dogBark",                                    # every ~10 s window "hears" a dog (sound_none.c)
+               HASSMIC_FAKE_WHISPER="1",                                        # a model, and every request whispered (whisper_none.c)
                HASSMIC_FAKE_WIFI=os.path.join(state, "rx_stat"))                # what the Wi-Fi driver answers RX_STAT (wifimotion.c)
     rx_stat = lambda rcpi: open(env["HASSMIC_FAKE_WIFI"], "w").write(f"RX Stat:\nRX SNR (dB)          = 32\nRCPI RX0             = {rcpi}\n")
     rx_stat(112)
@@ -157,6 +158,10 @@ async def main():
         cli.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_VAD_END, None)
         await asyncio.sleep(0.3); n = len(mic); await asyncio.sleep(0.4)
         check(len(mic) == n, "mic stream stops after STT_VAD_END")
+        wh = by.get("last_request_whispered")
+        whs = [x for x in states if isinstance(x, BinarySensorState) and wh and x.key == wh.key]
+        check(isinstance(wh, BinarySensorInfo) and whs and whs[0].missing_state and whs[-1].state is True and not whs[-1].missing_state,
+              f"\"Last request whispered\": unknown until a request, on at its VAD end, before the transcript: {[(x.state, x.missing_state) for x in whs]}")
         cli.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_END, {"text": "turn on the light"})
         cli.send_voice_assistant_event(Ev.VOICE_ASSISTANT_INTENT_END, {"conversation_id": "x", "continue_conversation": "0"})
         cli.send_voice_assistant_event(Ev.VOICE_ASSISTANT_TTS_START, {"text": "Done"})

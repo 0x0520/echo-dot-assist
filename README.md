@@ -55,6 +55,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Equalizer (bass, mid, treble)                 | ✅ (Alexa app)          | ✅ sliders in HA                             | ❌                       |
 | Light ring follows the room's light           | ✅                      | ✅ same, or a fixed level from HA; illuminance sensor | ❌ (stock's automatic only) |
 | Sound detection (smoke alarm, glass, dog, …)  | ✅ Alexa Guard, checked in Amazon's cloud | optional, off by default: on the Echo only, less reliable ([details](#sound-detection)) | ❌ |
+| Whisper detection                             | ✅ answers in a whisper | sensor for the conversation agent's prompt ([details](#whisper)) | ❌ |
 | Motion sensor                                 | ❌                      | **experimental**, off by default: from the Wi-Fi signal ([details](#wifi-motion)) | ❌ |
 | Encrypted link to Home Assistant              | –                       | ✅ key set by Home Assistant                 | ❌ plain TCP             |
 | Talks to Amazon                               | always                  | never (firewalled)                           | never (firewalled)       |
@@ -132,7 +133,31 @@ Details:
     timer, music, its sounds): those are what it would hear.
   - **Private**: it all happens on the Echo; nothing leaves it except the event to Home Assistant (a stock Echo uploads
     the recordings, and near misses for training). Costs about 13 % of one CPU core while on (Echo Dot 2).
+  - It uses the model in the Echo's firmware. Amazon's newest can be installed in its place with `scripts/artifacts.sh`
+    ("Other artifacts"; so far it scored the same on every test).
   - ESPHome only, not with Wyoming. Background: [docs/re-aed.md](docs/re-aed.md).
+- **Whisper detection** (optional)<a id="whisper"></a>: a stock Echo answers a whispered request in a whisper. Here the
+  binary sensor "Last request whispered" says whether the last request was whispered, for the conversation agent to
+  answer the same way. It uses Amazon's own whisper detector on the Echo, with a model that only Amazon hands out:
+  install it from a PC with `scripts/artifacts.sh` ("Other artifacts" → "Whisper detection"). It needs the Echo
+  registered to an Amazon account for a few minutes (the script walks you through it and undoes it), as for other
+  wake words. Over Wi-Fi, first turn on the Echo's "Debug access (adb over Wi-Fi)" switch in Home Assistant, then run
+  `scripts/artifacts.sh <echo-ip>`. The model stays through updates; without it there is no sensor.
+  - The sensor is set when you stop speaking, before speech to text has finished, so the agent's prompt template can
+    read it. For example, in the LLM conversation agent's instructions (the entity id has your Echo's name in it):
+
+    ```jinja
+    {% if is_state('binary_sensor.echo_dot_last_request_whispered', 'on') %}
+    The user whispered. Answer in a whisper: mark the whole answer the way your text-to-speech engine whispers.
+    {% endif %}
+    ```
+
+    Replace the second line with the markup your text-to-speech engine understands; Piper has none.
+  - In tests (Echo Dot 2, German commands from 1–2 m) whispered commands scored 984–999 out of 1000, spoken ones
+    0–18, quietly spoken ones too. Saying the wake word normally and whispering the rest is fine. Sounds without words (breathing, rustling) can score high, but only what the
+    pipeline took for a command is scored.
+  - It all happens on the Echo, during your request only. ESPHome only, not with Wyoming. Background:
+    [docs/re-whisper.md](docs/re-whisper.md).
 - **Wi-Fi motion** (**experimental**, off by default)<a id="wifi-motion"></a>: "Wi-Fi motion detection (experimental)"
   turns the Echo into a motion sensor without any extra hardware. Someone walking between the Echo and your Wi-Fi router
   changes how strongly the Echo receives the router, and "Wi-Fi motion (experimental)" (a motion binary sensor) goes on

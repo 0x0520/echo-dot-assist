@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Amazon's artifacts (DAVS) for an installed Echo: other wake words ("Echo", "Computer", "Amazon", "Ziggy", or "Alexa" in another
-# language), installed on the Echo, and Alexa Guard's sound detection model, kept on the PC for tests (docs/re-aed.md).
+# language), the whisper detection model (docs/re-whisper.md) and Amazon's newest sound detection model (Alexa Guard's,
+# in place of the firmware's, docs/re-aed.md), all installed on the Echo.
 # All are Amazon's (DAVS) and the same for every Echo, so ones fetched before (device-logs/models/, git-ignored) are only
 # copied over.  A menu with a list of ticks per kind, everything new ticked; then one run does the rest.  Downloading
 # needs the Echo registered to an Amazon account once: it runs stock Alexa with the updaters cut off

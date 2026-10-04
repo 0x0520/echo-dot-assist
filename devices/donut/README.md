@@ -127,7 +127,9 @@ scripts/artifacts.sh <echo-ip>
 
 Its menu has a list of ticks per kind, everything new ticked: "Wake words" (the ones already in `device-logs/models/`,
 as Amazon's sets are the same for every Echo: fetch once, copy to every Echo, and the ones Amazon has in the chosen
-language) and "Other artifacts" (the sound detection model, kept on the PC for tests, `docs/re-aed.md`). Untick what
+language) and "Other artifacts", installed on the Echo as well: whisper detection (Home Assistant's "Last request
+whispered", [README](../../README.md#whisper)), and Amazon's newest sound detection model in place of the
+firmware's (not ticked: so far it scores the same, `docs/re-aed.md`). The guided setup's last step offers the same. Untick what
 you do not want; "Go on" shows what it will do and asks once. It tries each wake word on the Echo's own engine before installing it,
 and restarts hassmic. For downloads it walks through the Amazon route below by itself, once for all of them: stock
 mode with the update block, you register the Echo in the Alexa app, it downloads the models (asking for what this

@@ -865,6 +865,28 @@ Run in this order. Each step says what it proves.
       threshold 0.845, the same results on all clips except a near miss on the CO beeps. The /system model is good enough.
       Open: played test sounds in the room (smoke alarm, glass, dog) and some talking or TV; whether to require a
       type in two windows in a row.
+- [x] Whisper detection (asked for 2026-10-04, built the same day; `docs/re-whisper.md`). Binary sensor "Last request
+      whispered" for the conversation agent's prompt template (`whisper_pryon.c`): one detector per request, fed from
+      the start of streaming, scored on HA's VAD end, so the state is in HA before STT ends. Listed only with the
+      model in `/data/local/hassmic/whisper` (`scripts/artifacts.sh`). `fake_ha_esphome.py`: unknown until a request,
+      on at its VAD end. Live with HA (Echo Dot 2): fed from the start of streaming, the normally spoken wake word's
+      tail took whispered requests to 641-979; with the first 0.5 s not fed, whispered 999/984, normal 1/0.
+      Open: that the agent's template sees the new state in time (not checked with an LLM yet), other speakers.
+      Background: stock has it on the device: `libpryon.so`
+      exports `WhisperApi_*` (a detector of its own: audio in, end of utterance in, one `confidence` out, whispered
+      above 500 as AHE reads it). Only AHE (the local "hybrid" engine) calls it, and only when Amazon's
+      `ahap-policy` selects static Litespeed pipelines. Donut's policy (2026-09-21) selected caching, so the model was
+      never fetched and the detector never ran. PuffinApp has no whisper code; for cloud requests the cloud decides
+      from the audio, and the result inside AHE goes upstream only through a stub. API reversed from AHE's call
+      sites. On the Echo Dot 2 (same libpryon): attributes `engineCompatibilityIds [1]`, model set load and the
+      handlers work, and `createWhisperDetector` refuses a set without a whisper section in `pryon.config`.
+      Model: DAVS `alexa-hybrid`/`whisper-static`, AHE's filter `ecid` "6" plus `modelClass` `odie-litespeed`.
+      `tools/davs-fetch.py ... whisper` and the "Other artifacts" list of `scripts/artifacts.sh` try that and
+      variants. Fetched 2026-10-04 (en-US; the locale filter is needed): a DNN on 64 LFBE plus a DNN speech
+      detector, thresholds per locale (default 922, de-DE 862). `src/tools/whisper_test.c` on the
+      Echo Dot 2, German commands from 1–2 m, one detector per command: whispered 996/995/998, normal 1/0/1, quiet
+      voice 18/1/2; with 0.5 s before and 1 s of silence after the speech 997-999 against 0-8. Non-speech sounds
+      score high (859), so only the command span may be scored.
 - [x] Playing on a Bluetooth speaker (2026-10-01, `btout.c`, `a2dp.c`, `sbc.c`; `docs/re-a2dp-source.md`): the mixer
       keeps its own A2DP route; hassmic stands in for btmanagerd towards it. LIPC `com.doppler.audiod`
       `A2DPSourceConnect` `1:<12 hex>` / `0:…` switches the mixer's single output; the HAL's abstract sockets

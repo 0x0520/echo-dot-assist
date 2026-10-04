@@ -4,6 +4,14 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-04
 
+- **Whisper detection.** Whisper to the Echo, and Home Assistant knows: the binary sensor "Last request whispered" is
+  on when your last request was whispered. Use it in your conversation agent's instructions to have the answer
+  whispered as well, as a stock Echo does ([how](README.md#whisper)). It is Amazon's own detector, run on the Echo
+  with a model that only Amazon hands out: the guided setup's last step offers it next to the wake words, and
+  `scripts/artifacts.sh` ("Other artifacts") adds it to an Echo set up before. ESPHome only.
+- **Newest sound detection model.** `scripts/artifacts.sh` and the guided setup can install Amazon's newest sound
+  detection model; hassmic then takes it in place of the one in the firmware (and goes back to that one if it does not
+  load). Not ticked by default: in tests it scored the same.
 - **`scripts/artifacts.sh` over Wi-Fi no longer hangs** after restarting the Echo as a stock Echo. A stock Echo
   that is not registered drops your Wi-Fi and opens its own setup network, so it now asks you to set it up in the
   Alexa app first and waits for it to come back afterwards. With the Echo on USB as well, it uses USB.

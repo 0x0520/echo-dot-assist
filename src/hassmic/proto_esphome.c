@@ -30,6 +30,8 @@
  *                    listed only where the Wi-Fi driver can do it
  *   online updates   a select (off by default, beta, release) and an update entity with the newest build on that channel
  *                    and an install button (update.c); channel and install only over the connection with the key
+ *   whisper          a binary sensor: the last request was whispered (whisper.h), set on the VAD end, before the
+ *                    conversation agent runs, so its prompt template can read it; listed only with the model installed
  */
 #include <ctype.h>
 #include <errno.h>
@@ -94,7 +96,7 @@ enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SEN
        KEY_BT_ANNOUNCE, KEY_DND, KEY_EQ_BASS, KEY_EQ_MID, KEY_EQ_TREBLE, KEY_BT_LANG, KEY_ARB_JOIN, KEY_ARB_PEERS, KEY_ARB_SERVICE,
        KEY_SS_UNPAIRED, KEY_DENOISE, KEY_ADB_WIFI, KEY_LUX, KEY_LED_AUTO, KEY_LED_BRIGHTNESS, KEY_SOUND_DETECTION, KEY_SOUND,
        KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_WIFI_MOTION_ON, KEY_WIFI_MOTION, KEY_WIFI_MOTION_SENS,
-       KEY_UPDATE_CHANNEL, KEY_UPDATE };
+       KEY_UPDATE_CHANNEL, KEY_UPDATE, KEY_WHISPERED };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -375,6 +377,9 @@ static void send_setting(int key)       /* lock held */
     case KEY_SOUND_DETECTION: pb_uint(&b, 2, core_sound(-1)); send_state(SWITCH_STATE, &b); break;
     case KEY_WIFI_MOTION_ON: if (wifimotion_present()) { pb_uint(&b, 2, wifimotion_enable(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_WIFI_MOTION_SENS: if (wifimotion_present()) { pb_float(&b, 2, wifimotion_sensitivity(-1)); send_state(NUMBER_STATE, &b); } break;
+    case KEY_WHISPERED:                 /* unknown until a request has been scored */
+        { int w = core_whispered(); if (w != -2) { pb_uint(&b, 2, w == 1); pb_uint(&b, 3, w < 0); send_state(BINARY_SENSOR_STATE, &b); } }
+        break;
     case KEY_WIFI_MOTION:               /* unknown while switched off */
         if (wifimotion_present()) { int m = wifimotion_motion(); pb_uint(&b, 2, m > 0); pb_uint(&b, 3, m < 0); send_state(BINARY_SENSOR_STATE, &b); }
         break;
@@ -591,6 +596,10 @@ static void send_setting_entities(void)
         { PB(b, 128); pb_str(&b, 1, "arbitration_peers"); pb_fixed32(&b, 2, KEY_ARB_PEERS); pb_str(&b, 3, "Arbitration peers");
           pb_str(&b, 5, "mdi:access-point-network"); pb_uint(&b, 13, 2); send_msg(LIST_SENSOR, &b); }
     }
+    /* Whisper detection (whisper.h): "{{ is_state('binary_sensor.<node>_last_request_whispered', 'on') }}" in the
+     * conversation agent's prompt template, to have it answer in whispered speech tags */
+    if (core_whispered() != -2) { PB(b, 192); pb_str(&b, 1, "last_request_whispered"); pb_fixed32(&b, 2, KEY_WHISPERED);
+        pb_str(&b, 3, "Last request whispered"); pb_str(&b, 8, "mdi:account-voice"); send_msg(LIST_BINARY_SENSOR, &b); }
     /* Wi-Fi motion (wifimotion.c): experimental, and the names say so; the switch is off by default */
     if (wifimotion_present()) {
         { PB(b, 192); pb_str(&b, 1, "wifi_motion_detection"); pb_fixed32(&b, 2, KEY_WIFI_MOTION_ON);
@@ -1312,7 +1321,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
         send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS); send_setting(KEY_BT_OUT_DELAY);
         for (int k = KEY_WIFI_MOTION_ON; k <= KEY_WIFI_MOTION_SENS; k++) send_setting(k);
-        send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE);
+        send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE); send_setting(KEY_WHISPERED);
         send_token_state(); send_light_states(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: on_setting(type, p, end); break;
     case UPDATE_COMMAND: {
@@ -1522,5 +1531,7 @@ static void sound(const char *event)    /* lock held */
     fprintf(stderr, "sound: %s\n", event);
 }
 
+static void whispered(int on) { (void)on; send_setting(KEY_WHISPERED); }   /* lock held */
+
 const struct proto proto_esphome = { "esphome", 26053, 1, serve, start, audio, stop, cancel, played, volume_changed, mute_changed, print_mdns, bt_device,
-                                     arb_send, arb_changed, sound };
+                                     arb_send, arb_changed, sound, whispered };

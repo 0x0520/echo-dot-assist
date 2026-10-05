@@ -4,6 +4,19 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-06
 
+- **adb over Wi-Fi with your update key opens for your PC only.** `scripts/adb-wifi.sh` used to open port 5555, a
+  root shell without a password, to the whole network for 30 minutes; now only the address that signed the request
+  gets in. The "Debug access" switch in Home Assistant and `ADB_WIFI=1` still open it to the network, unless the new
+  `ADB_WIFI_FROM=<address or subnet>` in `hassmic.conf` names who may connect.
+- **Wyoming can be limited to Home Assistant.** `-W <address>` in `ARGS` (for example `ARGS="-W 192.168.1.10"`)
+  refuses connections from everyone else. Wyoming has no password of its own, so without it anyone on the network can
+  take Home Assistant's place and hear the microphone. ESPHome remains the recommended protocol.
+- **The push port cannot be held by reconnecting.** An address whose connections to port 28929 fail three times within
+  a minute is turned away for a minute, so updates and `scripts/adb-wifi.sh` get through.
+- **Arbitration between Echos resists made-up beacons better.** A device sending beacons with many keys now gets at
+  most two places in an Echo's list of joining Echos, and all senders together at most eight new ones a minute.
+- **Tip:** use Home Assistant's IP address in its internal URL rather than `homeassistant.local`; any device on the
+  network can answer for a `.local` name.
 - **Stock Alexa back without a reboot, and away again.** `scripts/alexa.sh on` stops the satellite and starts Amazon's
   Alexa with internet, firmware updates still blocked; `scripts/alexa.sh off` brings the satellite and the internet
   lock back. A reboot also returns to the satellite. Before, `alexa-on.sh` left the lock in place (Alexa could not

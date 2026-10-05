@@ -134,21 +134,31 @@ async def main():
 
         # a device Home Assistant does not know
         x = X25519PrivateKey.generate(); xp = x.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); tx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        send = lambda p: tx.sendto(p, (BCAST, ARB))
+        # each sender from an address of its own on the loopback: the Echos count keys per source address
+        def sender(src):
+            tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); tx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            tx.bind((src, 0))
+            return lambda p: tx.sendto(p, (BCAST, ARB))
+        send, send2, flood = sender("127.0.0.2"), sender("127.0.0.3"), sender("127.0.0.4")
         node = lambda s: bytes([len(s)]) + s.encode()
         net = a.net(); calls = len(ha.calls)
         xp2 = X25519PrivateKey.generate().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         def beacons():
             send(b"HMA1\x01" + xp + struct.pack("<Q", 0) + node("evil"))                  # outside any network: gets our key sent...
-            send(b"HMA1\x01" + xp2 + struct.pack("<Q", 0) + node(b.node))                 # ...or naming a real Echo, with its own key
+            send2(b"HMA1\x01" + xp2 + struct.pack("<Q", 0) + node(b.node))                # ...or naming a real Echo, with its own key
         beacons(); await asyncio.sleep(2)
         check(len(ha.calls) == calls, "a beacon heard once: nothing handed over yet")
         await asyncio.sleep(7.5); beacons()                                                 # as a joining Echo beacons again
-        # a flood of beacons, each with a key of its own: none is heard twice, none costs a hand-over or pushes the two out
-        for i in range(48): send(b"HMA1\x01" + os.urandom(32) + struct.pack("<Q", 0) + node(f"flood-{i}"))
+        # a flood of beacons, each with a key of its own: none is heard twice, none costs a hand-over or pushes the two out.
+        # From one address it gets two places at most; from many, new keys are taken eight a minute at most
+        for i in range(48): flood(b"HMA1\x01" + os.urandom(32) + struct.pack("<Q", 0) + node(f"flood-{i}"))
+        for i in range(12): sender(f"127.0.1.{i + 1}")(b"HMA1\x01" + os.urandom(32) + struct.pack("<Q", 0) + node(f"many-{i}"))
         await asyncio.sleep(6.5)                                                            # two hand-overs per Echo, 5 s apart
         sent = [c[1] for c in ha.calls[calls:]]
+        check(all("127.0.0.4 beacons more than 2 keys: the others ignored" in e.text() and e.text().count("beacons more than") == 1 for e in (a, b)),
+              "one address beaconing 48 keys: two of them taken, the others ignored (said once)")
+        check(all("more than 8 new keys within a minute: the others ignored" in e.text() for e in (a, b)),
+              "new keys from twelve addresses at once: eight a minute taken, the others ignored")
         check(sent and set(sent) <= {"esphome.evil_arbitration_key", f"esphome.{b.node.replace('-', '_')}_arbitration_key"} and len(sent) <= 4,
               f"unknown device: the key only ever goes to a device Home Assistant adopted under that name, none to the flood: {sorted(sent)}")
         send(b"HMA1\x01" + xp + struct.pack("<Q", 1) + node("evil") + struct.pack("<Q", 1) + os.urandom(16))   # "an older network"

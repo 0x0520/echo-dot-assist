@@ -5,6 +5,10 @@
  * with push updates (ota.c) it only asks: a request file in state/, which root's firewall watcher takes within 5 s.  How
  * long the window lasts and when it ends is that side's business (a reboot always ends it); it answers with the file
  * adb-open in a directory only root writes, which exists exactly while the port is open.
+ * A request names the one address to admit when it can: whoever signed the push port's challenge (ota.c) gets the port
+ * for their own address only, not the whole network.  The switch in Home Assistant names none (the connection that
+ * flips it is Home Assistant's, not the developer's PC): root admits the network then, or what ADB_WIFI_FROM in
+ * hassmic.conf says.  Root checks the address again before it goes into a firewall rule.
  */
 #include "adbwifi.h"
 #include <pthread.h>
@@ -38,12 +42,14 @@ int adbwifi_open(void)
 
 int adbwifi_granted(void) { return access(req_path(), F_OK) && !access(open_path(), F_OK); }
 
-void adbwifi_ask(int on)
+void adbwifi_ask(int on, const char *from)
 {
     char tmp[320];
+    if (!on) from = NULL;
     snprintf(tmp, sizeof tmp, "%s.tmp", req_path());
     FILE *f = fopen(tmp, "w");
-    int ok = f && fprintf(f, "%d\n", on != 0) > 0;
+    /* the address on a line of its own: a lockdown.sh from before reads the first line only, and opens as it did then */
+    int ok = f && fprintf(f, "%d\n%s%s", on != 0, from ? from : "", from ? "\n" : "") > 0;
     if (f && fclose(f)) ok = 0;
     if (!ok || rename(tmp, req_path())) {
         fprintf(stderr, "adb over Wi-Fi: cannot write %s\n", req_path());
@@ -51,7 +57,7 @@ void adbwifi_ask(int on)
     }
     asked_at = now();
     atomic_store(&asked, on != 0);
-    fprintf(stderr, "adb over Wi-Fi: asked to %s it\n", on ? "open" : "close");
+    fprintf(stderr, "adb over Wi-Fi: asked to %s it%s%s\n", on ? "open" : "close", from ? " for " : "", from ? from : "");
 }
 
 static void *watcher(void *arg)

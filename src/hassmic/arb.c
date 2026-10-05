@@ -58,6 +58,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "hash.h"
+#include "net.h"
 #include "ws.h"
 #include "../third_party/monocypher.h"
 
@@ -73,6 +74,15 @@
  * least CAND_MIN_MS apart (a joining Echo beacons every LONER_MS), and all hand-overs together at most every PUSH_GAP_MS. */
 #define CAND_MIN_MS  9000       /* a joining Echo's second beacon, LONER_MS on its own clock */
 #define PUSH_GAP_MS  5000
+/* Heard twice was still cheap: a sender that beacons many keys twice over fills the table with Echos that count, and a
+ * real one that joins then finds no room.  So no source address gets more than CAND_PER_ADDR places (an Echo has one
+ * key; the second covers one that lost its state and beacons a new key while its old one is still remembered), and
+ * keys never heard before are taken at most CAND_NEW_MAX a minute, from everyone together.  Neither ever pushes out a
+ * key that is in the table already.  The source address of a UDP broadcast proves nothing (it is made up as easily as
+ * the key): the first limit is against the easy flood from one host, the second against everything else. */
+#define CAND_PER_ADDR 2
+#define CAND_NEW_MAX  8
+#define CAND_NEW_MS   60000
 #define CTR_BLOCK    4096
 #define NPEER  16
 #define NCLAIM 16
@@ -98,7 +108,9 @@ static struct peer { uint8_t id[8]; uint64_t ctr; long long seen; } peers[NPEER]
 static struct claim { uint8_t id[8], kw[8]; int score, prio, won; long long at; } claims[NCLAIM];
 static unsigned claim_next;
 /* Echos outside our network.  first: when this key was first heard; heard: beacons since (2 is all that matters) */
-static struct cand { uint8_t pub[32]; char node[NLEN]; uint64_t net; long long seen, pushed, first; int heard; } cands[NPEER];
+static struct cand { uint8_t pub[32]; char node[NLEN]; uint64_t net; long long seen, pushed, first; int heard; uint32_t from; } cands[NPEER];
+static long long new_since, told_addr, told_rate;    /* CAND_NEW_MS window; when the log last said a key was refused */
+static int new_count;
 static long long push_last;             /* the last hand-over to anyone (PUSH_GAP_MS) */
 static struct push { char node[NLEN], net[20], key[160]; } pushes[NPEER];     /* for Home Assistant, sent outside the lock */
 static int npush;
@@ -254,15 +266,32 @@ static int established(const struct cand *c, long long now)    /* heard twice, f
 
 /* NULL if there is no room: a key heard once may push out another heard once or one gone quiet, never an Echo that
  * is established, so a flood of made-up keys cannot push out the one that is really joining */
-static struct cand *cand(const uint8_t pub[32], long long now)
+static struct cand *cand(const uint8_t pub[32], uint32_t from, long long now)
 {
-    struct cand *old = NULL;
+    struct cand *old = NULL; int same = 0; char ip[16];
     for (int i = 0; i < NPEER; i++) {
         if (cands[i].seen && !memcmp(cands[i].pub, pub, 32)) return &cands[i];
+        same += cands[i].from == from && ago(cands[i].seen, now, PEER_TTL_MS);
         if (!established(&cands[i], now) && (!old || cands[i].seen < old->seen)) old = &cands[i];
     }
+    if (same >= CAND_PER_ADDR) {
+        if (!ago(told_addr, now, CAND_NEW_MS)) {
+            told_addr = now; net_ntoa4(from, ip);
+            fprintf(stderr, "arbitration: %s beacons more than %d keys: the others ignored\n", ip, CAND_PER_ADDR);
+        }
+        return NULL;
+    }
+    if (!ago(new_since, now, CAND_NEW_MS)) { new_since = now; new_count = 0; }
+    if (new_count >= CAND_NEW_MAX) {
+        if (!ago(told_rate, now, CAND_NEW_MS)) {
+            told_rate = now;
+            fprintf(stderr, "arbitration: more than %d new keys within a minute: the others ignored\n", CAND_NEW_MAX);
+        }
+        return NULL;
+    }
     if (!old) return NULL;
-    memset(old, 0, sizeof *old); memcpy(old->pub, pub, 32); old->first = now;
+    new_count++;
+    memset(old, 0, sizeof *old); memcpy(old->pub, pub, 32); old->first = now; old->from = from;
     return old;
 }
 
@@ -323,7 +352,7 @@ static void push(struct cand *c, long long now)
     b64_encode(blob, sizeof blob, q->key, 0, 1);
 }
 
-static void on_packet(const uint8_t *p, size_t n, long long now)
+static void on_packet(const uint8_t *p, size_t n, uint32_t from, long long now)
 {
     struct rd r = { p, p + n, 0 }; const uint8_t *m = take(&r, 5);
     if (!join || !m || memcmp(m, "HMA1", 4)) return;
@@ -344,7 +373,7 @@ static void on_packet(const uint8_t *p, size_t n, long long now)
             if (fresh(pub, c, now) && !known) beacon();
             return;
         }
-        struct cand *c = cand(pub, now);
+        struct cand *c = cand(pub, from, now);
         if (c) {
             /* heard again: counts once it is CAND_MIN_MS after the first (Wi-Fi delivers a beacon twice now and then) */
             if (!c->heard || now - c->first >= CAND_MIN_MS) c->heard++;
@@ -372,8 +401,9 @@ static void *loop(void *arg)
     (void)arg;
     for (;;) {
         if (poll(&pf, 1, 100) > 0) {
-            ssize_t n = recv(sock, buf, sizeof buf, 0);
-            if (n > 0) { pthread_mutex_lock(&lk); on_packet(buf, (size_t)n, now_ms()); pthread_mutex_unlock(&lk); }
+            struct sockaddr_in sa; socklen_t sl = sizeof sa;
+            ssize_t n = recvfrom(sock, buf, sizeof buf, 0, (struct sockaddr *)&sa, &sl);
+            if (n > 0) { pthread_mutex_lock(&lk); on_packet(buf, (size_t)n, net_peer4((struct sockaddr *)&sa, sl), now_ms()); pthread_mutex_unlock(&lk); }
         }
         struct push q[NPEER]; int nq; long long now = now_ms();
         pthread_mutex_lock(&lk);
@@ -476,7 +506,7 @@ int arb_join(int set)
             in_net = 0; net_id = 0; crypto_wipe(net_key, sizeof net_key); crypto_wipe(mac_key, sizeof mac_key);
             memset(peers, 0, sizeof peers); memset(claims, 0, sizeof claims);
         } else {                                    /* start over: earlier refusals and waits no longer apply */
-            memset(cands, 0, sizeof cands); join_since = now_ms(); beacon_at = 0;
+            memset(cands, 0, sizeof cands); join_since = now_ms(); beacon_at = 0; new_since = 0;
             fprintf(stderr, "arbitration: looking for a network\n");
         }
         save(); atomic_store(&notify, 1);

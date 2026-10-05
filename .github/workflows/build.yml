@@ -181,6 +181,8 @@ jobs:
         run: sh tests/boot_test.sh
       - name: Alexa on and off without a reboot (main.sh, lockdown.sh, init and iptables stand-ins)
         run: sh tests/alexa_test.sh
+      - name: adb over Wi-Fi, who the firewall admits (lockdown.sh, iptables stand-ins)
+        run: sh tests/lockdown_test.sh
       - name: Online updates
         run: .venv/bin/python tests/fake_ha_update.py
       - name: ESPHome native API

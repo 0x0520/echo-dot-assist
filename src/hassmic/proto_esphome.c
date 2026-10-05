@@ -788,7 +788,7 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         /* Before Home Assistant has set the key anyone on the network gets a connection: that must not be a way to
          * a root shell.  Closing it is always fine. */
         int c = client_of(reply_fd);
-        if (!on || (c >= 0 && clients[c].keyed)) adbwifi_ask(on);
+        if (!on || (c >= 0 && clients[c].keyed)) adbwifi_ask(on, NULL);
         else fprintf(stderr, "adb over Wi-Fi: refused, the request did not come over the keyed connection\n");
         send_setting(key); return;
     }

@@ -15,6 +15,12 @@
  *   <- "NONCE <64 hex digits>\n"
  *   -> <64 byte signature over "HMOTA-ADB1\n" + the 32 nonce bytes>
  *   <- one line: "OK ..." once root's firewall watcher has opened it | "FAILED <why>"
+ * It opens for the address the challenge was signed from only (adbwifi.c): the key holder's PC, not the network.
+ *
+ * One connection at a time, so the port has to be shared fairly: an address whose connections fail (no request, no
+ * signature, a wrong one, too slow) three times within a minute is turned away for a minute, with one line and at once,
+ * instead of holding the port for the 30 s each of those take.  One that proves the key starts from zero, and nobody
+ * else's failures count against it: the owner is never locked out for longer than a minute of their own mistakes.
  *
  * An update that passes its self test (main.c) becomes the factory copy on the system partition, the one the Echo falls
  * back to: ota_healthy() tells root's installer loop, which checks that it is the installed update and that the running
@@ -137,42 +143,69 @@ void ota_healthy(void)
     if (store(dir, "healthy", "1\n", 2)) fprintf(stderr, "self test: cannot tell the installer\n");
 }
 
-static void adb_open(int fd, const uint8_t pk[32], long long by)
+/* 1 once the peer has proven the key (whatever comes after), 0 if not */
+static int adb_open(int fd, const uint8_t pk[32], long long by, uint32_t from)
 {
-    if (challenge(fd, pk, "HMOTA-ADB1", by)) return;
-    fprintf(stderr, "update: adb over Wi-Fi asked for with the update key\n");
-    adbwifi_ask(1);
+    char ip[16], ok[80];
+    if (!from) { reply(fd, "FAILED not an IPv4 peer"); return 0; }
+    if (challenge(fd, pk, "HMOTA-ADB1", by)) return 0;
+    net_ntoa4(from, ip);
+    fprintf(stderr, "update: adb over Wi-Fi asked for with the update key from %s\n", ip);
+    adbwifi_ask(1, ip);
     for (int t = 0; t < 30; t++) {                      /* the firewall watcher looks every 5 s */
-        if (adbwifi_granted()) { reply(fd, "OK adb over Wi-Fi open for 30 min"); return; }
+        if (adbwifi_granted()) { snprintf(ok, sizeof ok, "OK adb over Wi-Fi open for 30 min, for %s only", ip); reply(fd, ok); return 1; }
         usleep(500000);
     }
     reply(fd, "FAILED the firewall service did not answer (is hassmic_fw running?)");
+    return 1;
 }
 
-static void handle(int fd)
+/* 1 if the peer proved that it holds the update key, 0 if not (for the back-off) */
+static int handle(int fd, uint32_t from)
 {
     char line[128], dir[280]; unsigned long len = 0; uint8_t sig[64], pk[32], *b;
     long long t0 = net_mono_ms();
     /* One connection at a time, so each gets an end it cannot push out: a per-read timeout let a peer sending a byte
      * every 29 s hold the port, and with it the adb way back in, for ever */
-    if (net_read_until(fd, line, sizeof line, "\n", t0 + HEAD_MS) <= 0) { reply(fd, "FAILED bad request"); return; }
+    if (net_read_until(fd, line, sizeof line, "\n", t0 + HEAD_MS) <= 0) { reply(fd, "FAILED bad request"); return 0; }
     line[strcspn(line, "\n")] = 0;
     int adb = !strcmp(line, "HMOTA-ADB1");
-    if (!adb && (sscanf(line, "HMOTA-PUSH1 %lu", &len) != 1 || !len || len > MAX_BUNDLE)) { reply(fd, "FAILED bad request"); return; }
-    if (!load_key(pub_path(), pk)) { reply(fd, "FAILED this device has no update key (install-system.sh installs it)"); return; }
-    if (adb) { adb_open(fd, pk, t0 + HEAD_MS + SIGN_MS); return; }
-    if (!(b = malloc(len))) { reply(fd, "FAILED out of memory"); return; }
+    if (!adb && (sscanf(line, "HMOTA-PUSH1 %lu", &len) != 1 || !len || len > MAX_BUNDLE)) { reply(fd, "FAILED bad request"); return 0; }
+    if (!load_key(pub_path(), pk)) { reply(fd, "FAILED this device has no update key (install-system.sh installs it)"); return 0; }
+    if (adb) return adb_open(fd, pk, t0 + HEAD_MS + SIGN_MS, from);
+    if (!(b = malloc(len))) { reply(fd, "FAILED out of memory"); return 0; }
     long long by = net_mono_ms() + BODY_MS + (long long)(len / MIN_RATE) * 1000;
     if (net_read_full_by(fd, sig, 64, by) != 64 || net_read_full_by(fd, b, len, by) != (ssize_t)len) {
-        reply(fd, "FAILED upload incomplete or too slow"); free(b); return;
+        reply(fd, "FAILED upload incomplete or too slow"); free(b); return 0;
     }
-    if (crypto_eddsa_check(sig, pk, b, len)) { reply(fd, "FAILED signature does not verify against this device's update key"); free(b); return; }
+    if (crypto_eddsa_check(sig, pk, b, len)) { reply(fd, "FAILED signature does not verify against this device's update key"); free(b); return 0; }
 
     pthread_mutex_lock(&handoff_lock);
     if (stage(b, len, sig, dir, sizeof dir)) reply(fd, "FAILED cannot store the bundle");
     else { fprintf(stderr, "update: %lu bytes received, signature good, handed to the installer\n", len); relay(fd, dir, "result", 60); }
     pthread_mutex_unlock(&handoff_lock);
     free(b);
+    return 1;
+}
+
+/* The listener's own: refused before it is served, or served and its outcome counted */
+static void serve(int c)
+{
+    static struct net_backoff backoff;
+    struct sockaddr_in sa; socklen_t sl = sizeof sa; char ip[16], msg[120];
+    uint32_t from = getpeername(c, (struct sockaddr *)&sa, &sl) ? 0 : net_peer4((struct sockaddr *)&sa, sl);
+    long long left = net_backoff_left(&backoff, from, net_mono_ms());
+    if (left) {                                     /* not logged: that is what a flood would fill the log with */
+        int n = snprintf(msg, sizeof msg, "FAILED too many failed connections from this address, try again in %lld s\n", (left + 999) / 1000);
+        write_all(c, msg, n);
+        return;
+    }
+    net_backoff_result(&backoff, from, handle(c, from), net_mono_ms());
+    if (net_backoff_left(&backoff, from, net_mono_ms())) {
+        net_ntoa4(from, ip);
+        fprintf(stderr, "update: %d failed connections from %s within %d s: turned away for %d s\n",
+                NET_BACKOFF_FAILS, ip, NET_BACKOFF_MS / 1000, NET_BACKOFF_MS / 1000);
+    }
 }
 
 static void *listener(void *arg)
@@ -181,7 +214,7 @@ static void *listener(void *arg)
     (void)arg;
     if (ls < 0) { perror("update: listen"); return NULL; }
     fprintf(stderr, "update: push port %d\n", port);
-    for (;;) { int c = net_accept(ls); if (c < 0) break; handle(c); close(c); }      /* one at a time */
+    for (;;) { int c = net_accept(ls); if (c < 0) break; serve(c); close(c); }       /* one at a time */
     return NULL;
 }
 

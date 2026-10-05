@@ -290,6 +290,7 @@ PROTO=esphome               # or wyoming (port 16700)
 ARGS=""                     # extra options, below
 #MODE=stock-online          # temporary: stock Alexa online without updates, see the model's install page
 #ADB_WIFI=1                 # leave adb over Wi-Fi open, see below
+#ADB_WIFI_FROM=192.168.1.20 # adb over Wi-Fi from this address (or subnet, 192.168.1.0/24) only, see below
 ```
 
 | `ARGS` option | Effect |
@@ -302,22 +303,33 @@ ARGS=""                     # extra options, below
 | `-z 0` | no Sendspin player |
 | `-a 0` | no arbitration with other Echos (UDP 28930) |
 | `-p <port>` | another port (the firewall only admits inbound TCP 16384–32767) |
+| `-W <addresses>` | only these may connect: IPv4 addresses or subnets, comma separated (`-W 192.168.1.10` or `-W 192.168.1.10,10.0.0.0/24`). For Wyoming: put Home Assistant's address here, see [Security](#security) |
 
 **adb over Wi-Fi is closed.** adb on an unlocked Echo is a root shell that asks for no key, so an open port 5555
 would give it to everyone on the network. Over USB adb always works. Over Wi-Fi:
 
-- turn on **Debug access (adb over Wi-Fi)** in Home Assistant (the Echo's device page, Configuration), then
+- run `scripts/adb-wifi.sh <echo-ip>` on the PC you installed from: open for 30 minutes, **for that PC only**,
+  proven with the key that signs your updates (`secrets/update.key`). This is also the way in when Home Assistant
+  cannot be: the Echo is not adopted yet, has lost its key, runs `PROTO=wyoming`, or Home Assistant is down. It needs
+  hassmic running (like `scripts/ota-push.sh`).
+- or turn on **Debug access (adb over Wi-Fi)** in Home Assistant (the Echo's device page, Configuration), then
   `adb connect <echo-ip>:5555`. It closes by itself after 30 minutes, when you turn the switch off, and at every
   reboot. The switch only works once Home Assistant has set the encryption key (it does so when you add the Echo).
-- or run `scripts/adb-wifi.sh <echo-ip>` on the PC you installed from: the same 30 minutes, proven with the key that
-  signs your updates (`secrets/update.key`) instead of Home Assistant. This is the way in when Home Assistant cannot
-  be: the Echo is not adopted yet, has lost its key, runs `PROTO=wyoming`, or Home Assistant is down. It needs hassmic
-  running (like `scripts/ota-push.sh`).
-- or put `ADB_WIFI=1` into `hassmic.conf`: open for good, until you take the line out (no reboot needed either way).
-  For development, and the only way with `MODE=stock-online` (no hassmic running there).
+  The Echo cannot tell which PC you will connect from (the switch comes from Home Assistant's address), so this opens
+  it to your **whole network**, unless `ADB_WIFI_FROM` in `hassmic.conf` names the address or subnet to admit.
+- or put `ADB_WIFI=1` into `hassmic.conf`: open for good, until you take the line out (no reboot needed either way),
+  to the whole network or to `ADB_WIFI_FROM`. For development, and the only way with `MODE=stock-online` (no hassmic
+  running there).
 
-Nothing else opens it; `boot.log` says when it opens and closes. If hassmic itself does not run, or the update key is
-lost, only USB is left.
+`ADB_WIFI_FROM=192.168.1.20` (or a subnet, `192.168.1.0/24`) limits the switch and `ADB_WIFI=1` to that source. Written
+as just that: a value that is not one IPv4 address or subnet keeps adb over Wi-Fi closed (`boot.log` says why) rather
+than opening it to everyone. Nothing else opens it; `boot.log` says when it opens, for whom, and when it closes. If
+hassmic itself does not run, or the update key is lost, only USB is left.
+
+The push port (28929, updates and `scripts/adb-wifi.sh`) serves one connection at a time. An address whose
+connections fail three times within a minute (no request, a wrong signature, too slow) is turned away for a minute,
+so nobody can hold it for long by connecting over and over. A wrong key from your own PC three times in a row means
+waiting that minute.
 
 ## Troubleshooting
 
@@ -333,7 +345,9 @@ Assistant reach that address?). Keep exactly one Wi-Fi profile on the Echo.
 Assistant or Music Assistant gives it. Home Assistant builds that from its internal URL (Settings → System → Network),
 or its LAN IP when none is set. The Echo must resolve the name (DNS from DHCP; `.local` via mDNS works) and route to the
 address; on a network without internet that means a URL inside your network. The log names what failed
-(`net: cannot ...`). If not even button sounds play, check the volume.
+(`net: cannot ...`). If not even button sounds play, check the volume. Prefer Home Assistant's IP address in that URL
+(`http://192.168.1.10:8123`) over `homeassistant.local`: any device on the network can answer an mDNS question, so
+with a `.local` name a device that answers first decides where the Echo fetches what it plays.
 
 **"Invalid encryption key" in Home Assistant** (Echo reset, or something else set a key first):
 `scripts/adb-wifi.sh <echo-ip>`, `adb shell rm /data/local/hassmic/state/api_key`, restart hassmic (or reboot), delete the device in Home Assistant, add it
@@ -371,24 +385,32 @@ older one installed is refused with a message.
   generates the key when you add the Echo, sets it over an encrypted connection, and clears it when you delete the
   device. **Until then anyone on the network can connect**, or set a key first (then see
   [Troubleshooting](#troubleshooting)). The key lives in `/data/local/hassmic/state/api_key`.
-- **Wyoming link**: unencrypted and unauthenticated, like every Wyoming satellite.
+- **Wyoming link**: unencrypted and unauthenticated, like every Wyoming satellite: whoever connects last is the Echo's
+  Home Assistant and hears its microphone. Limit it to Home Assistant's address with `-W` in `ARGS`
+  (`ARGS="-W 192.168.1.10"`): every other address is closed on at once. That is an address check, not a key: a device
+  that takes over Home Assistant's address on your network still gets in. ESPHome (the default) is the recommended
+  protocol for that reason.
 - **Egress**: Amazon's daemons may only reach local addresses (plus DNS to the servers DHCP hands out); `otad` and
   `ace_otad` never get out. hassmic itself may reach any address. Put the Echo on a network without internet as a second
   layer.
 - **Inbound**: TCP 16384–32767 only (26053 ESPHome, 16700 Wyoming, 28928 Sendspin, 28929 updates), UDP 16384–32767
   (28930 arbitration between Echos).
 - **adb**: a root shell without authentication (the unlock turns adbd's key check off). Over Wi-Fi it is closed: adbd
-  runs without its network listener and the firewall drops port 5555. Opened only by the "Debug access" switch (30
-  minutes; taken only over the encrypted connection with Home Assistant's key), by `scripts/adb-wifi.sh` (30 minutes;
-  a fresh challenge signed with your update key, so a recorded exchange does not work twice) or by `ADB_WIFI=1` in
-  `hassmic.conf`; while it is open, anyone on the network has root. USB always works: physical access is root access anyway.
+  runs without its network listener and the firewall drops port 5555. Opened only by `scripts/adb-wifi.sh` (30
+  minutes, for the signing PC's address only; a fresh challenge signed with your update key, so a recorded exchange
+  does not work twice), by the "Debug access" switch (30 minutes; taken only over the encrypted connection with Home
+  Assistant's key) or by `ADB_WIFI=1` in `hassmic.conf`; the last two open it to the whole network unless
+  `ADB_WIFI_FROM` names an address or subnet, and while it is open, whoever it admits has root. USB always works:
+  physical access is root access anyway.
   Without `hassmic.conf` (stock behaviour, or before the install) it is open, as stock leaves it.
 - **Arbitration between Echos**: an Echo takes the network key only from Home Assistant, over its encrypted API link,
   as a call of its own action `esphome.<node>_arbitration_key`; a member hands it over by asking Home Assistant to run
   that action, which needs "Allow the device to perform Home Assistant actions". So only devices you adopted into Home
   Assistant and allowed to act take part; the key travels encrypted to the receiving Echo, so it is not readable in
   Home Assistant's traces or logbook. Rounds are authenticated with the key and cannot be replayed. The keys are in
-  `state/arb_key` and `state/arbitration`.
+  `state/arb_key` and `state/arbitration`. Echos not yet in the network are remembered two per source address and
+  eight new ones a minute at most, so a device beaconing made-up keys cannot crowd out one that is really joining
+  (while such a flood lasts, a new Echo may take longer to join).
 - **Updates**: only bundles signed with your `secrets/update.key` (pushed from your PC) or with the project's release key
   (`keys/release.pub`; downloaded by hassmic itself, only once "Online updates" is switched on) are installed. Root
   checks the signature with the tool and keys from the system partition or the installed copy before anything is

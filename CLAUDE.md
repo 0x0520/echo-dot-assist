@@ -43,6 +43,7 @@ aioesphomeapi, wyoming, aiosendspin, noiseprotocol, aiohttp):
 tests/ota_push_test.sh                        # signed push-update path end to end
 tests/boot_test.sh                            # main.sh itself: which bundles root installs, start counter, bad config
 tests/alexa_test.sh                           # alexa-on.sh/alexa-off.sh with main.sh + lockdown.sh, fake init and iptables
+tests/lockdown_test.sh                        # lockdown.sh adb_gate: who the 5555 rule admits (-s), check agrees, fake iptables
 tests/otatool_test.sh                         # scripts/otatool.py against the C otatool: same keys, signatures, bundles
 ```
 
@@ -66,7 +67,10 @@ There is no single-test selector: run one unit test by building/running its line
   opened for 30 min by the HA switch "Debug access (adb over Wi-Fi)" (hassmic writes `state/adb-request`, the firewall
   watcher opens it and marks it with `/data/local/hassmic/adb-open`), by `scripts/adb-wifi.sh [host]` (signs a challenge
   on the push port with `secrets/update.key`; no HA needed), or kept open by `ADB_WIFI=1` in `hassmic.conf`. Then
-  `adb connect <echo-ip>:5555`. USB always works.
+  `adb connect <echo-ip>:5555`. USB always works. Who gets in: the signed challenge admits only the address that
+  signed it (second line of `state/adb-request`; `-s <ip>/32` in the INPUT rule); the switch and `ADB_WIFI=1` admit
+  the LAN unless `ADB_WIFI_FROM=<ip or cidr>` in `hassmic.conf` narrows it (root validates both with `cidr4`; one
+  that does not pass opens nothing). `tests/lockdown_test.sh`.
 - What goes onto the Echo is listed once: `ship_bins`/`ship_scripts` in `scripts/lib/device.sh` (bundle.sh,
   install-system.sh, deploy.sh and CI take it from there).
 - `scripts/deploy.sh`: build + push to `/data/local/hassmic` for trial runs (`adb shell sh /data/local/hassmic/run.sh`).
@@ -167,7 +171,12 @@ through narrow headers:
   its own, L2CAP framing and reassembly) and keep keys with `keyfile.c`. `hci_cmd` is for upkeep only: ble.c refuses it
   (logged as a bug, -1) while an event or ACL packet is being handled.
 - **adb over Wi-Fi** (`adbwifi.c`): the HA switch only writes a request for root's firewall watcher, as `ota.c` does
-  for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key.
+  for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key,
+  which opens it for the signer's address only. The push port serves one connection at a time, so an address that
+  fails three times in a minute is turned away for a minute (`net_backoff_*` in `net.c`).
+- **Who may connect** (`net.c`): `-W <ip>[,<ip>/<len>...]` limits the protocol port to those peers (meant for Wyoming,
+  which has no authentication; ESPHome has its key), closed at accept in `main.c`. Arbitration (`arb.c`) takes at
+  most 2 unknown keys per source address and 8 new ones a minute in all.
 - **Wi-Fi motion** (`wifimotion.c`, experimental, off by default): polls the RCPI of the frames from the AP at 10 Hz, scatter
   over 2 s = motion binary sensor. A kernel module of ours (no kprobes on any model) words it like MediaTek's `RX_STAT` in
   `/proc/<module>`: biscuit/radar (gen2 driver, built in, no frame levels) `src/kmod/hassmic_rcpi.c` inline-hooks

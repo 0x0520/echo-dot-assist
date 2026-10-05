@@ -197,6 +197,7 @@ unit:
 	cc -O2 -Wall -Isrc/hassmic -Isrc/include tests/unit/hash_test.c $(UNIT) -lpthread -o build/hash_test && build/hash_test
 	cc -O2 -Wall -D_GNU_SOURCE -Isrc/hassmic -Isrc/include -include stdlib.h tests/unit/ws_test.c $(UNIT) -lpthread -o build/ws_test
 	cc -O2 -Wall -Isrc/hassmic -Isrc/include tests/unit/noise_test.c $(UNIT) -lpthread -o build/noise_test
+	cc -O2 -Wall -Wextra -Isrc/hassmic -Isrc/include tests/unit/netacl_test.c $(UNIT) -lpthread -o build/netacl_test && build/netacl_test
 	cc -O2 -Wall -Isrc/hassmic tests/unit/ble_crypto_test.c src/hassmic/ble_crypto.c -o build/ble_crypto_test && build/ble_crypto_test
 	cc -O2 -Wall -Isrc/hassmic tests/unit/micgain_test.c src/hassmic/micgain.c -lm -o build/micgain_test && build/micgain_test
 	cc -O2 -Wall -Wextra -Isrc/hassmic tests/unit/alarmtime_test.c src/hassmic/alarmtime.c -o build/alarmtime_test && build/alarmtime_test

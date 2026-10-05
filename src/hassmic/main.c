@@ -8,6 +8,8 @@
  *     -o port  push update port (default 28929, 0 = off; see scripts/ota-push.sh)
  *     -a port  wake word arbitration between Echos, UDP (default 28930, 0 = off; see arb.c)
  *     -z port  Sendspin player port (default 28928, 0 = off)
+ *     -W list  only these IPv4 addresses or subnets may connect to the protocol port ("192.168.1.10,10.0.0.0/24"): for
+ *              Wyoming, which has no authentication of its own; any other peer is closed on at accept
  *     -T       print the Sendspin pairing token (paste it into Music Assistant to pair) and exit
  *     -L no LED ring   -E no earcon on wake   -V leave the volume buttons alone   -S print the avahi service file and exit
  *
@@ -33,6 +35,7 @@
 #include "arb.h"
 #include "buttons.h"
 #include "netio.h"
+#include "net.h"
 #include "core_int.h"
 #include "ota.h"
 #include "sendspin.h"
@@ -374,6 +377,22 @@ static void *capture_thread(void *arg)
 
 static void *serve_thread(void *arg) { int c = (int)(long)arg; proto->serve(c); close(c); return NULL; }
 
+/* -W: a Wyoming client is whoever connects (the protocol has no authentication), and the newest one wins, so anyone on
+ * the network could take Home Assistant's place and hear the microphone.  Closed at accept, before serve() gets it and
+ * pushes the real client out.  Logged once a minute at most: a scanner must not fill the log. */
+static struct net_allow allow;
+static const char *allow_spec;
+static int peer_allowed(int c)
+{
+    static long long logged;
+    struct sockaddr_in sa; socklen_t sl = sizeof sa; char ip[16];
+    if (!allow.n) return 1;
+    uint32_t from = getpeername(c, (struct sockaddr *)&sa, &sl) ? 0 : net_peer4((struct sockaddr *)&sa, sl);
+    if (from && net_allowed(&allow, from)) return 1;
+    if (mono_ms() - logged > 60000 || !logged) { logged = mono_ms(); net_ntoa4(from, ip); fprintf(stderr, "connection from %s refused: not in -W\n", ip); }
+    return 0;
+}
+
 static void on_usr1(int s) { (void)s; atomic_store(&trigger_pending, 1); }
 static void on_usr2(int s) { (void)s; atomic_store(&button_pending, 1); }
 static void on_hup(int s) { (void)s; atomic_store(&stop_pending, 1); }
@@ -384,7 +403,7 @@ int main(int argc, char **argv)
     const char *manifest = NULL, *input = board.keypad; int port = 0, print_mdns = 0, o, use_led = 1, use_volume = 1;
     core_name = board.default_name;
     mic_init();
-    while ((o = getopt(argc, argv, "P:p:n:w:m:b:z:o:a:LEVSTB")) != -1) switch (o) {
+    while ((o = getopt(argc, argv, "P:p:n:w:m:b:z:o:a:W:LEVSTB")) != -1) switch (o) {
         case 'P': proto = !strcmp(optarg, "wyoming") ? &proto_wyoming : &proto_esphome; break;
         case 'p': port = atoi(optarg); break;
         case 'n': core_name = optarg; break;
@@ -394,13 +413,14 @@ int main(int argc, char **argv)
         case 'z': core_sendspin_port = atoi(optarg); break;
         case 'o': ota_port = atoi(optarg); break;
         case 'a': arb_port = atoi(optarg); break;
+        case 'W': allow_spec = optarg; if (net_allow_parse(&allow, optarg)) { fprintf(stderr, "-W %s: not a list of IPv4 addresses and subnets\n", optarg); return 2; } break;
         case 'L': use_led = 0; break;
         case 'E': core_wake_sound(0); break;
         case 'V': use_volume = 0; break;
         case 'S': print_mdns = 1; break;
         case 'B': use_bt = 0; break;
         case 'T': { char tok[160]; sendspin_init(); sendspin_pairing_token(tok, sizeof tok); puts(tok); return 0; }
-        default: fprintf(stderr, "usage: hassmic [-P esphome|wyoming] [-p port] [-n name] [-w local|remote] [-m manifest] [-b input-device] [-z port] [-o port] [-a port] [-L] [-E] [-V] [-S]\n"); return 2;
+        default: fprintf(stderr, "usage: hassmic [-P esphome|wyoming] [-p port] [-n name] [-w local|remote] [-m manifest] [-b input-device] [-z port] [-o port] [-a port] [-W addresses] [-L] [-E] [-V] [-S]\n"); return 2;
     }
     core_port = port ? port : proto->port;
     if (print_mdns) { proto->print_mdns(); return 0; }
@@ -438,12 +458,14 @@ int main(int argc, char **argv)
     int ls = net_listen(core_port);
     if (ls < 0) { perror("listen"); return 1; }
     fprintf(stderr, "hassmic " VERSION " (" BUILD ") %s on %d, wake=%s\n", proto->id, core_port, core_local_wake ? "local" : "remote");
+    if (allow.n) fprintf(stderr, "%s: connections only from %s\n", proto->id, allow_spec);
     /* Also without the push port: the passed self test is what keeps an installed update from being undone after three
      * boots (main.sh), online updates included. */
     { pthread_t st; if (!pthread_create(&st, NULL, selftest_thread, NULL)) pthread_detach(st); }
     while (!atomic_load(&quit)) {
         int c = net_accept(ls);
         if (c < 0) break;
+        if (!peer_allowed(c)) { close(c); continue; }
         /* A link that went away must not hold a client slot (or core_lock, in a blocked write) for ever:
          * writes give up after 5 s, keepalive notices a dead peer within ~25 s.  Both make serve() return. */
         { struct timeval tv = { 5, 0 }; int on = 1, idle = 10, intvl = 5, cnt = 3;

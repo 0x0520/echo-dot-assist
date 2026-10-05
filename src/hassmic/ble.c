@@ -27,6 +27,11 @@
  * (it may be another one under its address): only Home Assistant's pair or unpair replaces or removes it.  16-byte keys
  * only, and the device's P-256 key must be on the curve.  Our own keys are never distributed: we only
  * ever connect, the device never needs to recognise or encrypt towards us.
+ * Legacy Just Works gives a key anyone who sniffed the pairing can work out (crackle: TK is 0, the STK follows from the
+ * recorded confirm and random values, the LTK from that).  With "secure pairing only" (ble_sc_only(), off by default:
+ * many sensors know only legacy) a device without Secure Connections is refused with Authentication Requirements, as
+ * the spec's Secure Connections Only mode does, and a legacy bond made before is not used any more: the link stays
+ * unencrypted until Home Assistant's pair makes a Secure Connections bond in its place, if the device can.
  *
  * BR/EDR (the Bluetooth speaker) shares this thread and the controller: bt_link.c gets the events and ACL packets that
  * are not LE's, its own share of the controller's buffers, and sends its commands from upkeep() (hci.h).  The ACL
@@ -465,6 +470,20 @@ static struct bond *bond_for(uint64_t addr, unsigned type)
     return NULL;
 }
 
+static atomic_int sc_only;
+int ble_sc_only(int set) { if (set >= 0) atomic_store(&sc_only, set != 0); return atomic_load(&sc_only); }
+
+/* bond_for, without the legacy ones while only Secure Connections count */
+static struct bond *bond_usable(uint64_t addr, unsigned type)
+{
+    struct bond *b = bond_for(addr, type);
+    if (b && !b->sc && atomic_load(&sc_only)) {
+        fprintf(stderr, "bluetooth: %012llx has a legacy bond, not used (secure pairing only)\n", (unsigned long long)addr);
+        return NULL;
+    }
+    return b;
+}
+
 static void bond_forget(struct bond *b)
 {
     fprintf(stderr, "bluetooth: bond with %012llx removed\n", (unsigned long long)b->addr);
@@ -504,6 +523,10 @@ static void smp_start(struct conn *c)
      * the device its encryption key (legacy) and identity key */
     unsigned char p[7] = { 0x01, 0x03, 0x00, 0x01 | (have_sc ? 0x08 : 0), 16, 0x00, 0x03 };
     int asked = s->asked;
+    if (!have_sc && atomic_load(&sc_only)) {                /* pairing not supported: legacy is all the controller can */
+        fprintf(stderr, "bluetooth: %012llx: secure pairing only, but this controller cannot do LE Secure Connections\n", (unsigned long long)c->addr);
+        smp_fail(c, 0x05); return;
+    }
     memset(s, 0, sizeof *s); s->asked = asked;
     memcpy(s->preq, p, 7); s->state = S_RSP; now(&s->t);
     smp_send(c, p, 7);
@@ -546,6 +569,7 @@ static void smp_rx(struct conn *c, const unsigned char *p, size_t n)
                                                                Home Assistant's "pair" replaces a bond (encrypted()) */
         struct bond *b = bond_for(c->addr, c->addr_type);
         if (s->state != S_IDLE || c->enc_pending) return;
+        if (b && !b->sc && atomic_load(&sc_only)) return;  /* not used, and not replaced on the device's word either */
         if (b) { if (!c->enc) encrypt_with(c, b->ltk, b->rand, b->ediv); }
         else smp_start(c);
         return;
@@ -559,7 +583,9 @@ static void smp_rx(struct conn *c, const unsigned char *p, size_t n)
         if (p[0] != 0x02 || n < 7) break;
         memcpy(s->pres, p, 7);
         s->sc = have_sc && s->preq[3] & p[3] & 0x08;        /* Secure Connections whenever both can */
-        if (have_sc && !s->sc) fprintf(stderr, "bluetooth: %012llx knows only legacy pairing\n", (unsigned long long)c->addr);
+        if (have_sc && !s->sc) fprintf(stderr, "bluetooth: %012llx knows only legacy pairing%s\n", (unsigned long long)c->addr,
+                                       atomic_load(&sc_only) ? ", refused (secure pairing only)" : "");
+        if (!s->sc && atomic_load(&sc_only)) { smp_fail(c, 0x03); return; }     /* authentication requirements */
         /* Full-size keys only: 7..15 octets are what KNOB-style attacks negotiate down to, and every device offers 16 */
         s->keysize = p[4];
         if (s->keysize != 16) { smp_fail(c, 0x06); return; }      /* encryption key size */
@@ -740,7 +766,7 @@ static void conn_complete(const unsigned char *q, size_t n)
     }
     c->handle = u16(q + 1) & 0x0fff; c->state = C_MTU; c->mtu = ATT_MTU; now(&c->t);
     if (c->cancel) { c->close_now = 1; return; }            /* asked to go away while it came up */
-    struct bond *b = bond_for(c->addr, c->addr_type);
+    struct bond *b = bond_usable(c->addr, c->addr_type);
     if (b) encrypt_with(c, b->ltk, b->rand, b->ediv);      /* paired before: encrypted before any GATT request */
     unsigned char p[3] = { ATT_MTU_REQ }; put16(p + 1, ATT_MTU);
     att_send(c, p, 3);
@@ -940,7 +966,7 @@ static int handle_request(struct req *r)
         if (!c || c->state < C_MTU || c->state == C_CLOSING) { if (H->paired) H->paired(r->addr, 0, HCI_E_UNKNOWN_CONN); break; }
         c->smp.asked = 1;
         if (c->smp.state != S_IDLE) break;                  /* under way: its result answers */
-        { struct bond *b = bond_for(c->addr, c->addr_type);
+        { struct bond *b = bond_usable(c->addr, c->addr_type);  /* a legacy one: paired afresh */
           if (b && c->enc) pair_done(c, 1, 0);
           else if (b) { if (!c->enc_pending) encrypt_with(c, b->ltk, b->rand, b->ediv); }
           else smp_start(c); }

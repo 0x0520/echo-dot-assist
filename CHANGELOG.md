@@ -21,6 +21,17 @@ What changed for people using the Echo, newest first. Details and measurements a
   the action button and hands over the network name and password; the Echo joins and keeps the network. A wrong
   password leaves the Echo on the network it had. A switch in Home Assistant, "Wi-Fi setup over Bluetooth" (on by
   default), turns it off. See [Wi-Fi setup over Bluetooth](README.md#wifi-setup). **Not tried on an Echo yet.**
+- **Alarms are heard at volume 0.** An alarm rings at 30 % at least, and the volume goes back to what it was once it
+  stops (unless you changed it meanwhile). Timers ring at the volume as it is, as before.
+- **New switch "Bluetooth AAC", off by default.** Phones now play over SBC or aptX unless you switch AAC on: AAC is
+  decoded by the Echo's old built-in FFmpeg, which is fed whatever arrives over the radio. On the Echo's speaker the
+  difference is small. A change counts from the phone's next connection.
+- **New switch "Bluetooth proxy: secure pairing only", off by default.** On, the Bluetooth proxy pairs only devices
+  that can do LE Secure Connections and no longer uses older "legacy" pairings, whose keys can be worked out by anyone
+  who recorded the pairing. Off, nothing changes, so older sensors keep working.
+- **Hardened the boot script further** against a compromised hassmic: the mDNS service file is now made by hassmic
+  running as its own user (it ran as root) and put in place by a rename, so a link left in its directory cannot make
+  root write elsewhere; and a directory planted where root puts an update's result no longer swallows it.
 - **A client with a bad connection no longer stalls the Echo.** When one of the connected clients (Home Assistant, or a
   second one such as a debugging tool) stopped taking data, for example because its Wi-Fi dropped, the wake word,
   the buttons and every other client could hang for up to 5 seconds. Each client now gets what is sent to it from a

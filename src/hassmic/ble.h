@@ -49,6 +49,7 @@ void ble_peripheral_poke(void);         /* any thread: what the callbacks say ha
 int  ble_present(void);                 /* the radio exists (PC build: no) */
 void ble_start(const struct ble_handler *h);    /* controller thread; takes the radio once btmanagerd has stopped.
                                                    Again to set the handler (NULL: none yet) */
+int  ble_sc_only(int set);              /* 1: pair with LE Secure Connections only, refuse legacy (off by default); -1 reads */
 const char *ble_mac(void);              /* "AA:BB:CC:DD:EE:FF", "" if unknown */
 int  ble_scanning(void);                /* 1 while the controller scans */
 int  ble_connections(uint64_t *addrs);  /* slots in use (connecting or connected), their addresses: BLE_MAX_CONN room */

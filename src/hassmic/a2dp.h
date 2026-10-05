@@ -16,6 +16,7 @@ int  a2dp_button(int resume);              /* action button: 0 = pause the strea
 void a2dp_pause(void);                     /* another source started: pause the device, or play nothing until it
                                               starts again or a2dp_unyield() when it has no AVRCP */
 void a2dp_unyield(void);                   /* the other source stopped */
+int  a2dp_aac(int set);                    /* offer AAC to phones (1/0, -1 reads; off by default): from their next connection */
 
 /* Playing to a Bluetooth speaker (the Echo as A2DP source; btout.c routes the mixer).  Any thread. */
 void a2dp_out_search(int on);              /* look for a speaker in pairing mode for up to a minute, pair the nearest,

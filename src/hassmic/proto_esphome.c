@@ -18,10 +18,12 @@
  *   arbitration      "Join arbitration network" switch and "Arbitration peers"; the action "arbitration_key" (Home
  *                    Assistant names it esphome.<node>_arbitration_key) through which other Echos hand over their
  *                    network key, and the HomeassistantActionRequest with which this one hands over its own (arb.c)
- *   bluetooth proxy  LE scanning with raw advertisements, GATT connections to up to 3 devices at a time, pairing (ble.c)
+ *   bluetooth proxy  LE scanning with raw advertisements, GATT connections to up to 3 devices at a time, pairing (ble.c);
+ *                    a switch "secure pairing only" refuses legacy pairing (off by default)
  *   bluetooth speaker  a switch opens the pairing window (bt_link.c).  The other way, playing to a Bluetooth speaker: a
  *              switch searches for one and pairs it, another plays on it, a text sensor says how it is, a number holds its
- *              latency for Sendspin (a2dp_source.c, btout.c).  A phone connecting is announced by asking Home
+ *              latency for Sendspin (a2dp_source.c, btout.c).  A switch offers AAC to phones (off by default, a2dp_sink.c).
+ *              A phone connecting is announced by asking Home
  *                    Assistant to run assist_satellite.announce on us (HomeassistantActionRequest, what an ESPHome YAML
  *                    `homeassistant.action` sends).  Home Assistant only runs it with "Allow the device to perform Home
  *                    Assistant actions" ticked in the device's options; otherwise it raises a repair saying so.
@@ -109,7 +111,8 @@ enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SEN
        KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_WIFI_MOTION_ON, KEY_WIFI_MOTION, KEY_WIFI_MOTION_SENS,
        KEY_UPDATE_CHANNEL, KEY_UPDATE, KEY_WHISPERED,
        KEY_ALARM_ON, KEY_ALARM_TIME = KEY_ALARM_ON + ALARM_SLOTS, KEY_ALARM_REPEAT = KEY_ALARM_TIME + ALARM_SLOTS,
-       KEY_ALARM_STOP = KEY_ALARM_REPEAT + ALARM_SLOTS, KEY_ALARM_SNOOZE, KEY_ALARM_RINGING, KEY_ALARM_EVENT, KEY_ALARM_NEXT, KEY_IMPROV };
+       KEY_ALARM_STOP = KEY_ALARM_REPEAT + ALARM_SLOTS, KEY_ALARM_SNOOZE, KEY_ALARM_RINGING, KEY_ALARM_EVENT, KEY_ALARM_NEXT, KEY_IMPROV,
+       KEY_BT_AAC, KEY_BLE_SC_ONLY };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -369,16 +372,17 @@ static char field16[16] = "-";          /* lock held: settings field 16, not our
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, wm = 0, ws = WIFIMOTION_SENS_DEFAULT, uc = UPDATE_OFF, im = 1; float v;
+    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, wm = 0, ws = WIFIMOTION_SENS_DEFAULT, uc = UPDATE_OFF, im = 1, aac = 0, sco = 0; float v;
     char l[8] = ""; FILE *f = fopen(settings_path(), "r");
     if (!f) { core_mic_level(mic_level); return; }
     /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
      * which ignored them; unused since), 9 (before LED brightness: auto, as stock), 11 (before sound detection: off), 12
  * (before Wi-Fi motion: off, default sensitivity), 14 (before online updates: off), 15 (before Wi-Fi setup over
- * Bluetooth: on).  Field 16 is another branch's (alarms): kept as it is, "-" until that branch writes it. */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d %15s %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &wm, &ws, &uc,
-               field16, &im) >= 5) {
+ * Bluetooth: on), 17 (before Bluetooth AAC and secure pairing only, fields 18 and 19: both off).  Field 16 is unused:
+ * kept as it is, "-" until something takes it. */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d %15s %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &wm, &ws, &uc,
+               field16, &im, &aac, &sco) >= 5) {
         if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
@@ -387,6 +391,7 @@ static void settings_load(void)
         wifimotion_enable(wm != 0); wifimotion_sensitivity(ws);
         update_channel(uc);
         improv_enable(im != 0);
+        a2dp_aac(aac != 0); ble_sc_only(sco != 0);
     }
     fclose(f);
     core_mic_level(mic_level);
@@ -396,9 +401,9 @@ static void settings_save(void)
 {
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
-    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d %d %d %d %s %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
+    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d %d %d %d %s %d %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
             bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), wifimotion_enable(-1), wifimotion_sensitivity(-1), update_channel(-1),
-            field16, improv_enable(-1));
+            field16, improv_enable(-1), a2dp_aac(-1), ble_sc_only(-1));
     fclose(f);
 }
 
@@ -412,6 +417,8 @@ static void send_setting(int key)       /* lock held */
     case KEY_WAKE_SOUND: pb_uint(&b, 2, core_wake_sound(-1)); send_state(SWITCH_STATE, &b); break;
     case KEY_BT_PAIRING: if (ble_present()) { pb_uint(&b, 2, a2dp_pairing()); send_state(SWITCH_STATE, &b); } break;
     case KEY_BT_ANNOUNCE: if (ble_present()) { pb_uint(&b, 2, core_bt_announce(-1)); send_state(SWITCH_STATE, &b); } break;
+    case KEY_BT_AAC: if (ble_present()) { pb_uint(&b, 2, a2dp_aac(-1)); send_state(SWITCH_STATE, &b); } break;
+    case KEY_BLE_SC_ONLY: if (ble_present()) { pb_uint(&b, 2, ble_sc_only(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_DND:   pb_uint(&b, 2, core_dnd(-1)); send_state(SWITCH_STATE, &b); break;
     case KEY_DENOISE: pb_str(&b, 2, denoise_names[core_mic_denoise(-1)]); send_state(SELECT_STATE, &b); break;
     case KEY_BT_LANG: if (ble_present()) { pb_str(&b, 2, bt_langs[bt_lang].name); send_state(SELECT_STATE, &b); } break;
@@ -721,6 +728,12 @@ static void send_setting_entities(void)
           pb_str(&b, 5, "mdi:timer-sand"); pb_float(&b, 6, 0); pb_float(&b, 7, 1000); pb_float(&b, 8, 10); pb_uint(&b, 10, 1);
           pb_str(&b, 11, "ms"); pb_uint(&b, 12, 2); send_msg(LIST_NUMBER, &b); }
     }
+    /* AAC: the firmware's old FFmpeg decodes it, fed by whatever a paired phone sends; off, phones use SBC or aptX (a2dp_sink.c) */
+    if (ble_present()) { PB(b, 128); pb_str(&b, 1, "bluetooth_aac"); pb_fixed32(&b, 2, KEY_BT_AAC); pb_str(&b, 3, "Bluetooth AAC");
+      pb_str(&b, 5, "mdi:music-box-outline"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
+    /* legacy LE pairing gives a key anyone who recorded it can work out; on, only LE Secure Connections pairs (ble.c) */
+    if (ble_present()) { PB(b, 160); pb_str(&b, 1, "bluetooth_proxy_secure_pairing_only"); pb_fixed32(&b, 2, KEY_BLE_SC_ONLY);
+      pb_str(&b, 3, "Bluetooth proxy: secure pairing only"); pb_str(&b, 5, "mdi:shield-lock-outline"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
     if (ble_present()) { PB(b, 128); pb_str(&b, 1, "bluetooth_announcements"); pb_fixed32(&b, 2, KEY_BT_ANNOUNCE); pb_str(&b, 3, "Bluetooth announcements");
       pb_str(&b, 5, "mdi:bluetooth-audio"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
     if (ble_present()) { PB(b, 512); pb_str(&b, 1, "bluetooth_announcement_language"); pb_fixed32(&b, 2, KEY_BT_LANG);
@@ -807,6 +820,18 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
     }
     else if (type == SWITCH_COMMAND && key == KEY_SOUND_DETECTION) { core_sound(on); settings_save(); send_setting(key); return; }
     else if (type == SWITCH_COMMAND && key == KEY_IMPROV && ble_present() && core_bluetooth(-1)) { improv_enable(on); settings_save(); send_setting(key); return; }
+    else if (type == SWITCH_COMMAND && (key == KEY_BT_AAC || key == KEY_BLE_SC_ONLY) && ble_present()) {
+        /* Like adb: what lowers the defences (AAC on, legacy pairing back) only over the keyed connection; anyone on the
+         * network gets one before Home Assistant has set the key.  The safe way is always fine. */
+        int c = client_of(reply_fd), weaker = key == KEY_BT_AAC ? on : !on;
+        if (weaker && !(c >= 0 && clients[c].keyed)) fprintf(stderr, "bluetooth: refused, the request did not come over the keyed connection\n");
+        else {
+            if (key == KEY_BT_AAC) { a2dp_aac(on); fprintf(stderr, "bluetooth: AAC %s, from the next connection of a phone\n", on ? "offered" : "not offered"); }
+            else { ble_sc_only(on); fprintf(stderr, "bluetooth: proxy pairing %s\n", on ? "with LE Secure Connections only" : "legacy allowed"); }
+            settings_save();
+        }
+        send_setting(key); return;
+    }
     else if (type == SELECT_COMMAND && key == KEY_UPDATE_CHANNEL) {
         /* what this Echo runs is root's business: only Home Assistant with the key picks where it comes from */
         int c = client_of(reply_fd);
@@ -1483,7 +1508,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
     case SUBSCRIBE_STATES:
         for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i].fd == reply_fd) clients[i].states = 1;
         send_mp_state(); send_setting(KEY_MIC_LEVEL); send_setting(KEY_DENOISE); send_setting(KEY_MUTE); send_setting(KEY_WAKE_SOUND); send_setting(KEY_BT_PAIRING); send_setting(KEY_BT_ANNOUNCE); send_setting(KEY_DND); send_setting(KEY_SOUND_DETECTION);
-        send_setting(KEY_BT_LANG);
+        send_setting(KEY_BT_LANG); send_setting(KEY_BT_AAC); send_setting(KEY_BLE_SC_ONLY);
         for (int k = KEY_EQ_BASS; k <= KEY_EQ_TREBLE; k++) send_setting(k);
         for (int k = KEY_ARB_JOIN; k <= KEY_ARB_PEERS; k++) send_setting(k);
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);

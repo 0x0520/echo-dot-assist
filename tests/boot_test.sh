@@ -79,6 +79,9 @@ r=$(cat $BASE/state/ota/result); echo "$r" | grep -q "^FAILED version 3.2: main.
 $O pack $T/evil.sec 6.6.6 $BASE/state/ota/bundle $B/main.sh $B/device.conf:644 > /dev/null; request
 r=$(cat $BASE/state/ota/result); echo "$r" | grep -q "^FAILED the signature"; ok $? "bundle from another key refused: $r"
 [ "$(readlink $BASE/ota/current)" = "$cur" ]; ok $? "current still the good one"
+# the daemon made state/ota/result a directory: rm -f leaves it, and mv would drop the result inside it
+rm -f $BASE/state/ota/result; mkdir -p $BASE/state/ota/result/sub; request 2> /dev/null
+[ -f $BASE/state/ota/result ] && ! [ -L $BASE/state/ota/result ] && grep -q "^FAILED the signature" $BASE/state/ota/result; ok $? "a directory in place of the result is replaced, not written into"
 
 # 3. The start counter: reset by a passed self test of the update's own hassmic, not by the factory copy's
 echo 2 > $BASE/ota/tries
@@ -189,5 +192,26 @@ touch $T/wpa.down; rm -f $T/wpa.log; out=$(WIFI_JOIN_SECS=2 $SH scripts/device/w
 printf '%s\n%s\n' 'x' 'password1' > $T/req2
 rm -f $T/wpa.log; out=$($SH scripts/device/wifi-join.sh -x $T/req2); rc=$?
 [ $rc = 1 ] && [ ! -e $T/wpa.log ]; ok $? "wifi-join.sh -x: an SSID that is not hex goes nowhere ($out)"
+# 7. The satellite's mDNS service file: hassmic -S runs as the daemon's user (runas), and root writes the file in its own
+# directory and renames it into the daemon's, so a link the daemon left there is replaced, not written through.
+# The address wait wants an interface with a real MAC (/sys/class/net); without one it would take 120 s.
+WLAN=; for i in /sys/class/net/*; do grep -q '[1-9a-f]' $i/address 2>/dev/null && { WLAN=${i##*/}; break; }; done
+if [ -z "$WLAN" ] || ! command -v setsid > /dev/null; then echo "skip mDNS service file: no interface with a MAC, or no setsid"
+else
+    printf 'PRODUCT=testdev\nDAEMON_USER=nobody\nDAEMON_GROUPS=nogroup\nWLAN=%s\n' $WLAN > $D/device.conf
+    printf '#!/bin/sh\necho "$*" >> %s/runas.log\n[ "$1" = -r ] && shift 2\nshift 2; exec "$@"\n' $T > $D/runas
+    printf '#!/bin/sh\ncase "$*" in *-S*) echo "  <name>echo-test</name>"; exit 0;; esac\nexec sleep 30\n' > $D/hassmic
+    printf '#!/bin/sh\nexit 0\n' > $D/alexa-off.sh
+    for t in ifconfig pkill avahi-daemon; do printf '#!/bin/sh\nexit 0\n' > $T/bin/$t; done
+    chmod 755 $D/runas $D/hassmic $T/bin/*
+    export HASSMIC_AVAHI=$T/avahi
+    mkdir -p $T/avahi/services; echo keep > $T/victim2; ln -s $T/victim2 $T/avahi/services/hassmic.service
+    HASSMIC_DIR=$D HASSMIC_SYS=$SYS HASSMIC_BASE=$BASE setsid $SH $D/main.sh satellite & MAIN=$!
+    waitfor "[ -f $T/avahi/services/hassmic.service ] && [ ! -L $T/avahi/services/hassmic.service ]" 60
+    grep -q "^nobody nogroup $D/hassmic .*-S$" $T/runas.log; ok $? "hassmic -S runs as the daemon's user: $(grep -- '-S$' $T/runas.log)"
+    [ "$(cat $T/victim2)" = keep ] && grep -q "<name>echo-test</name>" $T/avahi/services/hassmic.service; ok $? "the service file replaces the daemon's link, does not write through it"
+    waitfor "grep -q host-name=echo-test $T/avahi/avahi-daemon.conf 2>/dev/null"; ok $? "avahi's host name from the file root wrote"
+    kill -- -$MAIN 2>/dev/null; wait $MAIN 2>/dev/null; MAIN=
+fi
 
 [ $fail = 0 ] && echo "all good" || { echo FAILED; cat $BASE/boot.log; exit 1; }

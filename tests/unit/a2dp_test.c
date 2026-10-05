@@ -38,7 +38,8 @@ static unsigned ops[64]; static int nops; static unsigned char ret[64]; static i
 /* ble.c refuses commands from event handling (hci.h); here they are counted, see ev() */
 int  hci_cmd(unsigned op, const void *p, unsigned n) { (void)p; (void)n; cmd_in_event += in_event; if (nops < 64) ops[nops++] = op; return 0; }
 const unsigned char *hci_ret(void) { return ret; }
-int  hci_write(const void *b, size_t n) { (void)b; (void)n; writes++; return 0; }
+static unsigned char last_pkt[1100]; static size_t last_n;          /* the last packet written, H4 byte first */
+int  hci_write(const void *b, size_t n) { if (n <= sizeof last_pkt) { memcpy(last_pkt, b, n); last_n = n; } writes++; return 0; }
 void hci_poke(void) {}
 int *hci_acl_pool(void) { return pool; }
 
@@ -166,10 +167,48 @@ static void test_pool(void)
     expect(aq.credits == &aq.own && aq.own == 8, "separate buffers: own count not set");
 }
 
+/* AVDTP signal on the link's signalling channel; the answer: its payload (after H4, ACL and L2CAP headers), length */
+static const unsigned char *avdtp(struct link *l, unsigned sig, const unsigned char *d, size_t n, size_t *rn)
+{
+    unsigned char p[16] = { 3 << 4, sig }; memcpy(p + 2, d, n);
+    last_n = 0; av_rx(l, p, 2 + n); a2dp_completed(l->handle, 1);
+    *rn = last_n > 9 ? last_n - 9 : 0;
+    return last_pkt + 9;
+}
+
+static void test_aac_switch(void)
+{
+    memset(ret, 0, sizeof ret); ret[0] = 0xfd; ret[1] = 0x03; ret[3] = 8; pool = NULL; a2dp_setup();
+    struct link *l = mklink(0x0a0b0c0d0e0f, 11);
+    l->ch[0] = (struct chan){ .used = 1, .psm = PSM_AVDTP, .lcid = 0x41, .rcid = 0x51, .rmtu = 672 }; l->av_sig = 0x41;
+    /* the firmware's FFmpeg is not on the PC: endpoints as on the Echo, SBC at SEID 1, AAC at SEID 2 */
+    nseps = 0;
+    for (int i = 0; i < a2dp_ncodecs; i++) if (a2dp_codecs[i].type == A2DP_SBC || a2dp_codecs[i].type == A2DP_AAC) seps[nseps++] = i;
+    int aac = a2dp_codecs[seps[0]].type == A2DP_AAC ? 1 : 2;
+    size_t n; const unsigned char *r; unsigned char seid = aac << 2;
+
+    a2dp_aac(0);
+    r = avdtp(l, AV_DISCOVER, NULL, 0, &n);
+    expect(n == 4 && (r[0] & 3) == 2 && r[2] >> 2 == 3 - aac, "AAC off: discover lists %zu bytes, want SBC alone", n - 2);
+    r = avdtp(l, AV_GET_CAP, &seid, 1, &n);
+    expect(n == 3 && (r[0] & 3) == 3 && r[2] == E_BAD_ACP_SEID, "AAC off: its capabilities still answered");
+    unsigned char set[12] = { seid, 1 << 2, 1, 0, 7, 6, 0x00, A2DP_AAC, 0x80, 0x01, 0x8c, 0x84 };
+    r = avdtp(l, AV_SET_CONF, set, sizeof set, &n);
+    expect(n >= 3 && (r[0] & 3) == 3 && av.l == NULL, "AAC off: configured all the same");
+
+    a2dp_aac(1);
+    r = avdtp(l, AV_DISCOVER, NULL, 0, &n);
+    expect(n == 6, "AAC on: discover lists %zu bytes, want SBC and AAC", n - 2);
+    r = avdtp(l, AV_GET_CAP, &seid, 1, &n);
+    expect(n > 6 && (r[0] & 3) == 2 && r[2 + 4 + 1] == A2DP_AAC, "AAC on: no AAC capabilities");
+    a2dp_aac(0);
+    link_gone(l);
+}
+
 int main(void)
 {
-    test_de(); test_mtu(); test_keys(); test_ring(); test_pool();
+    test_de(); test_mtu(); test_keys(); test_ring(); test_pool(); test_aac_switch();
     expect(!cmd_in_event, "%d HCI commands sent from event handling", cmd_in_event);
-    if (!bad) printf("a2dp: SDP lengths, L2CAP MTU, link keys, pairing window, player rate, shared ACL pool ok\n");
+    if (!bad) printf("a2dp: SDP lengths, L2CAP MTU, link keys, pairing window, player rate, shared ACL pool, AAC switch ok\n");
     return bad;
 }

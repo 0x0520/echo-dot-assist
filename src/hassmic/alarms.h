@@ -15,6 +15,7 @@
 #define ALARM_SNOOZE_S  540         /* stock's 9 minutes */
 #define ALARM_LATE_S    600         /* an alarm the clock came too late for (Home Assistant answering after a reboot)
                                      * still rings if it is at most this late; later, it is skipped */
+#define ALARM_MIN_VOLUME 30         /* an alarm rings at least this loud (percent); the volume goes back afterwards */
 
 /* the repeat select's options: the days they stand for (alarm_def.days) */
 extern const char *const alarm_repeat_names[];

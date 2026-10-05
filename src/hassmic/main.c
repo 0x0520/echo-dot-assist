@@ -958,7 +958,8 @@ static void q_push(int kind, unsigned rate, unsigned ch, const void *data, size_
                 fprintf(stderr, "play: playback stuck, %zu bytes queued: TTS audio dropped\n", q_bytes);
                 break;
             }
-        if (it->gen <= tts_cut_to || q_bytes + len > TTS_QUEUE_MAX) { pthread_mutex_unlock(&q_lock); free(it); return; }
+        /* also when a newer stream began meanwhile: a producer that waited here belongs to a reply that is over */
+        if (it->gen <= tts_cut_to || it->gen != tts_gen || q_bytes + len > TTS_QUEUE_MAX) { pthread_mutex_unlock(&q_lock); free(it); return; }
     }
     if (q_tail) q_tail->next = it; else q_head = it;
     q_tail = it; q_bytes += len;

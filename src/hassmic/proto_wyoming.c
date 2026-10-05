@@ -51,6 +51,17 @@ static void send_info(void)
     send_event("info", data, NULL, 0);
 }
 
+/* under core_lock: the client began a reply (audio-start) it has not ended yet */
+static int stream_open;
+
+/* A connection that goes away mid reply (replaced by a newer one, or dropped) never sends its audio-stop: without one
+ * the mixer stream stays open and the wake word keeps the lower threshold it has while something plays.  Lock held. */
+static void end_open_stream(void)
+{
+    if (!stream_open) return;
+    core_tts_flush(); core_tts_end(); stream_open = 0;
+}
+
 static void handle(int fd, const struct wy_event *ev)
 {
     const char *t = ev->type;
@@ -78,8 +89,8 @@ static void handle(int fd, const struct wy_event *ev)
         /* straight into MixerOpenPlay: the mixer takes what TTS engines send, 8-48 kHz mono or stereo, and nothing
          * else needs to reach it.  Refused, the chunks are dropped (no stream open) and audio-stop ends the reply. */
         if (rate < 8000 || rate > 48000 || ch < 1 || ch > 2) fprintf(stderr, "play: refused audio-start with %ld Hz x%ld\n", rate, ch);
-        else core_tts_begin(rate, ch);
-    } else if (!strcmp(t, "audio-stop")) core_tts_end();
+        else { core_tts_begin(rate, ch); stream_open = 1; }
+    } else if (!strcmp(t, "audio-stop")) { core_tts_end(); stream_open = 0; }
     else if (!strcmp(t, "error")) { fprintf(stderr, "server error: %s\n", ev->json); core_error(); }
     pthread_mutex_unlock(&core_lock);
 }
@@ -92,7 +103,7 @@ static void serve(int fd)
     struct wy_reader rd; struct wy_event *ev = malloc(sizeof *ev);
     if (!ev || wy_reader_init(&rd, fd) < 0) { free(ev); return; }
     pthread_mutex_lock(&core_lock);
-    if (client >= 0) { fprintf(stderr, "client replaced by a new connection\n"); shutdown(client, SHUT_RDWR); }
+    if (client >= 0) { fprintf(stderr, "client replaced by a new connection\n"); shutdown(client, SHUT_RDWR); end_open_stream(); }
     client = fd; core_link(1, 0);
     pthread_mutex_unlock(&core_lock);
     fprintf(stderr, "client connected\n");
@@ -101,7 +112,7 @@ static void serve(int fd)
 
     pthread_mutex_lock(&core_lock);
     int was = client == fd;
-    if (was) { client = -1; core_link(0, 0); }
+    if (was) { client = -1; end_open_stream(); core_link(0, 0); }
     pthread_mutex_unlock(&core_lock);
     wy_reader_free(&rd); free(ev);
     if (was) fprintf(stderr, "client disconnected\n");

@@ -1201,8 +1201,8 @@ Run in this order. Each step says what it proves.
       wait out the alarm's pause. TTS queue bounded at 1 MiB, the producer waits up to 5 s. Core threads are checked.
       Tested: all PC suites (`fake_ha_esphome` with a new check: media stop during a slow fetch, then an announcement
       and a reply both play; fails on the old code), unit tests, every model with STUBS=1, no warnings.
-      Open: client and listen sockets still lack SOCK_CLOEXEC (net.c, other branch); `ota_push_test.sh` and
-      `boot_test.sh` not run in this environment. Needs the device: wake word and replies under a Wi-Fi stall, vfork
+      Sockets: close-on-exec since the merge (net.c, netio.h). `ota_push_test.sh` and `boot_test.sh` pass on the merged
+      tree (integration/all). Needs the device: wake word and replies under a Wi-Fi stall, vfork
       with the real ledctrl/lipc tools, `WhisperApi_backlogWait`'s timeout unit and return value, a model switch to a
       broken model.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's

@@ -41,7 +41,8 @@ What changed for people using the Echo, newest first. Details and measurements a
 - **Replies are no longer held in memory without limit:** a client sending audio much faster than it plays (Wyoming
   has no login) is slowed down instead.
 - **A sound asked for while a timer rings plays at once**, not after the pause between the beeps.
-
+- **A Wyoming reply cut off by Home Assistant reconnecting is ended properly:** the Echo no longer keeps the speaker
+  stream open and the wake word at its "something is playing" threshold until the next reply.
 - **Nothing on the network can lock Home Assistant out of the Echo any more.** Four connections that never said
   anything used to take every place the Echo has for Home Assistant until they closed; now a connection has 10 s to
   start talking, and a new one pushes the longest silent one out. With Wyoming a new connection replaces the old one,

@@ -104,6 +104,17 @@ the arithmetic is RFC 8032's. The Echo keeps the C `otatool` (`src/tools/otatool
 there, so the two are held to each other: `tests/otatool_test.sh` (signatures byte for byte, each one's bundles
 installed by the other), and CI checks every bundle it signs with both before it publishes.
 
+### In a container (any PC with Docker, Windows included)
+
+`tools/dev-container/` has an image with what CI has: the pinned NDK, the test packages, mksh and shellcheck, and the
+Python of the protocol tests. No firmware is needed: device builds use `STUBS=1`.
+
+```sh
+docker build -t hassmic-dev -f tools/dev-container/Dockerfile .
+tools/dev-container/run.sh 'make -j8 DEVICE=donut STUBS=1 all'    # binaries in build/donut/, as with a local build
+tools/dev-container/run.sh tools/dev-container/suite.sh            # everything CI runs: builds, unit, lint, all tests
+```
+
 ## CI and releases
 
 `.github/workflows/build.yml` builds every model, runs the PC tests and publishes the update bundles that online

@@ -112,4 +112,29 @@ run firewall; waitfor "[ -f $T/lockdown ]"; sleep 0.3
 [ "$(cat $T/lockdown)" = watch ] && [ "$(grep -c "does not load" $BASE/boot.log)" = 3 ]; ok $? "an exit in the config does not end the firewall service"
 stop_main
 
+# 5. No going back with the release key: every bundle CI ever published verifies against it.  The owner's key may.
+echo 'NAME="Test"' > $BASE/hassmic.conf
+$O keygen $T/rel.sec $D/release.pub
+echo 2026.10.05.120000 > $SYS/VERSION
+files="$B/main.sh $B/device.conf:644 $B/hassmic $B/runas"
+run firewall
+$O pack $T/rel.sec 2026.10.01.000000 $BASE/state/ota/bundle $files > /dev/null; request
+r=$(cat $BASE/state/ota/result); echo "$r" | grep -q "^FAILED version 2026.10.01.000000 is older than 2026.10.05.120000"; ok $? "older release-signed bundle refused: $r"
+echo 2026.10.07.080000+abc1234-dirty > $D/VERSION
+$O pack $T/rel.sec 2026.10.06.000000-beta $BASE/state/ota/bundle $files > /dev/null; request
+r=$(cat $BASE/state/ota/result); echo "$r" | grep -q "is older than 2026.10.07.080000+abc1234-dirty"; ok $? "... nor older than the copy that runs, a build of one's own: $r"
+rm $D/VERSION
+pack 2026.10.01.000000 $files; request
+r=$(cat $BASE/state/ota/result); [ "$r" = "OK 2026.10.01.000000" ]; ok $? "older bundle signed with the update key installed: $r"
+wait $MAIN 2>/dev/null; MAIN=
+run firewall
+$O pack $T/rel.sec 2026.10.06.000000 $BASE/state/ota/bundle $files > /dev/null; request
+r=$(cat $BASE/state/ota/result); [ "$r" = "OK 2026.10.06.000000" ]; ok $? "newer release-signed bundle installed: $r"
+wait $MAIN 2>/dev/null; MAIN=
+echo 2026.10.06.000000 > $SYS/VERSION
+run firewall
+$O pack $T/rel.sec 2026.10.06.000000-beta $BASE/state/ota/bundle $files > /dev/null; request
+r=$(cat $BASE/state/ota/result); [ "$r" = "OK 2026.10.06.000000-beta" ]; ok $? "the same version again is not older: $r"
+wait $MAIN 2>/dev/null; MAIN=
+
 [ $fail = 0 ] && echo "all good" || { echo FAILED; cat $BASE/boot.log; exit 1; }

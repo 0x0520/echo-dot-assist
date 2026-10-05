@@ -26,6 +26,8 @@ LOG=$BASE/boot.log
 # the Echo 2's tr (Fire OS 6572) spinning on the read error for ever, and this script never got to the firewall watcher
 # and the installer below (seen 2026-09-30 right after a boot: no egress lock, push updates unanswered).
 if [ "$1" = firewall ]; then
+    # read -d is mksh's (and bash's), not POSIX: the Echo's shell has it
+    # shellcheck disable=SC3045
     for p in /proc/[0-9]*; do
         c=; while IFS= read -r -d '' a; do c="$c $a"; done 2>/dev/null < $p/cmdline
         case "$c" in *lockdown.sh*watch*) kill ${p#/proc/} 2>/dev/null;; esac
@@ -142,6 +144,25 @@ broken_scripts() {
     done
     return 1
 }
+# Every bundle CI ever published verifies against the release key: handed in again (a hassmic taken over through the
+# network, a push replayed), an old one would put back what a later release fixed.  So a release-signed bundle must not
+# be older than the copy that runs ($D) or the factory copy ($SYS); going back is the owner's call, with update.pub.
+# Versions are the commit's time in UTC, 2026.10.02.091530, maybe with +<commit>[-dirty] (a build of one's own) or a
+# tag's -beta: ver_time gives its 14 digits, or nothing for any other form (a factory copy without VERSION, a test).
+# Compared as text, both the same length: mksh's arithmetic is 32 bits.
+ver_time() {
+    _t=$(echo "${1%%[+-]*}" | tr -d .)
+    case "$_t" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) echo $_t;; esac
+}
+# older VERSION: prints the newer version this Echo has, if it has one
+older() {
+    _n=$(ver_time "$1"); [ -n "$_n" ] || return 1
+    for _f in $D/VERSION $SYS/VERSION; do
+        _h=$(ver_time "$(cat $_f 2>/dev/null)")
+        [ -n "$_h" ] && [ "$_n" != "$_h" ] && [ "$(printf '%s\n%s\n' $_n $_h | sort | head -1)" = $_n ] && { cat $_f; return 0; }
+    done
+    return 1
+}
 # The hassmic that runs is the installed update's own binary: not the factory copy after a fall back, not a test binary
 # from deploy.sh in /data.
 runs_current() {
@@ -190,6 +211,8 @@ ota_watch() {
         elif [ -z "$key" ]; then rejected "the signature verifies against neither the update key nor the release key"
         elif ! ver=$($SYS/otatool install $key $IN/bundle $IN/bundle.sig $new 2>&1); then
             rejected "$(echo "$ver" | tail -1)"
+        elif [ "$key" != $SYS/update.pub ] && have=$(older "$ver"); then
+            rejected "version $ver is older than $have on this Echo; only the update key (scripts/ota-push.sh) goes back"
         elif why=$(broken_scripts $new); then
             rejected "version $ver: $why; not installed"
         elif prod=$(. $new/device.conf 2>/dev/null && echo "$PRODUCT"); [ "$prod" != "$(getprop ro.product.device)" ]; then

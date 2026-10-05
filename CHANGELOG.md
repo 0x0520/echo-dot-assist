@@ -2,6 +2,13 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-10-06
+
+- **A client with a bad connection no longer stalls the Echo.** When one of the connected clients (Home Assistant, or a
+  second one such as a debugging tool) stopped taking data, for example because its Wi-Fi dropped, the wake word,
+  the buttons and every other client could hang for up to 5 seconds. Each client now gets what is sent to it from a
+  queue of its own; one that falls far behind is disconnected and reconnects.
+
 ## 2026-10-05
 
 - **Updates from a Windows PC can no longer break the boot.** A checkout on Windows turned the line endings of the

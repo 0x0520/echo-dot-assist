@@ -1217,6 +1217,22 @@ Run in this order. Each step says what it proves.
       file mode and replacement; a2dp_test.c now builds from the five modules), the full dev-container suite, donut/
       biscuit/radar STUBS=1 and the PC build warning-free. Needs a device: a phone playing (SBC and AAC) with the LE
       proxy scanning, speaker search, play on the speaker and its volume, LE pairing, and the log free of "BUG".
+- [x] main.c split into modules (2026-10-06, no behaviour change): 1584 lines were the whole core. Now `main.c` (state
+      machine, pipeline, mute, buttons, capture thread, `main()`), `playback.c`, `mic.c`, `wakewords.c`, `wakedet.c`,
+      `detect.c`, `earcon.c`, `hwsettings.c` and `spawn.c`; what they share is `core_int.h`, as functions with the
+      lock each needs (`core_client()`: the protocol while connected, under core_lock), no shared globals beyond
+      core.h's. Tested: the full container suite, every model with STUBS=1 and the PC build without warnings.
+- [x] Client writes out of core_lock (2026-10-06, `outq.c`). Every message to a client was written under core_lock, with
+      a 5 s send timeout: one client whose link stalled held up the wake word, the buttons and every other client for
+      that long (measured on the PC: another client's state 10 s late, the wake word's pipeline 5 s). Now each
+      connection (ESPHome and Wyoming) has an outgoing queue and a writer thread; code under core_lock only queues.
+      ESPHome encrypts when it queues, under core_lock, so the Noise nonces go in queue order; mic audio is left out
+      (before encryption, which spends a nonce) once 64 KB wait, and past 512 KB the client is disconnected rather than
+      losing a state or an answer. A connection's queue is drained and its writer joined before the socket is closed.
+      Tested: `fake_ha_esphome` (new: a raw client asks for 2000 entity lists and never reads; another client's state
+      arrives in 0.02 s and the wake word's pipeline starts in 0.03 s, and the stuck client is let go; on the old code
+      10 s and 5 s), the full suite, no warnings. Needs the device: Home Assistant over Wi-Fi with a second client
+      that drops off the network mid-pipeline.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

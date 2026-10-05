@@ -115,14 +115,21 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
 
 ## Architecture
 
-`src/hassmic/` is one daemon; `main.c` is the satellite core, the rest plug into it through narrow headers:
+`src/hassmic/` is one daemon; `main.c` and the files beside it below are the satellite core, the rest plug into it
+through narrow headers:
 
-- **Core (`main.c`, `core.h`)**: state machine `IDLE/LISTENING/THINKING/SPEAKING`, pipeline timeout, TTS queue with
-  barge-in flush, alarms (timers), mute (hardware latch that software can set but never clear, plus a soft mute from HA),
-  volume, LED ring, earcons, wake word threshold hints. The front end is told when a command is spoken (`listening()`:
+- **Core (`core.h` for the protocols, `core_int.h` between the core's own files)**: `main.c` has the state machine
+  `IDLE/LISTENING/THINKING/SPEAKING`, pipeline, pipeline timeout, mute (hardware latch that software can set but never
+  clear, plus a soft mute from HA), buttons, the capture thread and `main()`. Around it: `playback.c` (TTS queue with
+  barge-in flush, playback thread), `mic.c` (mic queue and sender thread, denoise and gain glue), `wakewords.c` (model
+  scan, Home Assistant's pick, loading), `wakedet.c` (ring buffer, detections, wake word score, arbitration glue),
+  `detect.c` (sound and whisper detection glue), `earcon.c` (earcons, alarms (timers), music sources, wake word
+  threshold hints), `hwsettings.c` (LED ring, volume, Bluetooth speaker volume, EQ, LED brightness, lux) and `spawn.c`
+  (the stock tools, vfork on the Echo). The front end is told when a command is spoken (`listening()`:
   without it its cancellers remove the talker after 1.5 s). `micdenoise.c` (RNNoise, HA select off/low/medium/high, off by default) then
   `micgain.c`: AGC on the mic audio sent to the pipeline (the stock
-  micAsr level is ~30 dB below what STT expects, and HA ignores the ESPHome audio settings); the wake word gets it raw. `core_lock` guards state and client socket writes; `core.h`
+  micAsr level is ~30 dB below what STT expects, and HA ignores the ESPHome audio settings); the wake word gets it raw. `core_lock` guards state and what is queued for the clients (`outq.c`: one writer thread per connection, so a
+  stalled client holds up no one; mic audio is left out past 64 KB, past 512 KB the client is let go); `core.h`
   documents per function whether the lock is held.
 - **Protocols (`struct proto` in `core.h`)**: `proto_esphome.c` (ESPHome native API incl. Noise encryption provisioned
   by HA, voice assistant, media player, timers, settings entities, Bluetooth proxy messages) and `proto_wyoming.c` +

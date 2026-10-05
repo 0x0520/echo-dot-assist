@@ -213,7 +213,7 @@ routines "when Alexa hears …" (product knowledge, not from the code).
 
 ## 4. In hassmic (2026-10-01)
 
-`src/hassmic/sound_pryon.c` (backend, `sound.h`) and the "sound detection" section of `main.c`; README "Sound detection".
+`src/hassmic/sound_pryon.c` (backend, `sound.h`) and the "sound detection" section of `detect.c`; README "Sound detection".
 
 - **Off by default.** The ESPHome switch "Sound detection" (kept in the settings file) makes the capture thread open a
   second decoder (`NewSpotterAudioDecoder` on the `/system` model, the same results as PuffinApp's constructor) and feed

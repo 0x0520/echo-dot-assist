@@ -19,9 +19,9 @@
  *                    Assistant names it esphome.<node>_arbitration_key) through which other Echos hand over their
  *                    network key, and the HomeassistantActionRequest with which this one hands over its own (arb.c)
  *   bluetooth proxy  LE scanning with raw advertisements, GATT connections to up to 3 devices at a time, pairing (ble.c)
- *   bluetooth speaker  a switch opens the pairing window (a2dp.c).  The other way, playing to a Bluetooth speaker: a
+ *   bluetooth speaker  a switch opens the pairing window (bt_link.c).  The other way, playing to a Bluetooth speaker: a
  *              switch searches for one and pairs it, another plays on it, a text sensor says how it is, a number holds its
- *              latency for Sendspin (a2dp.c, btout.c).  A phone connecting is announced by asking Home
+ *              latency for Sendspin (a2dp_source.c, btout.c).  A phone connecting is announced by asking Home
  *                    Assistant to run assist_satellite.announce on us (HomeassistantActionRequest, what an ESPHome YAML
  *                    `homeassistant.action` sends).  Home Assistant only runs it with "Allow the device to perform Home
  *                    Assistant actions" ticked in the device's options; otherwise it raises a repair saying so.
@@ -674,7 +674,7 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
     else if (type == SWITCH_COMMAND && key == KEY_BT_ANNOUNCE) core_bt_announce(on);
     else if (type == SWITCH_COMMAND && key == KEY_DND) core_dnd(on);
     else if (type == SWITCH_COMMAND && key == KEY_BT_PAIRING) { a2dp_pair(on); return; }     /* its state follows through bt_changed */
-    else if (type == SWITCH_COMMAND && key == KEY_BT_OUT_SEARCH && ble_present()) { a2dp_out_search(on); return; }   /* a2dp.c keeps them */
+    else if (type == SWITCH_COMMAND && key == KEY_BT_OUT_SEARCH && ble_present()) { a2dp_out_search(on); return; }   /* a2dp_source.c keeps them */
     else if (type == SWITCH_COMMAND && key == KEY_BT_OUT && ble_present()) { a2dp_out_enable(on); send_setting(key); return; }
     else if (type == NUMBER_COMMAND && key == KEY_BT_OUT_DELAY && ble_present()) { a2dp_out_delay(num < 0 ? 0 : (int)lroundf(num)); send_setting(key); return; }
     else if (type == SWITCH_COMMAND && key == KEY_ARB_JOIN && arb_running()) { arb_join(on); send_setting(key); return; }   /* arb.c keeps it */

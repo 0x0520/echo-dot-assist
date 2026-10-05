@@ -1,4 +1,4 @@
-/* The ACL and L2CAP code LE (ble.c) and BR/EDR (a2dp.c) share (acl.c), and the key files both keep (keyfile.c):
+/* The ACL and L2CAP code LE (ble.c) and BR/EDR (bt_link.c) share (acl.c), and the key files both keep (keyfile.c):
  * fragmentation and the packet boundary flags, the controller's flow control with its own and with a shared pool of
  * buffers, a link going with packets queued and outstanding, and reassembly against fragments a device gets wrong.
  * hci_write is stubbed and records what would go to the controller. */

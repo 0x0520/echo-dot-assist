@@ -1,5 +1,5 @@
 /* Playing to a Bluetooth speaker, the mixer's side: hassmic stands in for btmanagerd towards the mixer's own A2DP route
- * (docs/re-a2dp-source.md).  a2dp.c does the radio side and drives this from the controller thread. */
+ * (docs/re-a2dp-source.md).  a2dp_source.c does the radio side and drives this from the controller thread. */
 #ifndef BTOUT_H
 #define BTOUT_H
 #include <stddef.h>
@@ -7,7 +7,7 @@
 
 void btout_start(void);                 /* once: HAL sockets, AIPC service, route thread */
 
-/* controller thread (a2dp.c) */
+/* controller thread (a2dp_source.c) */
 void   btout_ready(uint64_t addr, const char *name, int bitpool, unsigned mtu);  /* a stream to it is open: route the
                                                                                    mixer there, SBC at that bitpool */
 void   btout_gone(void);                /* no stream any more: the mixer back to the Echo's speaker */

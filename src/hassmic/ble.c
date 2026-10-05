@@ -2,9 +2,9 @@
  * Bluetooth LE straight on the controller.  The Echo has no kernel Bluetooth stack (no BlueZ, no HCI sockets): MediaTek's
  * WMT driver exposes the combo chip's HCI as /dev/stpbt, H4 framing (packet type byte, then the HCI packet), and Amazon's
  * btmanagerd (Bluetooth speaker mode, pairing through the Alexa app) drives it from user space.  Without Alexa nothing can
- * pair with that any more, so hassmic takes the radio over (the speaker is a2dp.c now): alexa-off.sh stops btmanagerd.
- * The device node does not refuse a second opener, so this waits until btmanagerd is really gone; two users would steal
- * each other's events.
+ * pair with that any more, so hassmic takes the radio over (the speaker is bt_link.c and the A2DP modules now):
+ * alexa-off.sh stops btmanagerd.  The device node does not refuse a second opener, so this waits until btmanagerd is
+ * really gone; two users would steal each other's events.
  *
  * Scanning: 30 ms every 320 ms, ESPHome's default for proxies on Wi-Fi.  The chip shares its antenna with Wi-Fi, and on
  * the Echo continuous scanning cut Wi-Fi throughput from 4.3 to about 1 MB/s, 30/320 to 3.8 MB/s.  The number of
@@ -28,7 +28,7 @@
  * only, and the device's P-256 key must be on the curve.  Our own keys are never distributed: we only
  * ever connect, the device never needs to recognise or encrypt towards us.
  *
- * BR/EDR (the Bluetooth speaker) shares this thread and the controller: a2dp.c gets the events and ACL packets that
+ * BR/EDR (the Bluetooth speaker) shares this thread and the controller: bt_link.c gets the events and ACL packets that
  * are not LE's, its own share of the controller's buffers, and sends its commands from upkeep() (hci.h).  The ACL
  * queue, flow control and L2CAP framing both sides use are acl.c.
  */
@@ -1126,7 +1126,7 @@ void ble_write(uint64_t addr, unsigned handle, const void *data, size_t len, int
     request(R_WRITE, addr, 0, handle, data, len, response);
 }
 
-/* hci.h: for a2dp.c on this thread */
+/* hci.h: for bt_link.c on this thread */
 int hci_cmd(unsigned op, const void *par, unsigned n) { return cmd(op, par, n); }
 const unsigned char *hci_ret(void) { return cc_ret; }
 int hci_write(const void *b, size_t n) { return write(fd, b, n) == (ssize_t)n ? 0 : -1; }

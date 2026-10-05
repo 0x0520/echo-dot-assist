@@ -1,4 +1,4 @@
-/* Bluetooth speaker codecs (a2dp_codecs.c): what a2dp.c offers per stream endpoint, and the decoders behind them. */
+/* Bluetooth speaker codecs (a2dp_codecs.c): what a2dp_sink.c offers per stream endpoint, and the decoders behind them. */
 #ifndef A2DP_CODEC_H
 #define A2DP_CODEC_H
 #include <stddef.h>

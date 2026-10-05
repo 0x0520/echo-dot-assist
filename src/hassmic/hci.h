@@ -1,4 +1,5 @@
-/* The controller thread (ble.c) shared with the Bluetooth speaker (a2dp.c).  Everything here runs on that thread. */
+/* The controller thread (ble.c) shared with the Bluetooth speaker (bt_link.c and the modules of bt_int.h) and with
+ * acl.c.  Everything here runs on that thread. */
 #ifndef HCI_H
 #define HCI_H
 #include <stddef.h>
@@ -14,7 +15,7 @@ void hci_poke(void);                                        /* any thread: wake 
  * counts of the same buffers would let the controller overflow.  Valid from a2dp_setup on. */
 int *hci_acl_pool(void);
 
-/* a2dp.c, called by ble.c */
+/* bt_link.c, called by ble.c */
 int  a2dp_setup(void);                                      /* after the reset; -1 = controller gone */
 int  a2dp_event(const unsigned char *p, size_t n);          /* event code, length, parameters.  1 = a BR/EDR one, handled */
 int  a2dp_acl(const unsigned char *p, size_t n);            /* ACL packet after the H4 byte.  1 = on a BR/EDR link */

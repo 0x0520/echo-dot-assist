@@ -1,9 +1,14 @@
-/* The Bluetooth speaker's radio side (a2dp.c) against what a hostile or broken device can send: SDP data element
+/* The Bluetooth speaker's radio side (bt_int.h) against what a hostile or broken device can send: SDP data element
  * lengths, L2CAP MTUs, authentication failures that used to delete link keys, pairing outside the window, audio at a
- * rate the player has no room for, and the ACL credit pool shared with LE.  a2dp.c is included whole, the controller
- * (hci.h) and the rest of hassmic are stubbed; nothing here runs a thread. */
+ * rate the player has no room for, and the ACL credit pool shared with LE.  Its modules are included whole, one
+ * translation unit, so their statics are in reach (acl.c and keyfile.c are linked as they are); the controller (hci.h)
+ * and the rest of hassmic are stubbed; nothing here runs a thread. */
 #include <stdarg.h>
-#include "../../src/hassmic/a2dp.c"
+#include "../../src/hassmic/bt_link.c"
+#include "../../src/hassmic/sdp.c"
+#include "../../src/hassmic/a2dp_sink.c"
+#include "../../src/hassmic/avrcp.c"
+#include "../../src/hassmic/a2dp_source.c"
 
 /* ---------------------------------------------------------------- stubs */
 pthread_mutex_t core_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -148,7 +153,7 @@ static void test_pool(void)
     memset(ret, 0, sizeof ret); ret[0] = 0xfd; ret[1] = 0x03; ret[3] = 8;     /* BR/EDR: 8 x 1021 */
     pool = &shared; shared = 8;                             /* ble.c filled it from the same Read Buffer Size */
     a2dp_setup();
-    expect(credits == &shared, "shared buffers: a2dp keeps a count of its own");
+    expect(aq.credits == &shared, "shared buffers: a2dp keeps a count of its own");
     struct link *l = mklink(0x010203040506, 9); unsigned char x[10] = { 0 };
     for (int i = 0; i < 3; i++) l2_send(l, 0x40, x, sizeof x);
     expect(shared == 5, "shared pool at %d after 3 packets, want 5", shared);
@@ -156,7 +161,7 @@ static void test_pool(void)
     expect(shared == 8, "shared pool at %d after completion, want 8", shared);
     link_gone(l);
     pool = NULL; a2dp_setup();
-    expect(credits == &own_credits && own_credits == 8, "separate buffers: own count not set");
+    expect(aq.credits == &aq.own && aq.own == 8, "separate buffers: own count not set");
 }
 
 int main(void)

@@ -13,8 +13,8 @@
  *   AIPC    on every change of A2DPSourceConnect the mixer asks btmanagerd's service (uuid 0) for the speaker's name, and on
  *           BTUnpair (line out plugged while on the speaker) tells it to disconnect.  With btmanagerd gone each change
  *           waited ~20 s for a connect timeout; hassmic answers in its place.
- *   packets SBC (sbc.c) in RTP packets, as many frames as fit the media channel; a2dp.c sends them when the link has
- *           room.  A queue of at most QUEUE_MS: older packets go when the radio falls behind.
+ *   packets SBC (sbc.c) in RTP packets, as many frames as fit the media channel; a2dp_source.c sends them when the link
+ *           has room.  A queue of at most QUEUE_MS: older packets go when the radio falls behind.
  */
 #define _GNU_SOURCE                     /* accept4 on the PC */
 #include "btout.h"
@@ -51,7 +51,7 @@ static long long us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t
 static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
 /* m: */
-static int ready, streaming, start_failed, cfg_gen;     /* a2dp.c's stream state; its configuration's generation */
+static int ready, streaming, start_failed, cfg_gen;     /* a2dp_source.c's stream state; its configuration's generation */
 static uint64_t ready_addr; static char ready_name[80]; static int bitpool; static unsigned per_packet;
 static int want_route, routed_now; static uint64_t want_addr, routed_addr;
 static int want_abs, abs_pct, mode_now;  /* the speaker takes absolute volume, at that; core_speaker's mode as set */
@@ -190,7 +190,7 @@ static unsigned char command(int fd, unsigned c)
         if (!ready) { pthread_mutex_unlock(&m); fprintf(stderr, "btout: START without a speaker\n"); return 1; }
         start_failed = 0; atomic_store(&hal_started, 1);
         pthread_mutex_unlock(&m);
-        hci_poke();                                     /* a2dp.c sends AVDTP START */
+        hci_poke();                                     /* a2dp_source.c sends AVDTP START */
         for (t = us(); ; ) {
             pthread_mutex_lock(&m); int s = streaming, f = start_failed || !ready; pthread_mutex_unlock(&m);
             if (s) return 0;

@@ -1,4 +1,4 @@
-/* ACL fragment queue, controller flow control and L2CAP framing for LE (ble.c) and BR/EDR (a2dp.c); see acl.h. */
+/* ACL fragment queue, controller flow control and L2CAP framing for LE (ble.c) and BR/EDR (bt_link.c); see acl.h. */
 #include "acl.h"
 #include <stdio.h>
 #include <stdlib.h>

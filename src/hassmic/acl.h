@@ -1,4 +1,4 @@
-/* ACL data on the controller ble.c drives, for both of its users: LE (ble.c) and BR/EDR (a2dp.c).  Outgoing L2CAP
+/* ACL data on the controller ble.c drives, for both of its users: LE (ble.c) and BR/EDR (bt_link.c).  Outgoing L2CAP
  * frames are cut into ACL packets the controller takes and queued until it has a free buffer for them (its flow
  * control: Number Of Completed Packets returns them); incoming ACL packets are put together into L2CAP frames.  Each
  * side keeps a queue of its own; when the controller has one pool of buffers for both (hci_acl_pool), the two queues

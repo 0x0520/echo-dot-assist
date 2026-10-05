@@ -1,5 +1,5 @@
 /* Files of secret keys in hassmic's state directory ($HASSMIC_STATE, else /data/local/hassmic/state): the BR/EDR link
- * keys (a2dp.c) and the LE bonds (ble.c).  Written whole to a temporary file created 0600 and renamed over the old
+ * keys (bt_link.c) and the LE bonds (ble.c).  Written whole to a temporary file created 0600 and renamed over the old
  * one, so a crash leaves the old file or the new one, never half of one, and the keys are never readable by others. */
 #ifndef KEYFILE_H
 #define KEYFILE_H

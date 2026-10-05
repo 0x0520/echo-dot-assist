@@ -172,7 +172,7 @@ WHISPER := $(if $(filter %wake_pryon.c,$(WAKE)),src/hassmic/whisper_pryon.c,src/
 
 RNNOISE := $(addprefix src/third_party/rnnoise/,denoise.c rnn.c rnn_data.c pitch.c kiss_fft.c celt_lpc.c)
 HASSMIC := src/hassmic/main.c src/hassmic/wyoming.c src/hassmic/proto_wyoming.c src/hassmic/proto_esphome.c src/hassmic/buttons.c \
-           src/hassmic/sendspin.c src/hassmic/arb.c src/hassmic/ble.c src/hassmic/ble_crypto.c src/hassmic/acl.c src/hassmic/keyfile.c src/hassmic/a2dp.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/hassmic/btout.c src/hassmic/ota.c src/hassmic/update.c src/hassmic/adbwifi.c src/hassmic/wifimotion.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/hassmic/hash.c src/hassmic/sounds.c src/hassmic/micgain.c src/hassmic/micdenoise.c \
+           src/hassmic/sendspin.c src/hassmic/arb.c src/hassmic/ble.c src/hassmic/ble_crypto.c src/hassmic/acl.c src/hassmic/keyfile.c src/hassmic/bt_link.c src/hassmic/sdp.c src/hassmic/a2dp_sink.c src/hassmic/avrcp.c src/hassmic/a2dp_source.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/hassmic/btout.c src/hassmic/ota.c src/hassmic/update.c src/hassmic/adbwifi.c src/hassmic/wifimotion.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/hassmic/hash.c src/hassmic/sounds.c src/hassmic/micgain.c src/hassmic/micdenoise.c \
            src/third_party/monocypher.c src/third_party/freeaptx.c $(RNNOISE)
 HASSMIC_H := $(wildcard src/hassmic/*.h src/include/*.h) build/.build-id
 
@@ -207,7 +207,7 @@ unit:
 	.venv/bin/python tests/unit/noise_ref.py build/noise_test
 	cc -O2 -Wall -Isrc/hassmic tests/unit/a2dp_codecs_test.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/third_party/freeaptx.c -lm -ldl -lopus -o build/a2dp_codecs_test && build/a2dp_codecs_test
 	cc -O2 -Wall -Wextra -D_GNU_SOURCE -Isrc/hassmic tests/unit/acl_test.c src/hassmic/acl.c src/hassmic/keyfile.c -o build/acl_test && build/acl_test
-	cc -O2 -Wall -D_GNU_SOURCE -Isrc/hassmic tests/unit/a2dp_test.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/third_party/freeaptx.c -lpthread -lm -ldl -lopus -o build/a2dp_test && build/a2dp_test
+	cc -O2 -Wall -D_GNU_SOURCE -Isrc/hassmic tests/unit/a2dp_test.c src/hassmic/acl.c src/hassmic/keyfile.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/third_party/freeaptx.c -lpthread -lm -ldl -lopus -o build/a2dp_test && build/a2dp_test
 	if command -v sbcenc >/dev/null; then tests/unit/sbc_ref.sh; else echo "sbc: sbcenc/sbcdec (package sbc) missing, skipped"; fi
 
 # The scripts that run on the Echo, under its mksh and toybox: shellcheck as POSIX sh (.shellcheckrc: what is left out

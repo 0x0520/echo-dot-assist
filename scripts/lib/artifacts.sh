@@ -266,7 +266,7 @@ _artifacts_run() {
         elif [[ " ${AMAZON[*]} " == *" $id "* ]]; then say "  · download wake word $(label $id) and install it"
         else say "  · install wake word $(label $id)"; fi
     done
-    [ -n "$ONLINE" ] && say "  · finish the earlier run: deregister, and back to satellite"
+    [ -n "$ONLINE" ] && say "  · finish the earlier run: back to satellite, then you deregister it"
     [ -n "$need_amazon" ] && info "Downloading needs this Echo registered to your Amazon account for a few minutes (Alexa app); it is undone at the end."
     ask "Go on?" y || return 0
 
@@ -295,7 +295,8 @@ _artifacts_run() {
             tell "Set the Echo up in the Alexa app" \
                 "Devices → + → Add device → Amazon Echo, on the Wi-Fi Home Assistant is on." \
                 "The app may show \"updating\" for a while: that is the blocked update check, it is fine." \
-                "The Echo needs internet access: if your router blocks it, allow it until this is done."
+                "The Echo needs internet access: if your router blocks it, allow it until this is done." \
+                "Leave it registered until this script asks you to deregister it: deregistered while it runs as a stock Echo, it resets itself to factory settings."
             if [ -z "$guarded" ]; then
                 info "Until the app has set it up, the Echo is off your Wi-Fi (it runs its own setup network)."
                 waitfor "Waiting for the Echo back on Wi-Fi|Echo is back on Wi-Fi" "adb_is device" \
@@ -327,9 +328,10 @@ _artifacts_run() {
     fi
 
     if [ -n "$need_amazon" ]; then
-        # --- back: deregister, forget the app's Wi-Fi and the registration, satellite mode
+        # --- back: forget the app's Wi-Fi and the registration, satellite mode, and only then deregister.  A stock Echo
+        # that is online and gets deregistered resets itself to factory settings, /data included: hassmic.conf, state/,
+        # the models (user report, 2026-10-05).  As a satellite Amazon's daemons reach only local addresses.
         m_stage back
-        todo "Remove the Echo from your Amazon account" "Alexa app → Devices → this Echo → ⚙ → Deregister"
         keep=" $(cat $NETS 2>/dev/null) " drop=
         if [ "$keep" != "  " ]; then
             for n in $(net_ids); do [[ $keep == *" $n "* ]] || drop="$drop $n"; done
@@ -348,6 +350,8 @@ _artifacts_run() {
         # the firewall service closes adb over Wi-Fi within 5 s
         ashell "sed -i -e '/^$ADB_OURS\$/d' -e '/^$ADB_OURS_OLD\$/d' $D/hassmic.conf"
         info "The Echo can lose its internet access at the router again."
+        todo "Now remove the Echo from your Amazon account" "Alexa app → Devices → this Echo → ⚙ → Deregister" \
+            "Only now: it runs as a satellite again, out of Amazon's reach. Deregistered while it ran as a stock Echo, it would reset itself to factory settings."
     elif [ ${#INSTALLED[@]} -gt 0 ]; then
         # main.sh starts a hassmic that exits again; the new one scans $D/models
         task "Restarting hassmic" adb shell 'kill $(pidof hassmic)' && sleep 3 && satellite_up || return 1

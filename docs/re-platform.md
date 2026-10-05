@@ -270,7 +270,9 @@ ace mw net_cli                                                     # lists Amazo
   (b) comment out `start puffin`/`start puffinmrmd` in `init.mt8516.rc:230-231`. Option (a) leaves Amazon's files untouched
   but lets PuffinApp run for a moment at boot.
 - Does `netmgrd` raise a captive-portal/"no internet" state that triggers anything when Amazon endpoints are blocked?
-- Does deregistering wipe `wpa_supplicant.conf`? Safer to stay registered and block the cloud than to deregister — **UNVERIFIED**.
+- Deregistering a running stock Echo that is online resets it to factory settings: all of `/data`, so
+  `/data/local/hassmic` and the Wi-Fi settings as well (user report, 2026-10-05, Echo Dot 3 deregistered during
+  `scripts/artifacts.sh`). Deregister only once Amazon cannot reach it (hassmic running, or no internet).
 
 ## 5. OTA
 

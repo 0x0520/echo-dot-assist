@@ -133,8 +133,9 @@ firmware's (not ticked: so far it scores the same, `docs/re-aed.md`). The guided
 you do not want; "Go on" shows what it will do and asks once. It tries each wake word on the Echo's own engine before installing it,
 and restarts hassmic. For downloads it walks through the Amazon route below by itself, once for all of them: stock
 mode with the update block, you register the Echo in the Alexa app, it downloads the models (asking for what this
-Echo's engine can load), you deregister, it removes the app's Wi-Fi and the registration and goes back to satellite
-mode. Home Assistant then offers every installed model in the
+Echo's engine can load), it removes the app's Wi-Fi and the registration and goes back to satellite mode, and only
+then you deregister: a stock Echo that is deregistered while online resets itself to factory settings, hassmic's
+settings and models included. Home Assistant then offers every installed model in the
 Echo's wake word select. What it does, by hand:
 
 <details>

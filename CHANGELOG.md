@@ -14,6 +14,12 @@ What changed for people using the Echo, newest first. Details and measurements a
 - **`scripts/artifacts.sh` no longer downloads with a dead registration.** An Echo could still carry the registration of
   an earlier run, with a token Amazon refuses; the script took that for "registered already" and every download
   failed. It now asks Amazon whether the token works, and otherwise has you set the Echo up in the Alexa app.
+- **`scripts/artifacts.sh` asks you to deregister the Echo only once it is a satellite again.** It asked before,
+  while the Echo still ran as a stock Echo online, and a stock Echo resets itself to factory settings when
+  deregistered: hassmic's settings, its Home Assistant key and the wake word models were gone, and the Echo stayed a
+  plain Alexa. If that happened to yours: block the Echo's internet at the router, then
+  `adb shell 'mkdir -p /data/local/hassmic; printf "NAME=\"Echo Dot\"\nARGS=\"\"\n" > /data/local/hassmic/hassmic.conf'`
+  and `adb reboot`, add it to Home Assistant again, and run `scripts/artifacts.sh` for the wake words.
 - **`scripts/artifacts.sh` tells you when the Echo's adb hangs.** After the Alexa app moved an Echo Dot 3 to another
   Wi-Fi network and back, adb over Wi-Fi took the connection but never answered, and the script waited forever. It
   now says to unplug the Echo's power and plug it back in. An Echo left waiting for the Alexa app (orange ring) by a

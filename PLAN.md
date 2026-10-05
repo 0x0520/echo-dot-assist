@@ -1366,8 +1366,6 @@ Run in this order. Each step says what it proves.
       everyone, re-added at boot_completed, taken out again while open for one address; the switch with
       `ADB_WIFI_FROM`; Wyoming with `-W` and the real Home Assistant; arbitration still merging two Echos (recvfrom on
       the real broadcast).
-- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
-      way would be Improv over BLE, ble.c has the controller); reminders (HA has timers only; the alarm clock is done, above).
 - [x] Wi-Fi setup over Bluetooth (2026-10-06, `improv.c`, `gatts.c`, `ble_periph.c`; root side `main.sh` wifi_watch +
       `wifi-join.sh -x`). Improv Wi-Fi over BLE as ESPHome devices have it, so Home Assistant's Improv integration or
       improv-wifi.com set the Echo's network. ble.c was a central only; `ble_periph.c` adds the peripheral role on the
@@ -1478,6 +1476,6 @@ Run in this order. Each step says what it proves.
       end to end: an Amazon daemon (init may restart it: the result still says ended), hassmic itself (restarted, "Last
       kill" from the result left behind), a protected one refused (mixer, wpa_supplicant, lockdown.sh's shell), and that
       `read -d ''` of /proc cmdline and `readlink /proc/<pid>/exe` work under mksh in hassmic_fw's domain.
-- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): offline alarm clock and
-      reminders (HA has timers only).
+- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): reminders (HA has timers
+      only; the alarm clock and Wi-Fi setup over Bluetooth are done, above).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

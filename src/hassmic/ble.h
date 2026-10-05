@@ -33,6 +33,19 @@ struct ble_handler {
     void (*unpaired)(uint64_t addr, int ok, int error);
 };
 
+/* The other role: a peripheral that one central at a time connects to (Improv Wi-Fi, improv.c), with a GATT server
+ * of its own (gatts.h).  ble_periph.c.  All callbacks on the controller thread, no lock held. */
+struct ble_peripheral {
+    /* 1: advertise these (legacy, connectable; each at most 31 bytes) while nobody is connected, and keep a central
+     * that is.  0: stop advertising and drop the central */
+    int    (*advertise)(uint8_t *adv, size_t *adv_len, uint8_t *rsp, size_t *rsp_len);
+    void   (*connected)(uint64_t addr, int on);
+    size_t (*att)(const uint8_t *req, size_t n, uint8_t *rsp, size_t cap);    /* an ATT PDU, the answer (0: none) */
+    size_t (*notify)(uint8_t *pdu, size_t cap);                                /* the next notification, 0: none */
+};
+void ble_peripheral(const struct ble_peripheral *p);    /* any thread; NULL: none */
+void ble_peripheral_poke(void);         /* any thread: what the callbacks say has changed, ask them again */
+
 int  ble_present(void);                 /* the radio exists (PC build: no) */
 void ble_start(const struct ble_handler *h);    /* controller thread; takes the radio once btmanagerd has stopped.
                                                    Again to set the handler (NULL: none yet) */

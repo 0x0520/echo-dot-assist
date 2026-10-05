@@ -129,6 +129,8 @@ async def main():
         check([(v.name, [(x.name, int(x.type)) for x in v.args]) for v in svcs] == [("arbitration_key", [("network", 3), ("key", 3)])],
               "action \"arbitration_key\" (network, key: strings) for other Echos to hand over their network")
         check(open(settings).read().split()[:2] == ["0", "-20"] and open(settings).read().split()[8:9] == ["2"], f"settings persisted: {open(settings).read().strip()!r}")
+        # field 16 is another branch's (alarms), kept as a placeholder; 17: Wi-Fi setup over Bluetooth, on by default
+        check(open(settings).read().split()[15:] == ["-", "1"], f"settings fields 16 and 17: {open(settings).read().strip()!r}")
         cfg = await cli.get_voice_assistant_configuration(5)
         avail = sorted((w.id, w.wake_word, list(w.trained_languages)) for w in cfg.available_wake_words)
         check(avail == [("alexa", "Alexa", ["en"]), ("computer-en-US", "Computer", ["en"]), ("echo-de", "Echo", ["de"])]

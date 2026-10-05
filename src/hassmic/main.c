@@ -33,6 +33,7 @@
 #include "buttons.h"
 #include "netio.h"
 #include "core_int.h"
+#include "improv.h"
 #include "ota.h"
 #include "sendspin.h"
 #include "board.h"
@@ -284,16 +285,27 @@ void stop_word(void)
 
 /* ---------------------------------------------------------------- buttons */
 
-/* Action button: cancel a running pipeline; else pause what plays (Bluetooth device first, then Sendspin), or resume
- * what the button paused; else talk */
+/* Action button: authorize Wi-Fi setup over Bluetooth while it waits for that; else cancel a running pipeline; else
+ * pause what plays (Bluetooth device first, then Sendspin), or resume what the button paused; else talk */
 static void on_action(void)
 {
+    if (improv_button()) return;
     pthread_mutex_lock(&core_lock);
     int busy = state == LISTENING || state == THINKING;
     pthread_mutex_unlock(&core_lock);
     if (!busy && (a2dp_button(0) || (core_sendspin_port && sendspin_button()) || a2dp_button(1))) return;
     atomic_store(&trigger_pending, 2);                  /* 2: touch */
 }
+
+/* Wi-Fi setup over Bluetooth (improv.h) is open: stock's orange setup spinner, which stays until unset */
+static void on_improv_window(int open)
+{
+    pthread_mutex_lock(&core_lock);
+    led(open ? "-s" : "-u", "setup-mode");
+    pthread_mutex_unlock(&core_lock);
+}
+
+static void on_improv_identify(void) { sound_queue(SND_BT_ON); }
 
 static void on_mute(int muted)          /* hardware latch changed (button) */
 {
@@ -406,6 +418,7 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN); signal(SIGCHLD, SIG_IGN); signal(SIGUSR1, on_usr1); signal(SIGUSR2, on_usr2); signal(SIGHUP, on_hup); signal(SIGTTIN, on_ttin);
     hw_init(use_led, use_volume);
     led("-u", "scone-setup");           /* a restart inside the pairing window: the window is gone, its chaser would loop on */
+    led("-u", "setup-mode");            /* the same for Wi-Fi setup over Bluetooth */
 
     if (cap_open() < 0) { fprintf(stderr, "cannot open capture (is PuffinApp still running?)\n"); return 1; }
     pthread_mutex_lock(&core_lock); listening(0); pthread_mutex_unlock(&core_lock);
@@ -424,12 +437,16 @@ int main(int argc, char **argv)
         pthread_detach(t);
     }
 
-    static const struct button_handler buttons = { on_action, on_mute, on_volume };
+    static const struct button_handler buttons = { on_action, improv_hold, on_mute, on_volume };
     if (buttons_start(input, &buttons) < 0) fprintf(stderr, "buttons: %s not available\n", input);
     else if (buttons_muted()) on_mute(1);
 
     if (core_sendspin_port) sendspin_start(core_sendspin_port);
-    if (use_bt) a2dp_start(NULL);
+    if (use_bt) {
+        static const struct improv_handler improv = { on_improv_window, on_improv_identify };
+        a2dp_start(NULL);
+        improv_start(&improv, core_name, VERSION);
+    }
     if (ota_port) ota_start(ota_port);
 
     int ls = net_listen(core_port);

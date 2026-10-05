@@ -15,8 +15,8 @@
  * and the controller's flow control, ATT with one request on the air at a time (ATT's own rule), service discovery on
  * request, long reads (Read Blob), long writes (prepared writes), notifications and indications.  Home Assistant writes
  * the notification descriptors itself (with REMOTE_CACHING it does).  What the device asks of us: the MTU exchange and
- * connection parameter updates are granted; our own GATT server is empty.  Scanning pauses while a connection is being
- * set up, as ESPHome does.
+ * connection parameter updates are granted; this GATT server is empty (ours, for Improv Wi-Fi, sits on the peripheral
+ * link: ble_periph.c).  Scanning pauses while a connection is being set up, as ESPHome does.
  *
  * Pairing (SMP, we are always the initiator): Just Works like an ESP32 proxy, which has no display or keyboard either.
  * LE Secure Connections when the controller does the P-256 part (LE Read Local P-256 Public Key, LE Generate DHKey),
@@ -162,7 +162,7 @@ static struct conn *by_addr(uint64_t a) { for (int i = 0; i < BLE_MAX_CONN; i++)
 static struct conn *by_handle(int h) { for (int i = 0; i < BLE_MAX_CONN; i++) if (conns[i].state >= C_MTU && conns[i].handle == h) return &conns[i]; return NULL; }
 static struct conn *in_state(int s) { for (int i = 0; i < BLE_MAX_CONN; i++) if (conns[i].state == s) return &conns[i]; return NULL; }
 
-static struct acl_tx *tx_by_handle(int h) { struct conn *c = by_handle(h); return c ? &c->tx : NULL; }
+static struct acl_tx *tx_by_handle(int h) { struct conn *c = by_handle(h); return c ? &c->tx : periph_tx(h); }
 /* LE's ACL queue: first fragments not automatically flushable (all LE allows) */
 static struct acl_queue aq = ACL_QUEUE(aq, "bluetooth", tx_by_handle, 0x00, ATT_MTU + 16);
 static int shared_acl;                          /* no LE buffers of its own: aq.own is the pool BR/EDR counts in too */
@@ -691,7 +691,7 @@ static void acl_rx(const unsigned char *p, size_t n)     /* p: after the H4 type
 {
     if (n < 4) return;
     struct conn *c = by_handle(u16(p) & 0x0fff);
-    if (!c) { a2dp_acl(p, n); return; }
+    if (!c) { if (!periph_acl(p, n)) a2dp_acl(p, n); return; }
     if (!l2cap_reassemble(&c->rxs, c->rx, sizeof c->rx, p, n)) return;
     c->heard = 1;
     unsigned cid = u16(c->rx + 2); size_t l = u16(c->rx);
@@ -749,7 +749,7 @@ static void conn_complete(const unsigned char *q, size_t n)
 static void event(const unsigned char *p, size_t n)            /* p: event code, length, parameters */
 {
     const unsigned char *q = p + 2; struct conn *c;
-    if (n < 2 || a2dp_event(p, n)) return;
+    if (n < 2 || a2dp_event(p, n) || periph_event(p, n)) return;
     n -= 2;
     switch (p[0]) {
     case EV_CMD_COMPLETE:
@@ -771,8 +771,7 @@ static void event(const unsigned char *p, size_t n)            /* p: event code,
         for (unsigned i = 0; n >= 1 && i < q[0] && 1 + 4 * i + 4 <= n; i++) {
             unsigned k = u16(q + 3 + 4 * i);
             if (a2dp_completed(u16(q + 1 + 4 * i) & 0x0fff, k)) continue;      /* BR/EDR buffers: counted apart */
-            c = by_handle(u16(q + 1 + 4 * i) & 0x0fff);
-            acl_completed(&aq, c ? &c->tx : NULL, k);
+            acl_completed(&aq, tx_by_handle(u16(q + 1 + 4 * i) & 0x0fff), k);
         }
         acl_flush(&aq);
         if (shared_acl) a2dp_acl_flush();                   /* the pool is BR/EDR's too: its queue may go on */
@@ -1025,7 +1024,7 @@ static int upkeep(void)
         }
 #undef GONE
     }
-    return 0;
+    return periph_upkeep(in_state(C_WAIT) || in_state(C_CONNECTING));
 }
 
 static int connect_next(void)                               /* scanning is off when this runs */
@@ -1057,6 +1056,7 @@ static void drop_all(void)                                  /* controller lost: 
         if (H->connection) H->connection(a, 0, 0, HCI_E_TIMEOUT);
     }
     acl_clear(&aq);
+    periph_lost();
     a2dp_lost();
 }
 
@@ -1081,7 +1081,8 @@ static void *thread(void *arg)
             while (r) { struct req *n = r->next; if (!bad && handle_request(r) < 0) bad = 1; free(r); r = n; }
             if (bad || upkeep() < 0) break;
             /* scanning pauses while a connection is being set up */
-            int won = atomic_load(&want_on) && !in_state(C_WAIT) && !in_state(C_CONNECTING) && !a2dp_streaming(), wac = atomic_load(&want_active);
+            int won = atomic_load(&want_on) && !in_state(C_WAIT) && !in_state(C_CONNECTING) && !a2dp_streaming() && !periph_scan_pause(),
+                wac = atomic_load(&want_active);
             if (won != on || (on && wac != active)) {
                 if (apply(won, wac) < 0) break;
                 if (won != on || wac != active)
@@ -1090,7 +1091,7 @@ static void *thread(void *arg)
                 if (H->scan_changed) H->scan_changed();
             }
             if (!on && connect_next() < 0) break;
-            int busy = a2dp_busy();
+            int busy = a2dp_busy() || periph_busy();
             for (int i = 0; i < BLE_MAX_CONN; i++) busy |= conns[i].state != C_FREE;
             struct pollfd p[2] = { { fd, POLLIN, 0 }, { wake[0], POLLIN, 0 } };
             if (poll(p, 2, busy ? 500 : nbatch ? 100 : -1) < 0 && errno != EINTR) break;
@@ -1139,6 +1140,8 @@ const unsigned char *hci_ret(void) { return cc_ret; }
 int hci_write(const void *b, size_t n) { return write(fd, b, n) == (ssize_t)n ? 0 : -1; }
 void hci_poke(void) { poke(); }
 int *hci_acl_pool(void) { return shared_acl ? &aq.own : NULL; }
+void le_send(int handle, struct acl_tx *tx, unsigned cid, const void *pdu, size_t n) { l2cap_send(&aq, handle, tx, cid, pdu, n); }
+void le_forget(int handle, struct acl_tx *tx) { acl_forget(&aq, handle, tx); }
 
 void ble_start(const struct ble_handler *h)
 {

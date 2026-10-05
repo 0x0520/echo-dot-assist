@@ -1,13 +1,17 @@
 #include "buttons.h"
 #include "board.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
 
 #define SHORT_PRESS_MS 1000            /* longer holds belong to acebuttond: 5 s setup mode, 21 s factory reset */
+#define HOLD_MS 5000                   /* stock's setup mode: here Wi-Fi setup over Bluetooth (improv.c).  acebuttond still
+                                          sees the hold too; main.sh stops the setup services it may start */
 
 static struct button_handler handler;
 static int muted_state;                /* latch: what was last reported; no latch: the software toggle */
@@ -68,13 +72,24 @@ static long long now_ms(void)
 static void *reader(void *arg)
 {
     int rfd = (int)(long)arg;
-    struct input_event ev; long long action_down = 0;
-    while (read(rfd, &ev, sizeof ev) == sizeof ev) {
+    struct input_event ev; long long action_down = 0; int held = 0;
+    for (;;) {
+        /* while the action button is down, wake when it has been held long enough: the hold counts without a release */
+        int wait = -1;
+        if (action_down && !held) { long long left = action_down + HOLD_MS - now_ms(); wait = left > 0 ? (int)left : 0; }
+        struct pollfd p = { rfd, POLLIN, 0 };
+        int r = poll(&p, 1, wait);
+        if (r < 0 && errno == EINTR) continue;
+        if (r == 0) { held = 1; if (handler.hold) handler.hold(); continue; }
+        if (r < 0 || read(rfd, &ev, sizeof ev) != sizeof ev) break;
         if (ev.type != EV_KEY) continue;
         switch (ev.code) {
         case KEY_HELP:
-            if (ev.value == 1) action_down = now_ms();
-            else if (ev.value == 0 && action_down && now_ms() - action_down < SHORT_PRESS_MS && handler.action) handler.action();
+            if (ev.value == 1) { action_down = now_ms(); held = 0; }
+            else if (ev.value == 0) {
+                if (action_down && !held && now_ms() - action_down < SHORT_PRESS_MS && handler.action) handler.action();
+                action_down = 0;
+            }
             break;
         case KEY_MUTE:
             if (ev.value == 0 && handler.mute_changed) {

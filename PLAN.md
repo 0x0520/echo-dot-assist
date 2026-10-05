@@ -1233,6 +1233,49 @@ Run in this order. Each step says what it proves.
       arrives in 0.02 s and the wake word's pipeline starts in 0.03 s, and the stuck client is let go; on the old code
       10 s and 5 s), the full suite, no warnings. Needs the device: Home Assistant over Wi-Fi with a second client
       that drops off the network mid-pipeline.
-- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
-      way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
+- [x] Wi-Fi setup over Bluetooth (2026-10-06, `improv.c`, `gatts.c`, `ble_periph.c`; root side `main.sh` wifi_watch +
+      `wifi-join.sh -x`). Improv Wi-Fi over BLE as ESPHome devices have it, so Home Assistant's Improv integration or
+      improv-wifi.com set the Echo's network. ble.c was a central only; `ble_periph.c` adds the peripheral role on the
+      same controller thread and LE ACL queue: legacy connectable advertising (flags, the Improv service UUID and its
+      0x4677 service data: 31 bytes, all in the advertisement as the spec wants; the name in the scan response), one
+      central at a time, ATT to a minimal GATT server (`gatts.c`: GAP + the Improv service, discovery by group type and
+      by UUID, read/blob, write/command, prepared writes for one attribute, CCCs, notifications; 247-byte MTU).
+      Pairing requests are refused, LTK requests answered negatively. **Window**: 2 min without an IPv4 address on
+      wlan0 (once per outage) or the action button held 5 s, then 5 min; closes when the address is back (no client
+      connected) and a minute after success. **Authorization**: AUTHORIZATION_REQUIRED until a short press of the
+      action button (taken from the satellite only while the window is open), authorized for 1 min, renewed after a
+      failed attempt (the spec's suggestions). **Root**: `state/wifi-request` (0600; SSID in hex, as SSIDs are any 32
+      bytes, newlines included; the passphrase as one line, WPA allows printable ASCII only), taken by the firewall
+      service's `ota_watch` loop within 2 s: moved into root's own directory first (no link swapped in under it),
+      checked again (hex, lengths, printable), `wifi-join.sh -x`, which now waits for association and an address (30
+      s, DHCP fallback after 8 s), keeps the other profiles enabled, and on failure removes the new profile again and
+      re-enables the others. Answer in `state/wifi-result` the way push updates are answered. Capabilities: identify
+      (a chime) and device info; no Wi-Fi scan (it would need root for every scan). Result URL: none, as ESPHome sends
+      none without its web server; Home Assistant finds the Echo by mDNS. A switch "Wi-Fi setup over Bluetooth" (on;
+      settings field 17, read by improv.c itself at start, because the protocol loads its settings only once Home
+      Assistant connects, which without Wi-Fi it never does). Field 16 belongs to the alarms branch: kept as read,
+      "-" until then (merge: replace the placeholder with that branch's field).
+      Deviations from the first plan: the request is handled by the firewall service's 2 s loop (`ota_watch`), not by
+      `netwatch` (10 s, satellite service): faster, it is where the root side of push updates already lives, and
+      `tests/boot_test.sh` runs it. `netwatch` stops stock's setup services if acebuttond starts them on the 5 s hold.
+      Tested: `tests/unit/improv_test.c` (packets and checksums, the whole GATT database through ATT, window,
+      authorization and timeouts with a clock of its own, the request file and root's answers, the peripheral link over
+      a fake controller: advertising set-up, refusal while scanning, a second central, fragmented writes, SMP and
+      L2CAP refusals, disconnection), `tests/boot_test.sh` (root side: a request with quotes, `$()`, backquotes and a
+      newline is passed as data and nothing runs, malformed requests and links refused, failure reported; the real
+      `wifi-join.sh` against a stand-in `wpa_cli`), full suite, no warnings.
+      **Needs the device** (nothing of it has run on an Echo):
+      - advertising while scanning (or the scan pausing for it: log line "cannot scan and advertise at once"), on donut,
+        and whether biscuit/radar can at all; the proxy keeps working afterwards;
+      - Home Assistant's Improv integration (direct and through another Echo as proxy) and improv-wifi.com in Chrome on
+        Android: discovery, the "press the button" step, a good and a wrong password, the result;
+      - `wifi-join.sh` on Fire OS: `wpa_cli` answers, the address comes (netmgrd or `dhcpcd-wlan0`), the profile is kept
+        after a reboot; a wrong password puts the old network back; while `wifisvc` runs (no address) it does not undo
+        the join;
+      - the 5 s hold: hassmic sees it while acebuttond does too; whether acebuttond starts `oobed` (then `netwatch`
+        stops it); the 21 s factory reset is still acebuttond's;
+      - the ring: "setup-mode" shows and is unset when the window closes; identify's chime;
+      - MTU: a client that keeps 23 bytes gets the device info result cut (notifications are not split).
+- [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): offline alarm clock and
+      reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

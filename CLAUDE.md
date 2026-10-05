@@ -162,11 +162,21 @@ through narrow headers:
   (`sbc.c`). While on the speaker the core has a volume of its own (`core_speaker`).
 - **Bluetooth**: `ble.c`/`ble_crypto.c` talk raw HCI (`hci.h`) to the controller for the HA Bluetooth proxy (scan, GATT,
   Just Works pairing); Amazon's `btmanagerd` is stopped. A2DP shares the controller; scanning pauses while a phone plays.
+- **Wi-Fi setup over Bluetooth** (`improv.c`, `gatts.c`, `ble_periph.c`): Improv Wi-Fi over BLE. `ble_periph.c` is the
+  peripheral role on ble.c's thread and LE ACL queue (advertising, one central, ATT to `gatts.c`, a minimal GATT server;
+  scanning pauses only if the controller refuses to advertise while scanning). Offered in a window: 2 min without an
+  address on wlan0 (once per outage) or the action button held 5 s (`buttons.c` hold), 5 min; a short press of the
+  action button authorizes for 1 min (`on_action` gives it to `improv_button()` first). Credentials go to root as
+  `state/wifi-request` (0600, SSID hex, passphrase line), taken by `main.sh` `wifi_watch` in the firewall service's 2 s
+  loop, checked again and joined with `wifi-join.sh -x` (shipped next to `main.sh`); answer in `state/wifi-result`.
+  Switch "Wi-Fi setup over Bluetooth" = settings field 17 (field 16 is the alarms branch's, kept as read; improv.c
+  reads 17 itself at start, as settings load only with a client).
   Both sides send through `acl.c` (ACL fragment queue, the controller's buffer credits, shared when LE has no buffers of
   its own, L2CAP framing and reassembly) and keep keys with `keyfile.c`. `hci_cmd` is for upkeep only: ble.c refuses it
   (logged as a bug, -1) while an event or ACL packet is being handled.
 - **adb over Wi-Fi** (`adbwifi.c`): the HA switch only writes a request for root's firewall watcher, as `ota.c` does
   for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key.
+  Wi-Fi setup over Bluetooth hands its credentials to root the same way (`state/wifi-request`, above).
 - **Wi-Fi motion** (`wifimotion.c`, experimental, off by default): polls the RCPI of the frames from the AP at 10 Hz, scatter
   over 2 s = motion binary sensor. A kernel module of ours (no kprobes on any model) words it like MediaTek's `RX_STAT` in
   `/proc/<module>`: biscuit/radar (gen2 driver, built in, no frame levels) `src/kmod/hassmic_rcpi.c` inline-hooks
@@ -197,12 +207,13 @@ through narrow headers:
 
 Boot integration (`scripts/system/`, rc in `devices/<codename>/`): `hassmic.rc` (init) starts `boot.sh` (fixed, on /system), which picks the factory
 copy or a verified update and runs `main.sh` (updatable): `main.sh firewall` (egress lock re-asserted in a loop, root side
-of push updates) and `main.sh satellite` (stops Alexa/updater/telemetry, keeps hassmic running, and every 10 s runs
+of push updates and of Wi-Fi setup over Bluetooth) and `main.sh satellite` (stops Alexa/updater/telemetry, keeps hassmic running, and every 10 s runs
 `lockdown.sh check`, as the firewall service does every 5 s: every rule of `hassmic_out`, the chain first in OUTPUT, INPUT
 policy DROP, and the stock rules the satellite needs (`keep` in `lockdown.sh`; stock `firewall.sh` can lose any of its
 rules at boot); wrong twice in a row, it loads the rules itself and restarts that service; loading is one
 `iptables-restore -w --noflush` call, rule by rule only as fallback). No `hassmic.conf` =
-stock behaviour. `scripts/device/` holds on-device helpers (`lockdown.sh` firewall, `alexa-off/on.sh`, `wifi-join.sh`).
+stock behaviour. `scripts/device/` holds on-device helpers (`lockdown.sh` firewall, `alexa-off/on.sh`,
+`wifi-join.sh`, which bundles ship for `wifi_watch`).
 
 Firewall invariant: Amazon's daemons may only reach local addresses; hassmic itself may reach any address (it fetches
 TTS/media URLs from HA/MA). `otad`/`ace_otad` (firmware updates) must never get out. Inbound TCP and UDP are only admitted on

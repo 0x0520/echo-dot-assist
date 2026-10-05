@@ -2,8 +2,9 @@
 # The root side of the boot logic on the PC: scripts/system/main.sh itself (not a copy of its commands, as
 # ota_push_test.sh has) in temp directories, with the Echo's otatool (build/otatool-host) and stand-ins for Android's
 # getprop/start/stop/pidof/chown.  Covers what decides whether an Echo keeps a working, locked-down boot: which bundles
-# ota_watch installs, where root writes in the daemon's directory, when the start counter of an update is reset, and a
-# config that does not load.  Run with the Echo's shell where there is one (mksh), else sh.
+# ota_watch installs, where root writes in the daemon's directory, when the start counter of an update is reset, a
+# config that does not load, and the Wi-Fi requests of Wi-Fi setup over Bluetooth (wifi_watch, wifi-join.sh).  Run
+# with the Echo's shell where there is one (mksh), else sh.
 #   tests/boot_test.sh            needs build/otatool-host (make build/otatool-host) and python3
 cd "$(dirname "$0")/.."
 SH=${SH:-$(command -v mksh || echo sh)}
@@ -136,5 +137,57 @@ run firewall
 $O pack $T/rel.sec 2026.10.06.000000-beta $BASE/state/ota/bundle $files > /dev/null; request
 r=$(cat $BASE/state/ota/result); [ "$r" = "OK 2026.10.06.000000-beta" ]; ok $? "the same version again is not older: $r"
 wait $MAIN 2>/dev/null; MAIN=
+
+# 6. Wi-Fi setup over Bluetooth: what hassmic leaves in state/wifi-request is data for wpa_cli, never shell.  First
+# with a stand-in wifi-join.sh that records what it got, then the real one against a stand-in wpa_cli.
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > %s/wj.args; cp "$2" %s/wj.file; [ -f %s/wj.fail ] && { echo "not joined: SCANNING after 30s"; exit 1; }; echo "joined, address 10.0.0.7"\n' $T $T $T > $D/wifi-join.sh
+hexof() { printf %s "$1" | od -An -tx1 | tr -d ' \n'; }
+WR=$BASE/state/wifi-result
+wifi_req() { rm -f $WR $T/wj.args $T/wj.file; printf '%s\n%s\n' "$1" "$2" > $BASE/state/wifi-request.tmp; chmod 600 $BASE/state/wifi-request.tmp
+             mv $BASE/state/wifi-request.tmp $BASE/state/wifi-request; waitfor "[ -f $WR ]" 40; }
+run firewall
+nl='
+'
+# what a shell would run lands in the working directory (cwd) or in $T: neither may get any of it; an SSID is 32 bytes
+evil_ssid="\"\$(touch p1)\`touch p2\`\"$nl'"
+evil_psk="p\"\$(touch p4)'; touch p5 \\"
+pwned() { for f in p1 p2 p4 p5 p6; do [ -e $f ] || [ -e $T/$f ] && return 0; done; return 1; }
+wifi_req "$(hexof "$evil_ssid")" "$evil_psk"
+r=$(cat $WR 2>/dev/null)
+[ "$r" = "OK joined, address 10.0.0.7" ] && [ "$(sed -n 1p $T/wj.args)" = -x ]; ok $? "valid request applied through wifi-join.sh -x: $r"
+[ "$(sed -n 1p $T/wj.file)" = "$(hexof "$evil_ssid")" ] && [ "$(sed -n 2p $T/wj.file)" = "$evil_psk" ]; ok $? "... SSID (quotes, \$(), a newline) and passphrase handed over as they were"
+! pwned; ok $? "... and nothing in them executed"
+[ ! -e $BASE/state/wifi-request ] && [ ! -e $BASE/wifi-request.taken ] && ! grep -q "touch p4" $BASE/boot.log; ok $? "request gone, passphrase not in the log"
+wifi_req "\$(touch p6)" "password1"
+r=$(cat $WR 2>/dev/null); [ "$r" = "FAILED request refused: SSID not in hex" ] && [ ! -e $T/wj.args ] && ! pwned; ok $? "raw SSID refused, nothing run: $r"
+wifi_req "41" "short"
+r=$(cat $WR 2>/dev/null); [ "$r" = "FAILED request refused: passphrase length" ] && [ ! -e $T/wj.args ]; ok $? "passphrase of 5 characters refused: $r"
+wifi_req "41" "$(printf 'pass\tword1')"
+r=$(cat $WR 2>/dev/null); [ "$r" = "FAILED request refused: passphrase not printable ASCII" ]; ok $? "control character in the passphrase refused: $r"
+wifi_req "41" ""
+r=$(cat $WR 2>/dev/null); [ "${r%% *}" = OK ] && [ "$(sed -n 2p $T/wj.file)" = "" ]; ok $? "open network (no passphrase) passed on: $r"
+rm -f $WR $T/wj.args; echo secret > $T/secret; ln -s $T/secret $BASE/state/wifi-request; waitfor "[ -f $WR ]" 40
+r=$(cat $WR 2>/dev/null); [ "$r" = "FAILED request refused: not a plain file" ] && [ "$(cat $T/secret)" = secret ] && [ ! -e $T/wj.args ]; ok $? "request that is a link refused, its target untouched: $r"
+touch $T/wj.fail; wifi_req "41" "password1"
+r=$(cat $WR 2>/dev/null); [ "$r" = "FAILED not joined: SCANNING after 30s" ]; ok $? "failed join reported: $r"
+rm -f $T/wj.fail
+stop_main
+
+# the real wifi-join.sh, against wpa_cli, iptables and ifconfig stand-ins (each wpa_cli argument on a line of its own)
+printf '#!/bin/sh\necho "-N hassmic_out"\n' > $T/bin/iptables
+printf '#!/bin/sh\necho "          inet addr:10.0.0.9  Bcast:10.0.0.255"\n' > $T/bin/ifconfig
+printf '#!/bin/sh\nshift 4; { printf "%%s|" "$@"; echo; } >> %s/wpa.log\ncase "$1" in add_network) echo 3;; status) [ -f %s/wpa.down ] && echo wpa_state=SCANNING || echo wpa_state=COMPLETED;; *) echo OK;; esac\n' $T $T > $T/bin/wpa_cli
+chmod 755 $T/bin/*
+printf '%s\n%s\n' "$(hexof "$evil_ssid")" "$evil_psk" > $T/req
+rm -f $T/wpa.log; out=$($SH scripts/device/wifi-join.sh -x $T/req); rc=$?
+[ $rc = 0 ] && [ "$out" = "joined, address 10.0.0.9" ]; ok $? "wifi-join.sh: joined ($out)"
+grep -qxF "set_network|3|ssid|$(hexof "$evil_ssid")|" $T/wpa.log && grep -qxF "set_network|3|psk|\"$evil_psk\"|" $T/wpa.log && grep -qxF "save_config|" $T/wpa.log
+ok $? "... SSID in hex and the quoted passphrase reach wpa_cli as one argument each, saved"
+! pwned; ok $? "... nothing executed"
+touch $T/wpa.down; rm -f $T/wpa.log; out=$(WIFI_JOIN_SECS=2 $SH scripts/device/wifi-join.sh -x $T/req); rc=$?
+[ $rc = 1 ] && grep -qxF "remove_network|3|" $T/wpa.log && grep -qxF "enable_network|all|" $T/wpa.log; ok $? "wifi-join.sh: not joined, profile removed, the others enabled again ($out)"
+printf '%s\n%s\n' 'x' 'password1' > $T/req2
+rm -f $T/wpa.log; out=$($SH scripts/device/wifi-join.sh -x $T/req2); rc=$?
+[ $rc = 1 ] && [ ! -e $T/wpa.log ]; ok $? "wifi-join.sh -x: an SSID that is not hex goes nowhere ($out)"
 
 [ $fail = 0 ] && echo "all good" || { echo FAILED; cat $BASE/boot.log; exit 1; }

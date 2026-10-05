@@ -4,6 +4,7 @@
 
 struct button_handler {
     void (*action)(void);               /* short press of the action button */
+    void (*hold)(void);                 /* the action button held 5 s (stock: setup mode), while it is still down */
     void (*mute_changed)(int muted);    /* hardware privacy latch changed */
     void (*volume)(int direction);      /* +1 / -1, also on key repeat */
 };

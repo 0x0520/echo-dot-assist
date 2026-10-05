@@ -1,7 +1,8 @@
 #!/system/bin/sh
 # The updatable part of the boot logic; started by /system/hassmic/boot.sh (root, su domain), which picks the factory copy
 # or a signed update and exports HASSMIC_DIR (where this script and its neighbours are) and HASSMIC_SYS.
-#   main.sh firewall    egress lock + re-assert loop, and the root side of push updates; started at "on boot"
+#   main.sh firewall    egress lock + re-assert loop, and the root side of push updates and of Wi-Fi setup over
+#                       Bluetooth; started at "on boot"
 #   main.sh satellite   Alexa off, then keep hassmic running, and check that the firewall service keeps its rules right
 # Model: device.conf next to this script (devices/<codename>/device.conf: service names, the daemon's user).
 # Config: /data/local/hassmic/hassmic.conf (shell syntax).  No config = do nothing = stock behaviour.
@@ -111,6 +112,11 @@ netwatch() {
     while :; do
         rotate_log
         fwcheck
+        # Holding the action button 5 s is hassmic's Wi-Fi setup over Bluetooth now (improv.c); acebuttond still sees
+        # the hold and may start stock's setup mode, whose Wi-Fi Direct group and soft AP would get in the way.
+        for s in $SETUP_SERVICES; do
+            [ "$(getprop init.svc.$s)" = running ] && { stop $s; echo "netwatch: $s stopped (stock setup mode)"; }
+        done
         if ifconfig $WLAN 2>/dev/null | grep -q "inet addr"; then
             miss=0
             kmod
@@ -186,9 +192,46 @@ factory() {
 # file (result.tmp -> /data/local/hassmic/hassmic, and root would create and chown that for it, then run it).  So the
 # result is written in root's own directory and renamed into place; a rename replaces a link, it does not follow it.
 RES=$OTA/result.tmp
+# Root side of Wi-Fi setup over Bluetooth (Improv; hassmic's improv.c).  hassmic got an SSID and passphrase from a
+# client after a press of the action button and left them in state/wifi-request (0600): line 1 the SSID in hex, line 2
+# the passphrase.  It is moved into root's own directory before anything reads it (the daemon cannot swap it for a link
+# from then on), checked again, joined by wifi-join.sh, which hands both to wpa_cli as single arguments and never
+# evaluates them, and answered in state/wifi-result as ota_watch answers ("OK ..." / "FAILED ..."), written in root's
+# directory and renamed into the daemon's.  The passphrase is never logged.
+WREQ=$BASE/state/wifi-request
+wifi_bad() {        # prints why SSID ($1, hex) and passphrase ($2) are refused; nothing if fine
+    case "$1" in ''|*[!0-9a-f]*) echo "SSID not in hex"; return;; esac
+    { [ ${#1} -le 64 ] && [ $((${#1} % 2)) = 0 ]; } || { echo "SSID length"; return; }
+    [ -z "$(printf %s "$2" | tr -d ' -~')" ] || { echo "passphrase not printable ASCII"; return; }
+    case ${#2} in
+    0) ;;
+    64) case "$2" in *[!0-9a-fA-F]*) echo "64-character key not hex";; esac;;
+    *) { [ ${#2} -ge 8 ] && [ ${#2} -le 63 ]; } || echo "passphrase length";;
+    esac
+}
+wifi_watch() {
+    [ -e $WREQ ] || [ -L $WREQ ] || return 0
+    t=$BASE/wifi-request.taken
+    rm -rf $t; mv -f $WREQ $t 2>/dev/null || return 0
+    why=
+    if [ -L $t ] || [ ! -f $t ]; then why="not a plain file"
+    elif [ "$(wc -c < $t)" -gt 200 ]; then why="too long"
+    else { IFS= read -r ssid; IFS= read -r psk; } < $t; why=$(wifi_bad "$ssid" "$psk")
+    fi
+    if [ -n "$why" ]; then res="FAILED request refused: $why"
+    else
+        echo "== Wi-Fi setup over Bluetooth: joining the network asked for through hassmic"
+        if out=$(sh $D/wifi-join.sh -x $t 2>&1); then res="OK $(echo "$out" | tail -1)"; else res="FAILED $(echo "$out" | tail -1)"; fi
+    fi
+    rm -rf $t; ssid=; psk=
+    echo "== Wi-Fi setup over Bluetooth: $res"
+    echo "$res" > $BASE/wifi-result.tmp
+    chown $DAEMON_USER $BASE/wifi-result.tmp; chmod 644 $BASE/wifi-result.tmp; mv -f $BASE/wifi-result.tmp $BASE/state/wifi-result
+}
 ota_watch() {
     IN=$BASE/state/ota
     while sleep 2; do
+        wifi_watch
         if [ -f $IN/healthy ]; then
             rm -f $IN/healthy
             cur=$(readlink $OTA/current)

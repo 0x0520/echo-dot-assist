@@ -1145,6 +1145,22 @@ Run in this order. Each step says what it proves.
       need lockdown.sh to take the requester's IP); a determined LAN peer can still fill the arbitration candidate table
       with keys it beacons twice, and can keep reconnecting to the one push port. Device test: HA reconnect after a
       Wi-Fi drop (ESPHome and Wyoming), push of a real bundle, announcements from `homeassistant.local`.
+- [x] Sendspin hardening (review 2026-10-05, sendspin.c / ws.c). (1) Unpaired access off: a Sentinel session declaring
+      `activities:["pairing"]` without roles passed the check, won arbitrate() (rank 1 over an idle paired server, which
+      got `another_server`) and was admitted, so stream/start, volume and audio were open to anyone on the LAN. Such a
+      session (`restricted()`: switch off, not long-term) is now never arbitrated or admitted; stream/start, commands,
+      server/time and audio also check `may_play()`. (2) No SO_SNDTIMEO: core_set_volume() under core_lock went through
+      adm_lock into a blocking write, so a peer with a zero TCP window froze the daemon. Sockets now give up writes after
+      5 s (a failed write ends the session: half a frame is on the wire); volume, controller commands and the goodbye of
+      arbitration / the unpaired switch go to a per-session outbox the time thread sends; serve() shuts the socket down
+      before joining it. (3) At most 4 live sessions (8 threads incl. ones winding down); at the cap the oldest one that
+      is neither admitted nor pairing is pushed out; 4 KB WebSocket messages until the handshake is done (70000 after,
+      the old plaintext limit); 10 s for upgrade + handshake in all (the time thread is the watchdog). (4) send_json
+      refuses output that vsnprintf cut. Tested (fake_ma_sendspin.py, flac and opus): the old build fails the new checks
+      (Sentinel "pairing" pushed the paired server out and got client/time; 6 silent connections and a 1 MB frame header
+      stayed open), the new one passes all 25; fake_ha_esphome, make unit, make DEVICE=donut STUBS=1 all without
+      warnings. Not on a device yet. A server that just paired now has to win arbitration like any other (before, its
+      pairing session had already taken the slot).
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

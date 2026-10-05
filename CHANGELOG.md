@@ -43,6 +43,11 @@ What changed for people using the Echo, newest first. Details and measurements a
 - **Sturdier playback of announcements and replies:** a cancelled reply that was still downloading could garble the
   next one; odd WAV and Wyoming formats the Echo cannot play are refused instead of being handed to the mixer. A
   `homeassistant.local` address is looked up once and remembered, and only answers from the local network count.
+- **Music Assistant (Sendspin) is harder to disturb from the network.** With "Allow Music Assistant without pairing"
+  off, anyone on the network could still connect with the public key, claim to be pairing and push your paired Music
+  Assistant off the Echo, then play or change the volume; now such a connection can only pair. A server that stops
+  reading can no longer freeze the Echo (volume buttons included), connections that never finish connecting are dropped
+  after 10 seconds, and at most four connect at a time, so a flood of them cannot lock your Music Assistant out.
 - **Whisper detection: one download, the one that exists.** Amazon has a single whisper model for every language
   and hands it out only when asked for American English, so `scripts/artifacts.sh` now asks for just that, whatever
   language is picked. Before, it asked for the picked language first and took the English one as a fallback.

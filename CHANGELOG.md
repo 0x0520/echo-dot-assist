@@ -19,7 +19,21 @@ What changed for people using the Echo, newest first. Details and measurements a
   update, and the update never became the fallback; installing an update now removes it.
 - **Hardened the root side of updates** against a compromised hassmic: root no longer writes the update result through
   a name in hassmic's own directory, which could have been made to point at a file root then runs.
-
+- **Nothing on the network can lock Home Assistant out of the Echo any more.** Four connections that never said
+  anything used to take every place the Echo has for Home Assistant until they closed; now a connection has 10 s to
+  start talking, and a new one pushes the longest silent one out. With Wyoming a new connection replaces the old one,
+  so a stray idle connection no longer keeps Home Assistant waiting for ever.
+- **Push updates and the adb way back in can no longer be held up by a slow sender.** A connection to the update port
+  gets a fixed time for each step (10 s for the request, the upload in proportion to its size) instead of 30 s per
+  byte, so a trickle of data can no longer keep that port busy.
+- **When Home Assistant sets the encryption key, connections made before it are closed at once.** Until their next
+  request they still received every state, the Sendspin pairing token among them.
+- **Forged arbitration packets cost little now.** Another Echo is handed the network key only after it has been heard
+  twice, ten seconds apart, and all hand-overs together at most every 5 s; joining an arbitration network takes about
+  10 s longer (two networks merging, up to a minute).
+- **Sturdier playback of announcements and replies:** a cancelled reply that was still downloading could garble the
+  next one; odd WAV and Wyoming formats the Echo cannot play are refused instead of being handed to the mixer. A
+  `homeassistant.local` address is looked up once and remembered, and only answers from the local network count.
 - **Whisper detection: one download, the one that exists.** Amazon has a single whisper model for every language
   and hands it out only when asked for American English, so `scripts/artifacts.sh` now asks for just that, whatever
   language is picked. Before, it asked for the picked language first and took the English one as a fallback.

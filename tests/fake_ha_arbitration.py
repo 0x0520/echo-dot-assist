@@ -94,7 +94,8 @@ async def main():
         await a.connect(ha); await b.connect(ha)
         check([s.name for s in a.services] == ["arbitration_key"] and [x.name for x in a.services[0].args] == ["network", "key"]
               and "arbitration_id" not in a.by, "the Echo offers its \"arbitration_key\" action, and no ID entity")
-        ok = await until(lambda: a.st("arbitration_peers") == 1 and b.st("arbitration_peers") == 1, 30)
+        # members beacon every 30 s, and an Echo is handed the key once heard twice: up to two intervals
+        ok = await until(lambda: a.st("arbitration_peers") == 1 and b.st("arbitration_peers") == 1, 80)
         check(ok and a.net() == b.net() and a.net().startswith("0000000000000002"), f"two networks merged into the older one: {a.net() and a.net()[:16]}")
         check(any(c[:2] == ("Echo Living Room", "esphome.echo_kitchen_arbitration_key") for c in ha.calls)
               and "moved to the older network 0000000000000002" in a.text(), "the key went through Home Assistant, as the other Echo's action")
@@ -137,14 +138,21 @@ async def main():
         send = lambda p: tx.sendto(p, (BCAST, ARB))
         node = lambda s: bytes([len(s)]) + s.encode()
         net = a.net(); calls = len(ha.calls)
-        send(b"HMA1\x01" + xp + struct.pack("<Q", 0) + node("evil"))                      # outside any network: gets our key sent...
         xp2 = X25519PrivateKey.generate().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-        send(b"HMA1\x01" + xp2 + struct.pack("<Q", 0) + node(b.node))                     # ...or naming a real Echo, with its own key
+        def beacons():
+            send(b"HMA1\x01" + xp + struct.pack("<Q", 0) + node("evil"))                  # outside any network: gets our key sent...
+            send(b"HMA1\x01" + xp2 + struct.pack("<Q", 0) + node(b.node))                 # ...or naming a real Echo, with its own key
+        beacons(); await asyncio.sleep(2)
+        check(len(ha.calls) == calls, "a beacon heard once: nothing handed over yet")
+        await asyncio.sleep(7.5); beacons()                                                 # as a joining Echo beacons again
+        # a flood of beacons, each with a key of its own: none is heard twice, none costs a hand-over or pushes the two out
+        for i in range(48): send(b"HMA1\x01" + os.urandom(32) + struct.pack("<Q", 0) + node(f"flood-{i}"))
+        await asyncio.sleep(6.5)                                                            # two hand-overs per Echo, 5 s apart
+        sent = [c[1] for c in ha.calls[calls:]]
+        check(sent and set(sent) <= {"esphome.evil_arbitration_key", f"esphome.{b.node.replace('-', '_')}_arbitration_key"} and len(sent) <= 4,
+              f"unknown device: the key only ever goes to a device Home Assistant adopted under that name, none to the flood: {sorted(sent)}")
         send(b"HMA1\x01" + xp + struct.pack("<Q", 1) + node("evil") + struct.pack("<Q", 1) + os.urandom(16))   # "an older network"
-        await asyncio.sleep(2)
-        sent = {c[1] for c in ha.calls[calls:]}
-        check(sent and sent <= {"esphome.evil_arbitration_key", f"esphome.{b.node.replace('-', '_')}_arbitration_key"},
-              f"unknown device: the key only ever goes to a device Home Assistant adopted under that name: {sorted(sent)}")
+        await asyncio.sleep(1)
         check(b.text().count("handing network") >= 0 and "ignored" in b.text() and b.net() == net,
               "a forged beacon with a real Echo's name: that Echo gets the key (it holds it already), the forger nothing")
         check(a.net() == net == b.net(), "posing as an older network: nothing taken from it (it cannot hand a key through Home Assistant)")
@@ -176,7 +184,7 @@ async def main():
         # the member may not run actions: no key, and Home Assistant raises its repair
         a.allowed = False; refused = len(ha.refused)
         b.cli.switch_command(b.by["join_arbitration_network"].key, True)
-        await asyncio.sleep(4)
+        await asyncio.sleep(13)                                                             # its second beacon, 10 s after the first
         check(len(ha.refused) > refused and b.net() is None, "without \"Allow the device to perform Home Assistant actions\": no key (Home Assistant raises its repair)")
         a.allowed = True
         ok = await until(lambda: b.net() == a.net() and a.st("arbitration_peers") == 1 and b.st("arbitration_peers") == 1, 40)

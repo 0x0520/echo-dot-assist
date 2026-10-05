@@ -68,6 +68,11 @@
 #define PEER_TTL_MS  75000      /* a member missing two beacons in a row no longer counts */
 #define DISCOVER_MS  5000       /* no member heard in this time: start a network */
 #define PUSH_MS      30000      /* hand our key to the same Echo at most this often */
+/* Beacons are unauthenticated, so a forged one with a fresh public key each time made a new candidate, and every one
+ * cost an X25519 and a Home Assistant action.  Now an Echo is handed the key only once it has been heard twice, at
+ * least CAND_MIN_MS apart (a joining Echo beacons every LONER_MS), and all hand-overs together at most every PUSH_GAP_MS. */
+#define CAND_MIN_MS  9000       /* a joining Echo's second beacon, LONER_MS on its own clock */
+#define PUSH_GAP_MS  5000
 #define CTR_BLOCK    4096
 #define NPEER  16
 #define NCLAIM 16
@@ -92,7 +97,9 @@ static atomic_int notify;
 static struct peer { uint8_t id[8]; uint64_t ctr; long long seen; } peers[NPEER];
 static struct claim { uint8_t id[8], kw[8]; int score, prio, won; long long at; } claims[NCLAIM];
 static unsigned claim_next;
-static struct cand { uint8_t pub[32]; char node[NLEN]; uint64_t net; long long seen, pushed; } cands[NPEER];   /* Echos outside our network */
+/* Echos outside our network.  first: when this key was first heard; heard: beacons since (2 is all that matters) */
+static struct cand { uint8_t pub[32]; char node[NLEN]; uint64_t net; long long seen, pushed, first; int heard; } cands[NPEER];
+static long long push_last;             /* the last hand-over to anyone (PUSH_GAP_MS) */
 static struct push { char node[NLEN], net[20], key[160]; } pushes[NPEER];     /* for Home Assistant, sent outside the lock */
 static int npush;
 static struct { uint8_t kw[8]; int score, prio; long long at; } round_;
@@ -240,14 +247,22 @@ static int count_peers(long long now)
     return n;
 }
 
-static struct cand *cand(const uint8_t pub[32])
+static int established(const struct cand *c, long long now)    /* heard twice, far enough apart, and lately */
 {
-    struct cand *old = &cands[0];
+    return c->heard >= 2 && ago(c->seen, now, PEER_TTL_MS);
+}
+
+/* NULL if there is no room: a key heard once may push out another heard once or one gone quiet, never an Echo that
+ * is established, so a flood of made-up keys cannot push out the one that is really joining */
+static struct cand *cand(const uint8_t pub[32], long long now)
+{
+    struct cand *old = NULL;
     for (int i = 0; i < NPEER; i++) {
         if (cands[i].seen && !memcmp(cands[i].pub, pub, 32)) return &cands[i];
-        if (cands[i].seen < old->seen) old = &cands[i];
+        if (!established(&cands[i], now) && (!old || cands[i].seen < old->seen)) old = &cands[i];
     }
-    memset(old, 0, sizeof *old); memcpy(old->pub, pub, 32);
+    if (!old) return NULL;
+    memset(old, 0, sizeof *old); memcpy(old->pub, pub, 32); old->first = now;
     return old;
 }
 
@@ -297,8 +312,9 @@ static void push(struct cand *c, long long now)
 {
     uint8_t key[32], blob[32 + 24 + 16 + 32];
     if (!in_net || !c->node[0] || (c->net && c->net <= net_id) || ago(c->pushed, now, PUSH_MS) || npush == NPEER) return;
+    if (!established(c, now) || ago(push_last, now, PUSH_GAP_MS)) return;
+    c->pushed = push_last = now;                    /* also when the key is no good: it would only be tried again */
     if (wrap_key(key, c->pub, pk, c->pub, net_id)) return;
-    c->pushed = now;
     memcpy(blob, pk, 32); ws_random(blob + 32, 24);
     crypto_aead_lock(blob + 72, blob + 56, key, blob + 32, blob, 32, net_key, 32);    /* the sender's key as additional data */
     crypto_wipe(key, sizeof key);
@@ -328,10 +344,14 @@ static void on_packet(const uint8_t *p, size_t n, long long now)
             if (fresh(pub, c, now) && !known) beacon();
             return;
         }
-        struct cand *c = cand(pub);
-        snprintf(c->node, NLEN, "%s", nd); c->net = net; c->seen = now;
+        struct cand *c = cand(pub, now);
+        if (c) {
+            /* heard again: counts once it is CAND_MIN_MS after the first (Wi-Fi delivers a beacon twice now and then) */
+            if (!c->heard || now - c->first >= CAND_MIN_MS) c->heard++;
+            snprintf(c->node, NLEN, "%s", nd); c->net = net; c->seen = now;
+        }
         if (in_net && !net && !ago(answer_at, now, 1000)) { answer_at = now; beacon(); }       /* someone looking: here we are */
-        push(c, now);
+        if (c) push(c, now);
     } break;
     case T_CLAIM: {
         uint64_t net = get64(&r); const uint8_t *id = take(&r, 8); uint64_t c = get64(&r); const uint8_t *kw = take(&r, 8), *s = take(&r, 4), *pw = take(&r, 2);

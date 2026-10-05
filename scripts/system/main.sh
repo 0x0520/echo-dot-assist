@@ -14,6 +14,8 @@
 #                               property hassmic.alexa=1 (alexa-on.sh) means the same until the next reboot
 #   ADB_WIFI=1                  optional: leave adb over Wi-Fi open (root shell for the whole network, no password; read
 #                               by lockdown.sh).  Without it: closed, opened for 30 min by a switch in Home Assistant
+#   ADB_WIFI_FROM=192.168.1.20  optional: what ADB_WIFI=1 and that switch admit, one IPv4 address or subnet instead of the
+#                               whole network (lockdown.sh; scripts/adb-wifi.sh always admits only the PC it ran on)
 umask 022                                   # init gives us 077; what we create must be readable by the daemon's user
 D=${HASSMIC_DIR:-/system/hassmic}
 SYS=${HASSMIC_SYS:-/system/hassmic}

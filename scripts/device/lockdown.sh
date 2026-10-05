@@ -78,7 +78,7 @@ keep() {
         for p in udp tcp; do echo "-A INPUT -i $WLAN -p $p -m $p --dport 16384:32767 -j ACCEPT"; done
         echo "-A INPUT -i $WLAN -p udp -m udp --dport 5353 -j ACCEPT"      # mDNS: how Home Assistant finds the Echo
         echo "-A INPUT -p icmp -m state --state RELATED,ESTABLISHED -j ACCEPT"
-        if [ -n "$ADB" ]; then echo "-A $ADB_IN"; fi                       # only while adb over Wi-Fi is open (adb_gate)
+        if [ -n "$ADB" ]; then echo "-A $ADB_IN"; fi                       # only while adb over Wi-Fi is open (adb_gate), maybe with -s
     else
         echo "-A INPUT -p icmpv6 -j ACCEPT"                                # neighbour discovery: no IPv6 without it
         echo "-A INPUT -i $WLAN -p udp -m udp --dport 546 -j ACCEPT"       # DHCPv6
@@ -95,6 +95,11 @@ missing() { keep $1 | while read -r r; do case "$NL$2$NL" in *"$NL$r$NL"*) ;; *)
 #     (only over the connection with the key) and for whoever signs its challenge with the update key
 #     (scripts/adb-wifi.sh: the way in without Home Assistant); 0 closes it again, or
 #   - while hassmic.conf has ADB_WIFI=1: for development, and the only way with Wyoming or MODE=stock-online.
+# Open for whom: a request signed with the update key names the address it came from (second line of the request), and
+# only that address is admitted (-s in the INPUT rule).  The switch and ADB_WIFI=1 name none: the whole network, or
+# only ADB_WIFI_FROM=<address or subnet> from hassmic.conf.  Root writes these into a firewall rule, so each is checked
+# by cidr4 first; one that does not pass opens nothing (a request) or keeps the port closed (ADB_WIFI_FROM), it never
+# falls back to the whole network.  Every rule that admits 5555 other than the one wanted goes, stock's included.
 # The end of the window is a property (uptime in seconds): every run of this script sees it, a restarted watcher goes
 # on with it, and a reboot forgets it, so every boot starts closed.  While it is open, the file adb-open exists next to
 # hassmic.conf: that is what hassmic reports back.  Not in state/: that directory is the daemon's, and root writing
@@ -102,25 +107,74 @@ missing() { keep $1 | while read -r r; do case "$NL$2$NL" in *"$NL$r$NL"*) ;; *)
 # adbd takes the port from the property at its start, hence the restart.  ctl.restart and not stop + start: run from
 # an adb shell this script dies with adbd, and it would be between the two.  Dot 2, 2026-09-30: port 0 + restart, USB
 # back within 8 s, nothing listening on 5555, connect refused from the PC; 5555 + restart, listening again.
-HCONF=/data/local/hassmic/hassmic.conf
-ADB_REQ=/data/local/hassmic/state/adb-request
-ADB_OPEN=/data/local/hassmic/adb-open
+HB=${HASSMIC_BASE:-/data/local/hassmic}                      # only tests set it
+HCONF=$HB/hassmic.conf
+ADB_REQ=$HB/state/adb-request
+ADB_OPEN=$HB/adb-open
 ADB_SECS=1800
-ADB_IN="INPUT -p tcp -m tcp --dport 5555 -j ACCEPT"          # stock's rule, as "iptables -S" prints it
+ADB_IN=; ADB_SAID=
 up() { read -r upt _ < /proc/uptime; echo ${upt%.*}; }
-# ADB=1 if it is to be open now, ADB_WHY says on whose account
+# An IPv4 address or subnet as "iptables -S" prints it ("192.168.1.7/32", "10.1.0.0/16": host bits cleared), or false.
+# Written strictly: four numbers 0-255 without leading zeros, a prefix 1-32; nothing else gets through, so the result
+# is safe to put into a rule and a property.  set -- splits at the dots; the characters are checked before, no globbing.
+cidr4() {
+    case "$1" in ''|*[!0-9./]*|*/*/*) return 1;; esac
+    c_l=32; case "$1" in */*) c_l=${1#*/};; esac
+    case "$c_l" in ''|0*|???*|*[!0-9]*) return 1;; esac
+    [ "$c_l" -le 32 ] || return 1
+    case "${1%/*}" in *..*|.*|*.|*.*.*.*.*) return 1;; *.*.*.*) ;; *) return 1;; esac
+    c_o=; c_b=$c_l; c_ifs=$IFS; IFS=.
+    # shellcheck disable=SC2086
+    set -- ${1%/*}
+    IFS=$c_ifs
+    for c_x in "$@"; do
+        case "$c_x" in ????*|0?*) return 1;; esac
+        [ "$c_x" -le 255 ] || return 1
+        c_k=$c_b; [ $c_k -gt 8 ] && c_k=8; [ $c_k -lt 0 ] && c_k=0
+        c_o=$c_o${c_o:+.}$(( c_x & (255 << (8 - c_k)) & 255 )); c_b=$((c_b - 8))
+    done
+    echo "$c_o/$c_l"
+}
+# ADB=1 if it is to be open now, ADB_WHY says on whose account, ADB_IN is the rule that admits it ("iptables -S"
+# wording without "-A ": stock's, or ours with the one source)
 adb_state() {
-    ADB=; ADB_WHY=
-    if grep -q -e '^ADB_WIFI=1' -e '^ADB_WIFI="1' $HCONF 2>/dev/null; then ADB=1; ADB_WHY="ADB_WIFI=1 in hassmic.conf"; return; fi
-    u=$(getprop hassmic.adb.until)
-    if [ "${u:-0}" -gt "$(up)" ] 2>/dev/null; then ADB=1; ADB_WHY="asked for through hassmic, $(( (u - $(up) + 59) / 60 )) min left"; fi
+    ADB=; ADB_WHY=; src=
+    f=$(sed -n 's/^ADB_WIFI_FROM=//p' $HCONF 2>/dev/null | tail -1 | tr -d "\"' \r")
+    cf=; [ -z "$f" ] || cf=$(cidr4 "$f") || cf=bad
+    if grep -q -e '^ADB_WIFI=1' -e '^ADB_WIFI="1' $HCONF 2>/dev/null; then ADB=1; ADB_WHY="ADB_WIFI=1 in hassmic.conf"; src=$cf
+    else
+        u=$(getprop hassmic.adb.until)
+        if [ "${u:-0}" -gt "$(up)" ] 2>/dev/null; then
+            ADB=1; ADB_WHY="asked for through hassmic, $(( (u - $(up) + 59) / 60 )) min left"
+            r=$(getprop hassmic.adb.from)
+            if [ -n "$r" ] && [ "$r" != - ]; then src=$(cidr4 "$r") || src=bad; ADB_WHY="$ADB_WHY, signed with the update key"; else src=$cf; fi
+        fi
+    fi
+    if [ "$src" = bad ]; then ADB=; ADB_WHY="the source to admit is not an IPv4 address or subnet (ADB_WIFI_FROM in hassmic.conf?)"; src=; fi
+    ADB_IN="INPUT ${src:+-s $src }-p tcp -m tcp --dport 5555 -j ACCEPT"
+    ADB_WHO=${src:-everyone on the network}
+}
+# The rules in the listing $2 ($1 -S) that admit port 5555 and must not: all of them while adb over Wi-Fi is closed;
+# while it is open, all but ADB_IN (stock's own rule while it is open for everyone, in either table)
+adb_extra() {
+    echo "$2" | while read -r r; do
+        case "$r" in "-A INPUT "*"--dport 5555 -j ACCEPT") ;; *) continue;; esac
+        [ -n "$ADB" ] && [ "$r" = "-A $ADB_IN" ] && continue
+        echo "$r"
+    done
 }
 # Take a request, then make adbd what it has to be.  True if that changed (the rules then have to follow).
 adb_gate() {
-    req=; got=
+    req=; got=; was=$ADB_IN
     if [ -f $ADB_REQ ] && [ ! -L $ADB_REQ ]; then
-        got=1; read -r req < $ADB_REQ
-        if [ "$req" = 1 ]; then setprop hassmic.adb.until $(($(up) + ADB_SECS)); else setprop hassmic.adb.until 0; fi
+        got=1; req=; from=
+        { read -r req; read -r from; } < $ADB_REQ
+        if [ "$req" != 1 ]; then setprop hassmic.adb.until 0
+        elif [ -z "$from" ]; then setprop hassmic.adb.from -; setprop hassmic.adb.until $(($(up) + ADB_SECS))
+        elif a=$(cidr4 "$from") && [ "$a" = "$from/32" ]; then
+            setprop hassmic.adb.from "$a"; setprop hassmic.adb.until $(($(up) + ADB_SECS))
+        else echo "!! adb over Wi-Fi: request for a source that is not one IPv4 address refused"
+        fi
     fi
     adb_state
     port=$(getprop service.adb.tcp.port); changed=1
@@ -128,11 +182,16 @@ adb_gate() {
     run=; [ "$(getprop init.svc.adbd)" = running ] && run="setprop ctl.restart adbd"
     if [ -n "$ADB" ] && [ "$port" != 5555 ]; then
         setprop service.adb.tcp.port 5555; $run; changed=0
-        echo "adb over Wi-Fi OPEN: a root shell for everyone on the network, no password ($ADB_WHY)"
+        echo "adb over Wi-Fi OPEN: a root shell for $ADB_WHO, no password ($ADB_WHY)"
+    elif [ -n "$ADB" ] && [ "$ADB_IN" != "$was" ] && [ -n "$was" ]; then
+        changed=0; echo "adb over Wi-Fi now open for $ADB_WHO ($ADB_WHY)"
     elif [ -z "$ADB" ] && [ "$port" = 5555 ]; then
         setprop service.adb.tcp.port 0; $run; changed=0
         echo "adb over Wi-Fi closed, USB only (uptime $(up)s)"
     fi
+    # why it stays closed when it was meant to open: once, not every 5 s
+    if [ -z "$ADB" ] && [ -n "$ADB_WHY" ] && [ "$ADB_SAID" != "$ADB_WHY" ]; then echo "!! adb over Wi-Fi stays closed: $ADB_WHY"; fi
+    ADB_SAID=$ADB_WHY
     # the answer hassmic reads, then the request: gone means answered
     if [ -n "$ADB" ]; then [ -f $ADB_OPEN ] || : > $ADB_OPEN; else rm -f $ADB_OPEN; fi
     [ -z "$got" ] || rm -f $ADB_REQ
@@ -156,7 +215,7 @@ load_once() {
         echo "$all" | while read -r r; do [ "$r" = "-A OUTPUT -j hassmic_out" ] && echo "-D OUTPUT -j hassmic_out"; done
         echo "-I OUTPUT 1 -j hassmic_out"
         missing $1 "$all"
-        [ -n "$ADB" ] || echo "$all" | while read -r r; do [ "$r" = "-A $ADB_IN" ] && echo "-D $ADB_IN"; done
+        adb_extra $1 "$all" | while read -r r; do echo "-D ${r#-A }"; done
         echo COMMIT
     )
     echo "$in" | $1-restore -w --noflush
@@ -176,7 +235,7 @@ load_each() {
     while $1 -w -D OUTPUT -j hassmic_out 2>/dev/null; do :; done
     $1 -w -I OUTPUT 1 -j hassmic_out
     missing $1 "$($1 -w -S)" | while read -r r; do $1 -w $r || echo "!! rule not loaded ($1): $r"; done
-    [ -n "$ADB" ] || while $1 -w -D $ADB_IN 2>/dev/null; do :; done
+    adb_extra $1 "$($1 -w -S)" | while read -r r; do $1 -w -D ${r#-A } || echo "!! rule not removed ($1): $r"; done
     $1 -w -P INPUT DROP
 }
 load() { load_once $1 2>/dev/null || load_once $1 || { echo "!! $1-restore failed twice: loading rule by rule"; load_each $1; }; }
@@ -188,7 +247,7 @@ apply() {
 
 # What is wrong with the rules, in words, and false; nothing and true when all is as it has to be.  Three listings per
 # table and hardly another process (this runs every 5 s): every rule of the chain and their order, the jump to it
-# first in OUTPUT, INPUT policy DROP, each of stock's rules we need, the adb port not admitted unless it is open; without
+# first in OUTPUT, INPUT policy DROP, each of stock's rules we need, port 5555 (adb) admitted only as adb_state says; without
 # ip6tables, IPv6 off on every interface.
 wrong() {
     for t in iptables ${HAVE6:+ip6tables}; do
@@ -198,7 +257,7 @@ wrong() {
         all=$($t -w -S 2>/dev/null)
         case "$NL$all" in *"$NL-P INPUT DROP$NL"*) ;; *) echo "$t: INPUT policy is not DROP"; return 1;; esac
         m=$(missing $t "$all"); [ -z "$m" ] || { echo "$t: missing:" $m; return 1; }
-        [ -n "$ADB" ] || case "$NL$all$NL" in *"$NL-A $ADB_IN$NL"*) echo "$t: port 5555 (adb) admitted"; return 1;; esac
+        x=$(adb_extra $t "$all"); [ -z "$x" ] || { echo "$t: port 5555 (adb) admitted:" $x; return 1; }
     done
     [ -n "$HAVE6" ] || for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
         v=; { read v < $f; } 2>/dev/null; [ "$v" = 1 ] || { echo "IPv6 is on (${f%/*})"; return 1; }

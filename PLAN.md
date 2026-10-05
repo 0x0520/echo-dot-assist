@@ -1327,6 +1327,45 @@ Run in this order. Each step says what it proves.
       iPhone and an Android phone connect with AAC off (`a2dp: ... configured SBC` or aptX) and, after reconnecting, with
       AAC on (`configured AAC`); pairing a legacy-only BLE sensor fails in Home Assistant with the switch on and works
       with it off, an SC one works with it on; an alarm at volume 0 is heard at 30 and the volume slider returns to 0.
+- [x] Network access narrowed (2026-10-06, `lockdown.sh`, `ota.c`, `adbwifi.c`, `net.c`, `arb.c`, `main.c`). Four
+      places where anyone on the LAN got more than they should:
+      (1) adb over Wi-Fi opened 5555 to the whole LAN however it was opened. The signed challenge (`HMOTA-ADB1`) now
+      passes the signer's address (getpeername) as a second line of `state/adb-request` ("1\n<ip>\n": a lockdown.sh
+      from before reads the first line only and opens as it did); `adb_gate` checks it with `cidr4` (four numbers
+      0-255 without leading zeros, prefix 1-32, host bits cleared: the wording of `iptables -S`), keeps it in
+      `hassmic.adb.from` beside `hassmic.adb.until`, and the INPUT rule becomes `-s <ip>/32`. The switch cannot name
+      the developer's PC (its connection is Home Assistant's), so it and `ADB_WIFI=1` admit the LAN unless
+      `ADB_WIFI_FROM=<ip or cidr>` in hassmic.conf narrows them. Anything that does not pass `cidr4` opens nothing
+      (request) or keeps it closed (`ADB_WIFI_FROM`, said once in boot.log); never the LAN as a fallback. Every rule
+      admitting 5555 but the wanted one is removed (`adb_extra`: stock's for everyone, an earlier requester's), in
+      `load_once`, `load_each` and `wrong`, so `lockdown.sh check` and main.sh's `fwcheck` agree with the new forms.
+      A newer request from another address while open moves the rule (adb_gate reports the change).
+      (2) Wyoming: `-W <ip>[,<ip>/<len>...]` (`net_allow_parse`, same strictness, at most 8) closes other peers at
+      accept, before `serve()` could push Home Assistant out; logged once a minute. Address check only.
+      (3) Arbitration: an unknown key needs a free place: at most 2 per source address (recvfrom) among those heard in
+      the last 75 s, and 8 new keys a minute from everyone (reset when joining starts over); neither pushes out a key
+      already in the table. A spoofed source address defeats the first; the second then only slows a real joiner
+      while a flood lasts.
+      (4) Push port: per source address, 3 connections without a proven key (bad request, timeout, wrong signature)
+      within 60 s -> turned away for 60 s with one line, at once (`net_backoff_*`, 32 addresses, oldest forgotten). A
+      proven key resets the count; refusals do not extend it. Several source addresses can still take turns holding it.
+      Tested (container): `tests/lockdown_test.sh` (new; fake_iptables.py, mksh and dash: closed, signed request ->
+      `-s 192.168.1.50/32` only and stock's rule out, stock's rule re-added -> check fails and the next load fixes it,
+      switch -> LAN, `ADB_WIFI_FROM=192.168.1.77/24` -> `192.168.1.0/24`, signed request outside it -> its own /32,
+      seven malformed sources open nothing, `ADB_WIFI=1` with and without `ADB_WIFI_FROM`, a bad `ADB_WIFI_FROM` keeps
+      it closed, the same rule by rule with iptables-restore failing, the watcher following a second requester and
+      closing), `ota_push_test.sh` (request names 127.0.0.1, reply "for 127.0.0.1 only"; 127.0.0.7 turned away at once
+      after 3 failures while 127.0.0.1 still opens adb; failing probes moved to addresses of their own),
+      `fake_ha.py` (`-W 127.0.0.1,192.168.0.0/16` serves; `-W 192.168.99.1,10.0.0.0/8` closes the loopback at once,
+      nothing served; four malformed `-W` exit 2), `fake_ha_arbitration.py` (48 keys from one address: two taken,
+      said once; 12 addresses at once: eight taken), `make unit` (new `netacl_test.c`), the full suite, every model
+      with STUBS=1 and the PC build without warnings, `make lint`. Needs the device: `scripts/adb-wifi.sh` -> `iptables
+      -S INPUT` shows `-A INPUT -s <pc>/32 -p tcp -m tcp --dport 5555 -j ACCEPT` in exactly that wording (else the
+      watcher reloads every 5 s: look for "lockdown re-applied" in boot.log), `adb connect` works from that PC and is
+      refused from another; `setprop hassmic.adb.from` allowed in hassmic_fw's domain; stock firewall.sh's rule for
+      everyone, re-added at boot_completed, taken out again while open for one address; the switch with
+      `ADB_WIFI_FROM`; Wyoming with `-W` and the real Home Assistant; arbitration still merging two Echos (recvfrom on
+      the real broadcast).
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); reminders (HA has timers only; the alarm clock is done, above).
 - [x] Wi-Fi setup over Bluetooth (2026-10-06, `improv.c`, `gatts.c`, `ble_periph.c`; root side `main.sh` wifi_watch +

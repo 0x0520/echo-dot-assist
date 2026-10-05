@@ -207,7 +207,7 @@ unit:
 	cc -O2 -Wall -Isrc/hassmic tests/unit/a2dp_codecs_test.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/third_party/freeaptx.c -lm -ldl -lopus -o build/a2dp_codecs_test && build/a2dp_codecs_test
 	cc -O2 -Wall -Wextra -D_GNU_SOURCE -Isrc/hassmic tests/unit/acl_test.c src/hassmic/acl.c src/hassmic/keyfile.c -o build/acl_test && build/acl_test
 	cc -O2 -Wall -Wextra -D_GNU_SOURCE -Isrc/hassmic tests/unit/improv_test.c src/hassmic/improv.c src/hassmic/gatts.c src/hassmic/ble_periph.c src/hassmic/acl.c $(BOARD) -lpthread -o build/improv_test && build/improv_test
-	cc -O2 -Wall -Wextra -D_GNU_SOURCE -Isrc/hassmic tests/unit/ble_test.c src/hassmic/ble_crypto.c src/hassmic/acl.c src/hassmic/keyfile.c -lpthread -o build/ble_test && build/ble_test
+	cc -O2 -Wall -Wextra -D_GNU_SOURCE -Isrc/hassmic tests/unit/ble_test.c src/hassmic/ble_crypto.c src/hassmic/acl.c src/hassmic/keyfile.c src/hassmic/ble_periph.c src/hassmic/gatts.c src/hassmic/improv.c -lpthread -o build/ble_test && build/ble_test
 	cc -O2 -Wall -D_GNU_SOURCE -Isrc/hassmic tests/unit/a2dp_test.c src/hassmic/acl.c src/hassmic/keyfile.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/third_party/freeaptx.c -lpthread -lm -ldl -lopus -o build/a2dp_test && build/a2dp_test
 	if command -v sbcenc >/dev/null; then tests/unit/sbc_ref.sh; else echo "sbc: sbcenc/sbcdec (package sbc) missing, skipped"; fi
 

@@ -238,6 +238,10 @@ ota_watch() {
         fi
         rm -f $IN/bundle $IN/bundle.sig
         res=$(cat $RES)
+        # The rename replaces a file or a link, but onto a directory (or a link to one) mv moves the result into it,
+        # wherever that is.  rm -f above leaves a directory standing, and the daemon may plant either meanwhile: clear it.
+        # rm does not follow a link it is given, nor one inside a directory.
+        if [ -L $IN/result ] || { [ -e $IN/result ] && [ ! -f $IN/result ]; }; then rm -rf $IN/result; fi
         chown $DAEMON_USER $RES; mv -f $RES $IN/result
         case "$res" in OK*)
             sleep 2                                     # let hassmic relay the result to the pusher
@@ -281,24 +285,33 @@ satellite)
     # printed its placeholder MAC, and Home Assistant offered the adopted Echo as a new device.  So wait for Wi-Fi
     # (there is no mDNS without it anyway); hassmic keeps going meanwhile.  The directory belongs to the daemon's user so
     # hassmic can rewrite the file itself when Home Assistant sets or clears the encryption key.
-    mkdir -p /data/misc/avahi/services
-    chown $DAEMON_USER /data/misc/avahi/services
+    # That makes every name in it the daemon's to point elsewhere: root writes the file in its own directory, reads the
+    # node name there and renames it in (a rename replaces a link, it does not follow it).  The binary runs as the
+    # daemon's user like below: it may be the test binary in /data, and -S only reads state/api_key and the MAC.
+    AVAHI=${HASSMIC_AVAHI:-/data/misc/avahi}           # only tests/boot_test.sh sets it
+    mkdir -p $AVAHI/services
+    chown $DAEMON_USER $AVAHI/services
     (
         i=0
         while [ $i -lt 120 ] && ! grep -q '[1-9a-f]' /sys/class/net/$WLAN/address 2>/dev/null; do sleep 1; i=$((i + 1)); done
         [ $i -gt 0 ] && echo "mDNS: waited ${i}s for the $WLAN address"
-        $BIN -P ${PROTO:-esphome} -n "$NAME" $ARGS -S > /data/misc/avahi/services/hassmic.service
-        chown $DAEMON_USER /data/misc/avahi/services/hassmic.service; chmod 644 /data/misc/avahi/services/hassmic.service
+        svc=$AVAHI/hassmic.service.new
+        $D/runas $DAEMON_USER $DAEMON_GROUPS $BIN -P ${PROTO:-esphome} -n "$NAME" $ARGS -S > $svc
+        chown $DAEMON_USER $svc; chmod 644 $svc
+        node=$(sed -n 's|^ *<name>\([a-z0-9-]*\)</name>$|\1|p' $svc)
+        # as in ota_watch: onto a directory (or a link to one) mv would move the file into it
+        out=$AVAHI/services/hassmic.service
+        if [ -L $out ] || { [ -e $out ] && [ ! -f $out ]; }; then rm -rf $out; fi
+        mv -f $svc $out
         # The init-started avahi runs in its own SELinux domain, which may not read /data/misc/avahi/services (avc denied),
         # and magiskpolicy cannot parse a rule for a type with a hyphen ("avahi-daemon").  So run it from here, in our domain.
         # Host name = the ESPHome node name, as on a real ESPHome device.  Stock avahi calls every Echo "linux" (a second
         # one "linux-2"), and Home Assistant showed that next to the name.  [server] is the stock file's first section, so
         # host-name lands in it.
         conf=/system/etc/avahi-daemon.conf
-        node=$(sed -n 's|^ *<name>\([a-z0-9-]*\)</name>$|\1|p' /data/misc/avahi/services/hassmic.service)
         if [ -n "$node" ]; then
-            { echo "[server]"; echo "host-name=$node"; grep -v '^\[server\]' $conf; } > /data/misc/avahi/avahi-daemon.conf
-            conf=/data/misc/avahi/avahi-daemon.conf
+            { echo "[server]"; echo "host-name=$node"; grep -v '^\[server\]' $conf; } > $AVAHI/avahi-daemon.conf
+            conf=$AVAHI/avahi-daemon.conf
         fi
         stop avahi-daemon; pkill avahi-daemon; sleep 1
         avahi-daemon -f $conf --no-drop-root > /dev/null 2>&1 &

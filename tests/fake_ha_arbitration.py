@@ -92,7 +92,7 @@ async def main():
     await asyncio.sleep(0.5)
     try:
         await a.connect(ha); await b.connect(ha)
-        check([s.name for s in a.services] == ["arbitration_key"] and [x.name for x in a.services[0].args] == ["network", "key"]
+        check([s.name for s in a.services] == ["arbitration_key", "kill_process"] and [x.name for x in a.services[0].args] == ["network", "key"]
               and "arbitration_id" not in a.by, "the Echo offers its \"arbitration_key\" action, and no ID entity")
         # members beacon every 30 s, and an Echo is handed the key once heard twice: up to two intervals
         ok = await until(lambda: a.st("arbitration_peers") == 1 and b.st("arbitration_peers") == 1, 80)

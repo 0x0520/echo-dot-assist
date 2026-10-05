@@ -40,6 +40,9 @@
  *                    Assistant's: GetTimeRequest to the voice assistant's client when it subscribes, then every hour
  *   Wi-Fi setup      a switch, on by default: Improv Wi-Fi over Bluetooth when the Echo has no Wi-Fi or the action button
  *                    is held (improv.c); listed where the radio is ours
+ *   task manager     diagnostic sensors: memory, load, hassmic's own CPU and memory, the busiest processes and our threads
+ *                    (taskmgr.c), sampled every 10 s while a client is connected; the action "kill_process" (pid, signal),
+ *                    only over the connection with the key, which root carries out or refuses (main.sh), and "Last kill"
  */
 #include <ctype.h>
 #include <errno.h>
@@ -70,6 +73,7 @@
 #include "noise.h"
 #include "outq.h"
 #include "sendspin.h"
+#include "taskmgr.h"
 #include "threadname.h"
 #include "update.h"
 #include "wifimotion.h"
@@ -113,7 +117,8 @@ enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SEN
        KEY_UPDATE_CHANNEL, KEY_UPDATE, KEY_WHISPERED,
        KEY_ALARM_ON, KEY_ALARM_TIME = KEY_ALARM_ON + ALARM_SLOTS, KEY_ALARM_REPEAT = KEY_ALARM_TIME + ALARM_SLOTS,
        KEY_ALARM_STOP = KEY_ALARM_REPEAT + ALARM_SLOTS, KEY_ALARM_SNOOZE, KEY_ALARM_RINGING, KEY_ALARM_EVENT, KEY_ALARM_NEXT, KEY_IMPROV,
-       KEY_BT_AAC, KEY_BLE_SC_ONLY };
+       KEY_BT_AAC, KEY_BLE_SC_ONLY, KEY_MEM_USED, KEY_MEM_AVAIL, KEY_LOAD, KEY_SELF_CPU, KEY_SELF_RSS, KEY_TOP, KEY_THREADS,
+       KEY_LAST_KILL, KEY_KILL_SERVICE };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -565,7 +570,9 @@ static void send_token_state(void)      /* lock held */
 
 /* ---------------------------------------------------------------- diagnostics
  * SoC temperature (thermal zone board.thermal_type) and CPU usage, as sensors that are diagnostic and disabled by default: Home
- * Assistant records them only once the user switches them on.  Pushed every 30 s to whoever subscribed to states. */
+ * Assistant records them only once the user switches them on.  Pushed every 30 s to whoever subscribed to states.  The task
+ * manager's every 10 s: "Memory used" and "Last kill" enabled (one moves slowly, the other only when asked to), the rest
+ * disabled by default, the two lists above all: a text state every 10 s fills Home Assistant's recorder. */
 
 static float read_soc_temp(void)
 {
@@ -607,21 +614,72 @@ static void send_sensor(int key, float v)   /* lock held */
 
 static void send_diag_states(void) { send_sensor(KEY_SOC_TEMP, read_soc_temp()); send_sensor(KEY_CPU_USAGE, cpu_usage()); }
 
+/* Task manager (taskmgr.h): sampled by diag_thread outside the lock, published here */
+#define DIAG_TICK_S 10          /* the task manager; temperature and CPU usage every third tick, the time every 360th */
+static struct taskmgr_stats tm;         /* lock held: the last sample */
+static int tm_have;                     /* lock held */
+
+static void send_text(int key, const char *v)      /* lock held.  "": unknown */
+{
+    PB(b, TASKMGR_TEXT + 16);
+    pb_fixed32(&b, 1, key);
+    if (*v) pb_str(&b, 2, v); else pb_uint(&b, 3, 1);
+    send_state(TEXT_SENSOR_STATE, &b);
+}
+
+static void send_last_kill(void) { char k[TASKMGR_TEXT]; taskmgr_last_kill(k, sizeof k); send_text(KEY_LAST_KILL, k); }   /* lock held */
+
+static void send_task_states(void)      /* lock held */
+{
+    send_last_kill();
+    if (!tm_have) return;
+    send_sensor(KEY_MEM_USED, tm.mem_used_pct); send_sensor(KEY_MEM_AVAIL, tm.mem_avail_mb); send_sensor(KEY_SELF_RSS, tm.self_rss_mb);
+    if (tm.load1 >= 0) send_sensor(KEY_LOAD, tm.load1);
+    if (!tm.cpu) return;                /* the first sample has nothing to take differences to */
+    send_sensor(KEY_SELF_CPU, tm.self_cpu_pct); send_text(KEY_TOP, tm.top); send_text(KEY_THREADS, tm.threads);
+}
+
+static void kill_changed(void) { pthread_mutex_lock(&core_lock); send_last_kill(); pthread_mutex_unlock(&core_lock); }
+
+/* lock held: the "kill_process" action.  Root does it (taskmgr.h) and decides what may go; a request at all only from
+ * Home Assistant with the key: before it is set anyone on the network gets a connection */
+static void on_kill(int keyed, int pid, const char *sig)
+{
+    char why[160];
+    if (!keyed) { fprintf(stderr, "kill: refused, the request did not come over the keyed connection\n"); return; }
+    if (taskmgr_kill(pid, sig, why, sizeof why)) fprintf(stderr, "kill: %d refused: %s\n", pid, why);
+    send_last_kill();
+}
+
 static void ask_time(void);
+
+static int any_subscriber(void)         /* lock held */
+{
+    int any = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) any |= clients[i].fd >= 0 && clients[i].states;
+    return any;
+}
 
 static void *diag_thread(void *arg)
 {
+    static int said;
     thread_name("diag");
     (void)arg;
     cpu_usage();
     for (int n = 1;; n++) {
-        sleep(30);
+        struct taskmgr_stats s; int got = 0;
+        sleep(DIAG_TICK_S);
+        pthread_mutex_lock(&core_lock); int any = any_subscriber(); pthread_mutex_unlock(&core_lock);
+        /* only for someone to see it; outside the lock, it reads all of /proc */
+        if (any && !(got = !taskmgr_sample(&s)) && !said++) fprintf(stderr, "task manager: cannot read /proc/stat or /proc/meminfo\n");
+        if (got && !said++)             /* what watching costs, once; from then on the diag thread's share in "hassmic threads" */
+            fprintf(stderr, "task manager: a sample of %d processes (%d unreadable) and %d threads takes %.1f ms, %.1f ms of it CPU\n",
+                    s.nproc, s.unreadable, s.nthreads, s.cost_ms, s.cost_cpu_ms);
         pthread_mutex_lock(&core_lock);
-        int any = 0;
-        for (int i = 0; i < MAX_CLIENTS; i++) any |= clients[i].fd >= 0 && clients[i].states;
-        if (any) send_diag_states();
+        if (got) { tm = s; tm_have = 1; send_task_states(); }
+        if (n % 3 == 0 && any_subscriber()) send_diag_states();
         /* the alarm clock's time: every hour (the boot clock drifts), every 30 s while there is none yet */
-        if (va_fd >= 0 && (n % 120 == 0 || !alarms_clock())) ask_time();
+        if (va_fd >= 0 && (n % 360 == 0 || (n % 3 == 0 && !alarms_clock()))) ask_time();
         pthread_mutex_unlock(&core_lock);
     }
     return NULL;
@@ -676,6 +734,39 @@ static void send_light_entities(void)
       pb_str(&b, 11, "%"); pb_uint(&b, 12, 2); send_msg(LIST_NUMBER, &b); }
 }
 
+static void task_sensor(const char *id, int key, const char *name, const char *icon, const char *unit, int decimals, int disabled)
+{
+    PB(b, 192);
+    pb_str(&b, 1, id); pb_fixed32(&b, 2, key); pb_str(&b, 3, name); pb_str(&b, 5, icon); pb_str(&b, 6, unit);
+    pb_uint(&b, 7, decimals); pb_uint(&b, 10, 1); pb_uint(&b, 12, disabled); pb_uint(&b, 13, 2);
+    send_msg(LIST_SENSOR, &b);
+}
+
+static void task_text(const char *id, int key, const char *name, const char *icon, int disabled)
+{
+    PB(b, 160);
+    pb_str(&b, 1, id); pb_fixed32(&b, 2, key); pb_str(&b, 3, name); pb_str(&b, 5, icon); pb_uint(&b, 6, disabled); pb_uint(&b, 7, 2);
+    send_msg(LIST_TEXT_SENSOR, &b);
+}
+
+static void send_task_entities(void)
+{
+    task_sensor("memory_used", KEY_MEM_USED, "Memory used", "mdi:memory", "%", 1, 0);
+    task_sensor("memory_available", KEY_MEM_AVAIL, "Memory available", "mdi:memory", "MB", 0, 1);
+    task_sensor("load_average", KEY_LOAD, "Load average", "mdi:gauge", "", 2, 1);
+    task_sensor("hassmic_cpu", KEY_SELF_CPU, "hassmic CPU", "mdi:chip", "%", 1, 1);
+    task_sensor("hassmic_memory", KEY_SELF_RSS, "hassmic memory", "mdi:memory", "MB", 1, 1);
+    task_text("top_processes", KEY_TOP, "Top processes", "mdi:format-list-numbered", 1);
+    task_text("hassmic_threads", KEY_THREADS, "hassmic threads", "mdi:format-list-bulleted", 1);
+    task_text("last_kill", KEY_LAST_KILL, "Last kill", "mdi:close-octagon-outline", 0);
+    /* Home Assistant names it esphome.<node>_kill_process and makes every argument required: "signal" may be empty */
+    { PB(b, 256); PB(a, 48); pb_str(&b, 1, "kill_process"); pb_fixed32(&b, 2, KEY_KILL_SERVICE);
+      pb_str(&a, 1, "pid"); pb_uint(&a, 2, 1); pb_bytes(&b, 3, a.p, a.n);
+      a.n = 0; pb_str(&a, 1, "signal"); pb_uint(&a, 2, 3); pb_bytes(&b, 3, a.p, a.n);
+      pb_str(&b, 5, "Ends a process: signal term (or empty) or kill; root refuses what keeps the Echo running or locked down");
+      send_msg(LIST_SERVICE, &b); }
+}
+
 static void send_diag_entities(void)
 {
     { PB(b, 192); pb_str(&b, 1, "soc_temperature"); pb_fixed32(&b, 2, KEY_SOC_TEMP); pb_str(&b, 3, "SoC temperature");
@@ -683,6 +774,7 @@ static void send_diag_entities(void)
       pb_uint(&b, 12, 1); pb_uint(&b, 13, 2); send_msg(LIST_SENSOR, &b); }
     { PB(b, 192); pb_str(&b, 1, "cpu_usage"); pb_fixed32(&b, 2, KEY_CPU_USAGE); pb_str(&b, 3, "CPU usage");
       pb_str(&b, 5, "mdi:chip"); pb_str(&b, 6, "%"); pb_uint(&b, 10, 1); pb_uint(&b, 12, 1); pb_uint(&b, 13, 2); send_msg(LIST_SENSOR, &b); }
+    send_task_entities();
 }
 
 static void send_setting_entities(void)
@@ -1520,7 +1612,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS); send_setting(KEY_BT_OUT_DELAY);
         for (int k = KEY_WIFI_MOTION_ON; k <= KEY_WIFI_MOTION_SENS; k++) send_setting(k);
         send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE); send_setting(KEY_WHISPERED); send_setting(KEY_IMPROV); send_alarm_states();
-        send_token_state(); send_light_states(); send_diag_states(); break;
+        send_token_state(); send_light_states(); send_diag_states(); send_task_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: case TIME_COMMAND: case BUTTON_COMMAND: on_setting(type, p, end); break;
     case GET_TIME_RESP:    on_time(p, end); break;
     case UPDATE_COMMAND: {
@@ -1535,15 +1627,20 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
     case EXECUTE_SERVICE: {
         /* only from Home Assistant itself: a client holding the device key (without one, anyone on the network could
          * connect and hand this Echo a network) */
-        unsigned key = 0; int argn = 0; char args[2][256] = { "", "" }; struct pbf g;
+        unsigned key = 0; int argn = 0; char args[2][256] = { "", "" }; int32_t ints[2] = { 0, 0 }; struct pbf g;
         while (pb_next(&p, end, &f)) {
             if (f.field == 1) key = (unsigned)f.v;
-            else if (f.field == 2 && f.data && argn < 2) {
+            else if (f.field == 2 && f.data && argn < 2) {          /* in the order the action lists them */
                 const unsigned char *q = f.data;
-                while (pb_next(&q, f.data + f.len, &g)) if (g.field == 4 && g.data) pbf_str(&g, args[argn], sizeof args[argn]);
+                while (pb_next(&q, f.data + f.len, &g)) {
+                    if (g.field == 4 && g.data) pbf_str(&g, args[argn], sizeof args[argn]);
+                    else if (g.field == 2 && g.wire == 0) ints[argn] = (int32_t)g.v;                              /* legacy_int */
+                    else if (g.field == 5 && g.wire == 0) ints[argn] = (int32_t)(g.v >> 1) ^ -(int32_t)(g.v & 1);  /* int_, zigzag */
+                }
                 argn++;
             }
         }
+        if (key == KEY_KILL_SERVICE) { on_kill(c >= 0 && clients[c].keyed, ints[0], args[1]); break; }
         if (key != KEY_ARB_SERVICE || !arb_running()) break;
         if (c < 0 || !clients[c].keyed) { fprintf(stderr, "arbitration: key refused, it did not come over the keyed connection\n"); break; }
         arb_key(args[0], args[1]);
@@ -1705,6 +1802,7 @@ static void serve(int fd)
                                        pthread_t t; pthread_create(&t, NULL, diag_thread, NULL); pthread_detach(t);
                                        pthread_create(&t, NULL, light_thread, NULL); pthread_detach(t);
                                        adbwifi_start(adb_changed); wifimotion_start(wifi_changed); update_start(update_changed);
+                                       taskmgr_start(kill_changed);
                                        if (core_bluetooth(-1)) { ble_start(&ble_handler); a2dp_start(bt_changed); } } }
     slot = take_slot(fd, &n);
     if (slot >= 0) clients[slot].q = q;

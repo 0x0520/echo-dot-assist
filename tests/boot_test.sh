@@ -3,8 +3,8 @@
 # ota_push_test.sh has) in temp directories, with the Echo's otatool (build/otatool-host) and stand-ins for Android's
 # getprop/start/stop/pidof/chown.  Covers what decides whether an Echo keeps a working, locked-down boot: which bundles
 # ota_watch installs, where root writes in the daemon's directory, when the start counter of an update is reset, a
-# config that does not load, and the Wi-Fi requests of Wi-Fi setup over Bluetooth (wifi_watch, wifi-join.sh).  Run
-# with the Echo's shell where there is one (mksh), else sh.
+# config that does not load, the Wi-Fi requests of Wi-Fi setup over Bluetooth (wifi_watch, wifi-join.sh) and the task
+# manager's kill requests (kill_watch).  Run with the Echo's shell where there is one (mksh), else sh.
 #   tests/boot_test.sh            needs build/otatool-host (make build/otatool-host) and python3
 cd "$(dirname "$0")/.."
 SH=${SH:-$(command -v mksh || echo sh)}
@@ -192,6 +192,41 @@ touch $T/wpa.down; rm -f $T/wpa.log; out=$(WIFI_JOIN_SECS=2 $SH scripts/device/w
 printf '%s\n%s\n' 'x' 'password1' > $T/req2
 rm -f $T/wpa.log; out=$($SH scripts/device/wifi-join.sh -x $T/req2); rc=$?
 [ $rc = 1 ] && [ ! -e $T/wpa.log ]; ok $? "wifi-join.sh -x: an SSID that is not hex goes nowhere ($out)"
+# 8. The task manager's kill (kill_watch): what hassmic leaves in state/kill-request is three checked numbers, and root
+# signals only what may go.  Stand-ins are processes of this test; /proc is the PC's own.
+KR=$BASE/state/kill-result
+start_of() { s=$(cat /proc/$1/stat); set -- ${s##*") "}; echo ${20}; }
+kill_req() { rm -f $KR; printf '%s\n' "$1" > $BASE/state/kill-request.tmp; chmod 600 $BASE/state/kill-request.tmp
+             mv $BASE/state/kill-request.tmp $BASE/state/kill-request; waitfor "[ -f $KR ]" 60; cat $KR 2>/dev/null; }
+alive() { [ -d /proc/$1 ] && [ "$(sed -n 's/.*) \(.\).*/\1/p' /proc/$1/stat)" != Z ]; }
+child_of() { for c in /proc/[0-9]*; do [ "$(sed -n 's/.*) . \([0-9]*\) .*/\1/p' $c/stat 2>/dev/null)" = $1 ] && { echo ${c#/proc/}; return; }; done; }
+run firewall
+sleep 300 & V=$!
+r=$(kill_req "$V $(( $(start_of $V) + 1 )) TERM"); alive $V && [ "${r#FAILED refused: }" != "$r" ]; ok $? "stale start time (a reused pid) refused, the process left alone: $r"
+r=$(kill_req "$V $(start_of $V) TERM"); ! alive $V && [ "$r" = "OK sleep ($V) ended on TERM" ]; ok $? "a stand-in ended on TERM: $r"
+wait $V 2>/dev/null
+sh -c 'trap "" TERM; exec sleep 300' & V=$!; sleep 0.3
+r=$(kill_req "$V $(start_of $V) TERM"); ! alive $V && [ "$r" = "OK sleep ($V) ended on KILL, TERM was ignored for 3 s" ]; ok $? "one that ignores TERM gets KILL after 3 s: $r"
+wait $V 2>/dev/null
+mkdir -p $T/x; printf 'sleep 300\ntrue\n' > $T/x/lockdown.sh; $SH $T/x/lockdown.sh & V=$!; sleep 0.3; C=$(child_of $V)
+r=$(kill_req "$V $(start_of $V) KILL"); alive $V && [ "$r" = "FAILED refused: $V is one of the boot and firewall scripts" ]; ok $? "a shell running lockdown.sh refused: $r"
+r=$(kill_req "$C $(start_of $C) TERM"); alive $C && [ "$r" = "FAILED refused: $C runs for the boot and firewall scripts" ]; ok $? "... and its sleep (killed, it would end the loop): $r"
+kill $C $V 2>/dev/null
+cp "$(command -v sleep)" $T/logd; $T/logd 300 & V=$!; sleep 0.3
+r=$(kill_req "$V $(start_of $V) TERM"); alive $V && [ "$r" = "FAILED refused: $V is logd, which the Echo needs" ]; ok $? "a core daemon by name refused: $r"
+kill $V; wait $V 2>/dev/null
+cp "$(command -v sleep)" $T/hassmic; printf '%s 300\ntrue\n' $T/hassmic > $T/x/main.sh; $SH $T/x/main.sh & V=$!; sleep 0.3; C=$(child_of $V)
+r=$(kill_req "$C $(start_of $C) TERM"); ! alive $C && [ "$r" = "OK hassmic ($C) ended on TERM" ]; ok $? "hassmic itself may go although main.sh runs it (it is started again): $r"
+wait $V 2>/dev/null
+r=$(kill_req "1 $(start_of 1) KILL"); [ "$r" = "FAILED refused: pid 1 is init or the kernel's" ]; ok $? "pid 1 refused: $r"
+for bad in "12a 5 TERM" "\$(touch p7) 1 TERM" "\`touch p8\` 1 TERM" "$$ 1 HUP" "$$" "0$$ 1 TERM" "$$ $(start_of $$) TERM extra" "12345678 1 TERM"; do
+    r=$(kill_req "$bad"); case "$r" in "FAILED refused: "*) ;; *) echo "FAIL request \"$bad\": $r"; fail=1;; esac
+done
+[ ! -e p7 ] && [ ! -e $T/p7 ] && [ ! -e p8 ] && [ ! -e $T/p8 ]; ok $? "requests that are not three numbers refused, nothing in them run (last: $r)"
+rm -f $KR; echo secret > $T/secret2; ln -s $T/secret2 $BASE/state/kill-request; waitfor "[ -f $KR ]" 40
+r=$(cat $KR); [ "$r" = "FAILED refused: not a plain file" ] && [ "$(cat $T/secret2)" = secret ]; ok $? "a request that is a link refused: $r"
+[ ! -e $BASE/state/kill-request ] && [ ! -e $BASE/kill-request.taken ] && grep -q "== kill: OK sleep" $BASE/boot.log; ok $? "requests taken, results in the log"
+stop_main
 # 7. The satellite's mDNS service file: hassmic -S runs as the daemon's user (runas), and root writes the file in its own
 # directory and renames it into the daemon's, so a link the daemon left there is replaced, not written through.
 # The address wait wants an interface with a real MAC (/sys/class/net); without one it would take 120 s.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plays Home Assistant's side of the ESPHome native API against build/hassmic-host, using the reference
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
-import asyncio, base64, datetime, io, math, os, random, signal, socket, struct, subprocess, sys, tempfile, threading, time, wave
+import asyncio, base64, datetime, io, math, os, random, re, signal, socket, struct, subprocess, sys, tempfile, threading, time, wave
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
@@ -103,6 +103,15 @@ async def main():
         check(isinstance(temp, SensorInfo) and temp.disabled_by_default and int(temp.entity_category) == 2 and temp.device_class == "temperature"
               and temp.unit_of_measurement == "\u00b0C" and isinstance(cpu, SensorInfo) and cpu.disabled_by_default and cpu.unit_of_measurement == "%"
               and int(cpu.state_class) == 1, "diagnostic sensors: SoC temperature and CPU usage, disabled by default")
+        # the task manager: memory used and the last kill enabled, the rest disabled by default; all diagnostic
+        tm_sensors = {"memory_used": ("%", False), "memory_available": ("MB", True), "load_average": ("", True),
+                      "hassmic_cpu": ("%", True), "hassmic_memory": ("MB", True)}
+        tm_texts = {"top_processes": True, "hassmic_threads": True, "last_kill": False}
+        check(all(isinstance(by.get(k), SensorInfo) and by[k].unit_of_measurement == u and by[k].disabled_by_default == d
+                  and int(by[k].entity_category) == 2 and int(by[k].state_class) == 1 for k, (u, d) in tm_sensors.items())
+              and all(isinstance(by.get(k), TextSensorInfo) and by[k].disabled_by_default == d and int(by[k].entity_category) == 2
+                      for k, d in tm_texts.items()),
+              "task manager entities: memory, load, hassmic's CPU and memory, top processes, threads, last kill")
         await asyncio.sleep(0.3)
         level0 = [x.state for x in states if isinstance(x, NumberState) and x.key == by["mic_level"].key]
         check(level0 == [-26], f"mic level at its default after a settings file from before it: {level0}")
@@ -135,8 +144,10 @@ async def main():
               and any(isinstance(x, SwitchState) and x.key == ajoin.key and x.state for x in states) and isinstance(apeers, SensorInfo),
               "\"Join arbitration network\" switch on by default, peers sensor, no ID entity")
         svcs = (await cli.list_entities_services())[1]
-        check([(v.name, [(x.name, int(x.type)) for x in v.args]) for v in svcs] == [("arbitration_key", [("network", 3), ("key", 3)])],
-              "action \"arbitration_key\" (network, key: strings) for other Echos to hand over their network")
+        check([(v.name, [(x.name, int(x.type)) for x in v.args]) for v in svcs] == [("arbitration_key", [("network", 3), ("key", 3)]),
+                                                                              ("kill_process", [("pid", 1), ("signal", 3)])],
+              "actions \"arbitration_key\" (network, key: strings) for other Echos to hand over their network, \"kill_process\" (pid: int, signal: string)")
+        kill_svc = svcs[1]
         check(open(settings).read().split()[:2] == ["0", "-20"] and open(settings).read().split()[8:9] == ["2"], f"settings persisted: {open(settings).read().strip()!r}")
         # field 16 unused, kept as a placeholder; 17: Wi-Fi setup over Bluetooth, on by default; 18, 19: Bluetooth AAC and
         # secure pairing only, both off
@@ -357,6 +368,11 @@ async def main():
         check(isinstance(adb, SwitchInfo) and int(adb.entity_category) == 1 and adb_state(states) == [False], "debug access (adb over Wi-Fi) switch listed, off")
         cli.switch_command(adb.key, True); await asyncio.sleep(0.5)
         check(not os.path.exists(adb_req) and adb_state(states) == [False], "debug access refused without the key: nothing asked, still off")
+        # Killing a process the same: refused, nothing for root to do
+        victim = subprocess.Popen(["sleep", "300"]); kill_req = os.path.join(state, "kill-request"); n0 = len(log)
+        await cli.execute_service(kill_svc, {"pid": victim.pid, "signal": ""}); await asyncio.sleep(0.5)
+        check(not os.path.exists(kill_req) and any("kill: refused, the request did not come over the keyed connection" in l for l in log[n0:]),
+              "kill_process refused without the key: nothing asked of root")
 
         cli.send_voice_assistant_timer_event(Tm.VOICE_ASSISTANT_TIMER_FINISHED, "t1", "tea", 60, 0, False)
         await asyncio.sleep(0.5)
@@ -433,6 +449,40 @@ async def main():
         check(adb_state(st2) == [False], "switch goes off when the window has run out")
         enc.switch_command(adb.key, True); await asyncio.sleep(19)
         check(adb_state(st2) == [False] and not os.path.exists(adb_req), "no answer within 15 s: request withdrawn, switch off again")
+
+        # Task manager: by now samples were taken every 10 s, CPU figures from the second one on
+        def last2(oid, t): return ([x for x in st2 if isinstance(x, t) and x.key == by[oid].key] or [None])[-1]
+        mem, top, thr, kl = last2("memory_used", SensorState), last2("top_processes", TextSensorState), last2("hassmic_threads", TextSensorState), last2("last_kill", TextSensorState)
+        check(mem and 0 < mem.state < 100 and all(last2(k, SensorState) for k in tm_sensors),
+              f"task manager sensors sent: {[(k, round(last2(k, SensorState).state, 2)) for k in tm_sensors if last2(k, SensorState)]}")
+        entry = r"[^,]+ \d+ \d+\.\d% \d+MB"
+        check(top and len(top.state) <= 255 and re.fullmatch(rf"{entry}(, {entry}){{0,4}}", top.state), f"top processes: {top.state if top else None!r}")
+        check(thr and len(thr.state) <= 255 and re.fullmatch(r"\d+ threads(: [^,]+ \d+\.\d%(, [^,]+ \d+\.\d%)*|, none busy)", thr.state),
+              f"hassmic threads: {thr.state if thr else None!r}")
+        names = set()
+        for t in os.listdir(f"/proc/{proc.pid}/task"):
+            try: names.add(open(f"/proc/{proc.pid}/task/{t}/comm").read().strip())
+            except OSError: pass
+        want = {"capture", "mic sender", "playback", "earcon", "alarms", "diag", "light", "esphome client", "outq writer", "adb watch"}
+        check(want <= names, f"every thread named: {sorted(names)}")
+        cost = [l for l in log if l.startswith("task manager: a sample of")]
+        check(len(cost) == 1, f"the sampler's cost logged once: {cost[0] if cost else None}")
+        check(kl and kl.missing_state, "Last kill: unknown before the first")
+        # Over the keyed connection the request goes to root (this test is root's side: main.sh kill_watch, which
+        # tests/boot_test.sh runs), with the start time that names the process
+        await enc.execute_service(kill_svc, {"pid": victim.pid, "signal": "kill"}); await asyncio.sleep(0.5)
+        start = open(f"/proc/{victim.pid}/stat").read().rsplit(") ", 1)[1].split()[19]
+        req = open(kill_req).read() if os.path.exists(kill_req) else None
+        check(req == f"{victim.pid} {start} KILL\n" and oct(os.stat(kill_req).st_mode & 0o777) == "0o600"
+              and last2("last_kill", TextSensorState).state == f"asked: KILL to sleep ({victim.pid})", f"kill_process with the key: request {req!r}, mode 600, Last kill says asked")
+        victim.kill(); victim.wait(); os.unlink(kill_req)
+        with open(os.path.join(state, "kill-result"), "w") as f: f.write(f"OK sleep ({victim.pid}) ended on KILL\n")
+        await asyncio.sleep(1)
+        check(last2("last_kill", TextSensorState).state == f"OK sleep ({victim.pid}) ended on KILL" and not os.path.exists(os.path.join(state, "kill-result")),
+              f"root's answer in Last kill: {last2('last_kill', TextSensorState).state!r}")
+        await enc.execute_service(kill_svc, {"pid": 99999999, "signal": "hup"}); await asyncio.sleep(0.5)
+        check(last2("last_kill", TextSensorState).state.startswith("FAILED signal must be term or kill") and not os.path.exists(kill_req),
+              f"a signal other than term or kill refused here: {last2('last_kill', TextSensorState).state!r}")
         check(await asyncio.wait_for(enc.noise_encryption_set_key(b""), 5) is True and not os.path.exists(os.path.join(state, "api_key")),
               "empty key from the keyed connection clears it (Home Assistant deleting the device)")
         check("api_encryption_supported=" in open(mdns).read(), "mDNS back to api_encryption_supported")

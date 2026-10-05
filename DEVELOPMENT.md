@@ -57,6 +57,7 @@ make unit                                         # C unit tests
 .venv/bin/python tests/fake_ma_sendspin.py        # Sendspin, as Music Assistant (aiosendspin)
 tests/ota_push_test.sh                            # signed push-update path end to end
 tests/boot_test.sh                                # root side: main.sh ota_watch, start counter, config check (mksh if there)
+tests/alexa_test.sh                               # alexa-on/off.sh against main.sh + lockdown.sh: on, off, on; OTA guard
 tests/otatool_test.sh                             # the PC's otatool (Python) against the Echo's (C)
 make lint                                         # the Echo's scripts: shellcheck, mksh -n, no CR in tracked files
 .venv/bin/python tests/fake_ha_update.py          # online updates: Home Assistant, GitHub and root's installer in one

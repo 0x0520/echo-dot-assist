@@ -325,6 +325,23 @@ again.
 
 Open issues and measurements: [PLAN.md](PLAN.md).
 
+## Stock Alexa for a while
+
+```sh
+scripts/alexa.sh on      # stock Alexa with internet, hassmic off
+scripts/alexa.sh off     # Alexa off, the satellite back
+```
+
+No reboot either way (on the Echo itself: `sh <dir>/alexa-on.sh`, `sh <dir>/alexa-off.sh`, `<dir>` being where
+`main.sh` is). `on` stops the satellite and lifts the egress lock but keeps firmware updates blocked, exactly as
+`MODE=stock-online` does: the update guard has to be in place before any of Amazon's services starts, otherwise the
+satellite comes back instead. Alexa then needs internet (allow it at the router if the Echo sits in a VLAN without).
+It lasts until `off` or the **next reboot**, which always brings the satellite back. While Alexa runs there is no
+hassmic: no Home Assistant switch for adb over Wi-Fi, no `scripts/adb-wifi.sh`, no push updates. adb over Wi-Fi stays
+open only for the rest of a window already open, or with `ADB_WIFI=1`; otherwise `off` needs USB, or reboot the Echo.
+For Alexa across reboots use `MODE=stock-online` in `hassmic.conf` instead. Needs a version from 2026-10-06 on; an
+older one installed is refused with a message.
+
 ## Uninstall
 
 - **Temporarily**: `adb shell rm /data/local/hassmic/hassmic.conf`, reboot. The Echo is a stock, unregistered Echo (which

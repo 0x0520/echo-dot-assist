@@ -144,7 +144,45 @@ Run in this order. Each step says what it proves.
       `mixcap` captures that had just opened: a freshly opened record stream starts with zeros and one garbage block (seen again
       in `micRaw`, first 100 ms clipping), not from the AEC
 - [x] `pryon_test` on device: canned file Accept (type=2) at 1.39 s; live `mixcap | pryon_test` 6/6 spoken "Alexa" accepted, no near-misses
-- [ ] `alexa-on.sh` restores Alexa without reboot
+- [~] `alexa-on.sh` restores Alexa without reboot (2026-10-06, PC only so far). The old script could not have worked on an
+      installed Echo: it killed hassmic, but `main.sh`'s loop started it again 3 s later and ran `alexa-off.sh`; it left
+      the egress lock (Alexa cut off from Amazon) and started `otad`/`ace_otad`, which only that lock kept offline.
+      Now the exact inverse of the satellite setup, all names from `device.conf`: property `hassmic.alexa=1` (a reboot
+      forgets it, so a reboot always gives the satellite back) makes `main.sh` behave as `MODE=stock-online` in both
+      services. `alexa-on.sh`: refuses if the copy init runs (boot.sh's choice: update unless `tries` >= 3, else
+      factory) does not know the property; `setprop hassmic.alexa 1` *before* `stop hassmic` (the satellite loop calls
+      `alexa-off.sh services`, which never undoes it); leftovers (pkill hassmic/mixcap/mixplay, mDNS file, our avahi,
+      `ledctrl -c`, `/dev/aipc/0` for btmanagerd); `stop/start hassmic_fw` -> `lockdown.sh ota-only watch`; waits up to
+      10 s for `lockdown.sh ota-only check`, else satellite back and rc 1; then `WIFI_SERVICE`, `avahi-daemon`,
+      `CLOUD_SERVICES`, `UX_SERVICE`, `BT_SERVICE`, `ALEXA_PROP=1` + `ALEXA_SERVICES` by name. Not started: the
+      updaters (the watcher keeps them stopped every 5 s, `ace_otad`'s uid dropped) and `oobed_*` (PuffinApp sets
+      `OOBED_START` itself on an unregistered Echo). `ALEXA_PROP=1` also starts the satellite service through
+      `hassmic.rc`; it exits as stock-online. `alexa-off.sh` by hand with the property set: property 0, its usual stops,
+      `stop/start hassmic_fw` (egress lock, cloud daemons stopped), `start hassmic`. Without init services (trial via
+      `deploy.sh`) `alexa-on.sh` kills hand-run lockdown watchers, loads the guard once and starts the services.
+      PC: `scripts/alexa.sh on|off` (adb; picks the copy as boot.sh does).
+      `tests/alexa_test.sh` (CI, suite): real `main.sh`, `lockdown.sh`, both scripts; init, properties and iptables as
+      stand-ins (`tests/fake_iptables.py`, `-S` wording, restore with commit/refuse). Boot -> refused for an old update
+      -> on -> satellite restart -> `update_engine` on demand -> chain flushed -> off -> on: the guard loaded before every
+      start of Amazon's services, no updater started, lock not put back, both tables only drop `ace_otad`'s uid, a
+      restart of the satellite service keeps Alexa, `update_engine` stopped again, guard back after a flush; off: Alexa
+      and btmanagerd stopped, `hassmic_fw` before `hassmic`, lock check clean, cloud daemons, `uxeventd`, `wifisvc`
+      stopped again. 27/27 with mksh and with dash; the old script fails 18 of them.
+      **To verify on a device** (Dot 3 first, then Echo 2 and Dot 2; Echo needs internet at the router):
+      1. `scripts/alexa.sh on` over USB: prints "update guard in place"; `iptables -S hassmic_out` = 2 rules (`-o lo`,
+         `--uid-owner <ace_otad> -j DROP`); `pidof hassmic` empty, `getprop init.svc.hassmic` stopped, boot.log
+         "stock-online (alexa-on.sh".
+      2. Alexa answers ("Alexa, what time is it?") on a registered Echo; on an unregistered one setup mode comes up and
+         the Alexa app can finish it. Wake word lights the ring; volume and action buttons work (`acebuttond`).
+      3. Bluetooth: the phone sees the Echo, pairs, plays (btmanagerd recreated `/dev/aipc/0`).
+      4. No firmware update traffic: `iptables -L hassmic_out -v -n` DROP counter for the uid rises or stays, never a
+         download; `getprop init.svc.otad/ace_otad/update_engine` stopped after 10 min; `getprop ro.build.display.id`
+         and the slot unchanged; router log: no traffic to the OTA hosts.
+      5. 10 min stable: no reboot, no `stop puffin` in logcat, `wifisvc` keeps the link.
+      6. `scripts/alexa.sh off`: Alexa silent, HA reconnects (< 60 s), `lockdown.sh check` clean, `wifisvc` stopped by
+         netwatch, LED ring and wake word under hassmic again.
+      7. `on` again, then reboot: satellite back on its own.
+      8. Over Wi-Fi adb with the HA window open: `on` keeps the session until the window ends; `off` over USB after it.
 
 ## Phase 4 — End-to-end PoC **(device)**
 
@@ -527,7 +565,7 @@ Run in this order. Each step says what it proves.
       fix is untested against the real fault
 - [x] Revert procedure tested 2026-09-21: `install-system.sh --uninstall` leaves no trace on `/system` (`/sepolicy` md5 back to the pre-hassmic
       value, stock Alexa + `uxeventd` + `otad` run again, no egress lock: only the VLAN protects then); reinstall brings everything back, and
-      `/data/local/hassmic/state` (Sendspin identity, pairing record, settings) survives both. `alexa-on.sh` (no reboot) still untested
+      `/data/local/hassmic/state` (Sendspin identity, pairing record, settings) survives both. `alexa-on.sh` (no reboot): Phase 3, tested on the PC 2026-10-06, device pending
 - [~] Multi-model layout (2026-09-28): model-specific parts moved to `devices/donut/` (`device.mk`, `board.c` behind
       `src/hassmic/board.h`, `device.conf`, `hassmic.rc`, `sepolicy.rules`); `DEVICE` selects (default donut), outputs in
       `build/<codename>/`, firmware in `firmware/<codename>/`. Device scripts read `device.conf` next to them (bundles and

@@ -4,6 +4,11 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-06
 
+- **Stock Alexa back without a reboot, and away again.** `scripts/alexa.sh on` stops the satellite and starts Amazon's
+  Alexa with internet, firmware updates still blocked; `scripts/alexa.sh off` brings the satellite and the internet
+  lock back. A reboot also returns to the satellite. Before, `alexa-on.sh` left the lock in place (Alexa could not
+  reach Amazon), started the firmware updaters, which only that lock kept offline, and on an installed Echo the
+  satellite stopped Alexa again within seconds.
 - **A client with a bad connection no longer stalls the Echo.** When one of the connected clients (Home Assistant, or a
   second one such as a debugging tool) stopped taking data, for example because its Wi-Fi dropped, the wake word,
   the buttons and every other client could hang for up to 5 seconds. Each client now gets what is sent to it from a

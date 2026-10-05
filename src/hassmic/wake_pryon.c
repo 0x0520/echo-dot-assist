@@ -42,7 +42,7 @@ static void on_log(int level, const char *tag, const char *msg)
  * frame carry a fixed pattern, data follows), the engine reads it back and reports where the keyword lies on that clock
  * in the result's metadata: a header starting "JSON_GZ_AND_FP", a gzip stream with JSON ("audioMetadataDuringDetection":
  * {.."timestamp_before_ww_end":9559,"timestamp_before_ww_start":8823}, "has_audio_lsb_metadata":1), a fingerprint.
- * Stock hands those two numbers back to the front end before it asks for the wake word's energies (main.c). */
+ * Stock hands those two numbers back to the front end before it asks for the wake word's energies (wakedet.c). */
 static long afe_start, afe_end; static atomic_int afe_known;
 
 static void read_metadata(const unsigned char *m, size_t n)

@@ -1205,6 +1205,11 @@ Run in this order. Each step says what it proves.
       tree (integration/all). Needs the device: wake word and replies under a Wi-Fi stall, vfork
       with the real ledctrl/lipc tools, `WhisperApi_backlogWait`'s timeout unit and return value, a model switch to a
       broken model.
+- [x] main.c split into modules (2026-10-06, no behaviour change): 1584 lines were the whole core. Now `main.c` (state
+      machine, pipeline, mute, buttons, capture thread, `main()`), `playback.c`, `mic.c`, `wakewords.c`, `wakedet.c`,
+      `detect.c`, `earcon.c`, `hwsettings.c` and `spawn.c`; what they share is `core_int.h`, as functions with the
+      lock each needs (`core_client()`: the protocol while connected, under core_lock), no shared globals beyond
+      core.h's. Tested: the full container suite, every model with STUBS=1 and the PC build without warnings.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

@@ -1,4 +1,4 @@
-/* What a protocol module (Wyoming, ESPHome native API) sees of the satellite core in main.c. */
+/* What a protocol module (Wyoming, ESPHome native API) sees of the satellite core (main.c and the files of core_int.h). */
 #ifndef CORE_H
 #define CORE_H
 #include <pthread.h>
@@ -46,7 +46,7 @@ extern const struct proto proto_wyoming, proto_esphome;
 
 extern pthread_mutex_t core_lock;               /* guards state, the client socket (writes) and everything marked "lock held".
                                                  * Held while writing to a client, so for up to its send timeout (5 s): the
-                                                 * capture thread must not need it per block.  Leaf locks main.c takes inside
+                                                 * capture thread must not need it per block.  Leaf locks the core takes inside
                                                  * it: the playback queue's, the earcon thread's; never the other way round */
 extern const char *core_name;
 const char *core_node_name(void);               /* "Echo Dot" -> "echo-dot": the ESPHome device (host) name */

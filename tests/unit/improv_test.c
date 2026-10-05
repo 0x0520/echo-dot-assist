@@ -250,8 +250,17 @@ static void test_machine(void)
     expect(k > 10 && pdu[3] == IMPROV_DEVICE_INFO && pdu[5] == 7 && !memcmp(pdu + 6, "hassmic", 7) && pdu[k - 1] == improv_checksum(pdu + 3, k - 4),
            "device info result");
 
+    /* a frame in two writes, as a client at the default MTU sends it */
+    size_t n = rpc(IMPROV_DEVICE_INFO, NULL, 0, b);
+    att(w, write_req(14, b, 2, w), r); expect(r[0] == 0x13 && improv_error() == 0, "half a frame taken as one");
+    att(w, write_req(14, b + 2, n - 2, w), r);
+    while ((k = improv_notify(pdu, sizeof pdu)) && pdu[1] != 16) ;
+    expect(k > 10 && pdu[3] == IMPROV_DEVICE_INFO, "frame in two writes not put together");
+    unsigned char big[GATTS_MTU + 40] = { 0x16, 14, 0 };                  /* longer than the MTU: dropped, no overrun */
+    expect(improv_att(big, sizeof big, r, sizeof r) == 0, "PDU longer than the MTU answered");
+
     /* a long write (Prepare Write + Execute) of Wi-Fi settings */
-    size_t n = wifi_rpc("a-very-long-network-name-32-byte", 32, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", b);
+    n = wifi_rpc("a-very-long-network-name-32-byte", 32, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", b);
     unsigned char p1[] = { 0x16, 14, 0, 0, 0 }; memcpy(w, p1, 5); memcpy(w + 5, b, 40);
     k = att(w, 45, r); expect(k == 45 && r[0] == 0x17, "prepare write");
     w[3] = 40; memcpy(w + 5, b + 40, n - 40); k = att(w, 5 + n - 40, r); expect(r[0] == 0x17, "second prepare write");
@@ -267,6 +276,9 @@ static void test_machine(void)
 
     /* an outage opens it once; the address coming back closes it again */
     improv_connected(0x112233445566ULL, 0);
+    improv_hold(); improv_tick(t += 500, 1); improv_connected(2, 1); improv_button();
+    improv_connected(2, 0); expect(improv_state() == IMPROV_AUTH_REQUIRED, "authorization outlived its client");
+    improv_enable(0); improv_tick(t += 500, 1); improv_enable(1);
     improv_tick(t += 1000, 0); improv_tick(t += 121000, 0); expect(improv_open(), "second outage did not open it");
     improv_tick(t += 1000, 1); expect(!improv_open(), "Wi-Fi back, still open");
     improv_tick(t += 1000, 0); improv_tick(t += 121000, 0); expect(improv_open(), "third outage did not open it");
@@ -301,7 +313,8 @@ static void test_periph(void)
     expect(ip >= 0 && id > ip && ir > ip && ie > id && ie > ir && cmds[ie].p[0] == 1, "advertising not set up: params, data, scan response, enable");
     expect(id >= 0 && cmds[id].n == 32 && cmds[id].p[0] == 31 && cmds[id].p[1 + 25] == IMPROV_AUTH_REQUIRED, "advertising data");
     ncmd = 0; periph_upkeep(0); expect(ncmd == 0, "advertising set again without a change");
-    improv_button(); improv_tick(t += 500, 1);
+    expect(improv_button() == 0, "the button taken with no client connected");
+    improv_connected(1, 1); improv_button(); improv_tick(t += 500, 1);
     ncmd = 0; periph_upkeep(0); id = find_cmd(0x2008);
     expect(id >= 0 && cmds[id].p[1 + 25] == IMPROV_AUTHORIZED && find_cmd(0x200a) < 0, "state change not advertised (or re-enabled)");
     ncmd = 0; periph_upkeep(1); ie = find_cmd(0x200a);

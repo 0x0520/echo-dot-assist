@@ -199,6 +199,8 @@ RES=$OTA/result.tmp
 # evaluates them, and answered in state/wifi-result as ota_watch answers ("OK ..." / "FAILED ..."), written in root's
 # directory and renamed into the daemon's.  The passphrase is never logged.
 WREQ=$BASE/state/wifi-request
+NL='
+'
 wifi_bad() {        # prints why SSID ($1, hex) and passphrase ($2) are refused; nothing if fine
     case "$1" in ''|*[!0-9a-f]*) echo "SSID not in hex"; return;; esac
     { [ ${#1} -le 64 ] && [ $((${#1} % 2)) = 0 ]; } || { echo "SSID length"; return; }
@@ -211,22 +213,33 @@ wifi_bad() {        # prints why SSID ($1, hex) and passphrase ($2) are refused;
 }
 wifi_watch() {
     [ -e $WREQ ] || [ -L $WREQ ] || return 0
-    t=$BASE/wifi-request.taken
-    rm -rf $t; mv -f $WREQ $t 2>/dev/null || return 0
+    t=$BASE/wifi-request.taken c=$BASE/wifi-join.req
+    rm -rf $t $c; mv -f $WREQ $t 2>/dev/null || return 0
+    # The inode is still the daemon's (an open descriptor, a hard link): read once, at most 201 bytes, and hand
+    # wifi-join.sh a file of root's own with what was checked.
     why=
     if [ -L $t ] || [ ! -f $t ]; then why="not a plain file"
-    elif [ "$(wc -c < $t)" -gt 200 ]; then why="too long"
-    else { IFS= read -r ssid; IFS= read -r psk; } < $t; why=$(wifi_bad "$ssid" "$psk")
+    else
+        req=$(head -c 201 $t)
+        if [ ${#req} -gt 200 ]; then why="too long"
+        else
+            ssid=${req%%"$NL"*}; psk=
+            case "$req" in *"$NL"*) psk=${req#*"$NL"};; esac       # more lines: not printable, refused
+            why=$(wifi_bad "$ssid" "$psk")
+        fi
     fi
     if [ -n "$why" ]; then res="FAILED request refused: $why"
     else
+        (umask 077; printf '%s\n%s\n' "$ssid" "$psk" > $c)
         echo "== Wi-Fi setup over Bluetooth: joining the network asked for through hassmic"
-        if out=$(sh $D/wifi-join.sh -x $t 2>&1); then res="OK $(echo "$out" | tail -1)"; else res="FAILED $(echo "$out" | tail -1)"; fi
+        if out=$(sh $D/wifi-join.sh -x $c 2>&1); then res="OK $(echo "$out" | tail -1)"; else res="FAILED $(echo "$out" | tail -1)"; fi
     fi
-    rm -rf $t; ssid=; psk=
+    rm -rf $t $c; ssid=; psk=; req=
     echo "== Wi-Fi setup over Bluetooth: $res"
     echo "$res" > $BASE/wifi-result.tmp
-    chown $DAEMON_USER $BASE/wifi-result.tmp; chmod 644 $BASE/wifi-result.tmp; mv -f $BASE/wifi-result.tmp $BASE/state/wifi-result
+    chown $DAEMON_USER $BASE/wifi-result.tmp; chmod 644 $BASE/wifi-result.tmp
+    rm -rf $BASE/state/wifi-result                  # a link to a directory there would take the rename into it
+    mv -f $BASE/wifi-result.tmp $BASE/state/wifi-result
 }
 ota_watch() {
     IN=$BASE/state/ota

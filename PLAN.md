@@ -1255,6 +1255,13 @@ Run in this order. Each step says what it proves.
       settings field 17, read by improv.c itself at start, because the protocol loads its settings only once Home
       Assistant connects, which without Wi-Fi it never does). Field 16 belongs to the alarms branch: kept as read,
       "-" until then (merge: replace the placeholder with that branch's field).
+      Review before the first push found, and fixed: a Prepare Write longer than the MTU overran the answer buffer on
+      the controller thread (now every PDU over the MTU is dropped); a press authorized whoever connected next (now
+      only while a client is connected, and a disconnect takes the authorization back); a hold with no radio of ours
+      left the window open for good and swallowed every press; frames cut into several writes were refused (now
+      collected, as ESPHome does); root read the request from the daemon's inode twice (now once, at most 201 bytes,
+      handed to `wifi-join.sh` in a file of root's own); a stale result could answer the next attempt. Left open: a
+      deauthentication attack can force the 2-min outage that opens the window; a press is still needed.
       Deviations from the first plan: the request is handled by the firewall service's 2 s loop (`ota_watch`), not by
       `netwatch` (10 s, satellite service): faster, it is where the root side of push updates already lives, and
       `tests/boot_test.sh` runs it. `netwatch` stops stock's setup services if acebuttond starts them on the 5 s hold.

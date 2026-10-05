@@ -226,7 +226,9 @@ static size_t exec_write(struct gatts *s, const uint8_t *p, size_t n, uint8_t *r
 
 size_t gatts_rx(struct gatts *s, const uint8_t *p, size_t n, uint8_t *r, size_t cap)
 {
-    if (!n || cap < GATTS_MTU) return 0;
+    /* Nothing longer than the MTU is a valid PDU, and answers echo requests (Prepare Write): one that is longer would
+     * overrun rsp.  Dropped, as a central that ignores the MTU deserves */
+    if (!n || n > s->mtu || cap < GATTS_MTU) return 0;
     switch (p[0]) {
     case MTU_REQ:
         if (n < 3) return error(r, p[0], 0, E_INVALID_PDU);

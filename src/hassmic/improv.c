@@ -51,7 +51,8 @@ static const char *dev_name = "", *dev_version = "";
 static struct gatts g;
 static int enabled = 1, state = IMPROV_AUTH_REQUIRED, err, connected, due, shown;
 static long long now, window_until, auth_until, answer_until, no_addr_since;
-static int window_auto, auto_spent;
+static int window_auto, auto_spent, started;
+static uint8_t rpc_buf[3 + 255]; static size_t rpc_len;      /* an RPC frame arriving in several writes */
 static uint8_t result[GATTS_MAX_VALUE]; static size_t result_len;
 
 /* ---------------------------------------------------------------- packets */
@@ -142,7 +143,7 @@ static int write_request(const uint8_t *ssid, size_t sl, const char *psk)
     for (size_t i = 0; i < sl; i++) k += snprintf(line + k, sizeof line - k, "%02x", ssid[i]);
     k += snprintf(line + k, sizeof line - k, "\n%s\n", psk);
     snprintf(tmp, sizeof tmp, "%s.tmp", state_file("wifi-request"));
-    unlink(tmp);
+    unlink(tmp); unlink(state_file("wifi-result"));                  /* a late answer to an attempt given up on */
     int f = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     ok = f >= 0 && fchmod(f, 0600) == 0 && write(f, line, k) == (ssize_t)k;
     if (f >= 0 && close(f)) ok = 0;
@@ -170,7 +171,7 @@ static void set_error(int e) { if (e != err || e) { err = e; due |= N_ERROR; } }
 
 static void open_window(int automatic)
 {
-    if (!window_until) {
+    if (!window_until || state == IMPROV_PROVISIONED) {           /* held again after success: from the start */
         fprintf(stderr, "improv: Wi-Fi setup over Bluetooth open for %d min (%s): press the action button to allow it\n",
                 WINDOW_MS / 60000, automatic ? "no Wi-Fi" : "action button held");
         state = IMPROV_AUTH_REQUIRED; err = 0; result_len = 0;
@@ -272,7 +273,14 @@ static int write_cb(void *ctx, int id, const uint8_t *d, size_t n)
 {
     (void)ctx;
     if (id != ID_RPC) return 0x03;                                      /* write not permitted */
-    if (command(d, n)) identify_wanted = 1;
+    /* Clients at the default MTU may cut a frame into several writes (ESPHome collects them the same way) */
+    if (rpc_len + n > sizeof rpc_buf) rpc_len = 0;
+    if (n > sizeof rpc_buf) { if (command(d, n)) identify_wanted = 1; return 0; }
+    memcpy(rpc_buf + rpc_len, d, n); rpc_len += n;
+    if (rpc_len < 2 || rpc_len < (size_t)rpc_buf[1] + 3) return 0;
+    size_t k = rpc_len; rpc_len = 0;
+    if (command(rpc_buf, k)) identify_wanted = 1;
+    wipe(rpc_buf, sizeof rpc_buf);
     return 0;
 }
 
@@ -317,8 +325,10 @@ int improv_advertise(uint8_t *adv, size_t *adv_len, uint8_t *rsp, size_t *rsp_le
 void improv_connected(uint64_t addr, int on)
 {
     pthread_mutex_lock(&lk);
-    connected = on; due = 0;
+    connected = on; due = 0; rpc_len = 0;
     if (on) gatts_connected(&g);
+    /* the press allows the client that was connected when it came, not whoever connects next */
+    else if (state == IMPROV_AUTHORIZED) state = IMPROV_AUTH_REQUIRED;
     fprintf(stderr, "improv: %012llx %s\n", (unsigned long long)addr, on ? "connected" : "disconnected");
     pthread_mutex_unlock(&lk);
 }
@@ -332,7 +342,8 @@ int improv_open(void) { pthread_mutex_lock(&lk); int o = window_until != 0; pthr
 int improv_button(void)
 {
     pthread_mutex_lock(&lk);
-    int took = window_until && (state == IMPROV_AUTH_REQUIRED || state == IMPROV_AUTHORIZED);
+    /* only while a client is connected: a press that came first would allow whoever connects within the minute */
+    int took = started && window_until && connected && (state == IMPROV_AUTH_REQUIRED || state == IMPROV_AUTHORIZED);
     if (took) {
         if (state == IMPROV_AUTH_REQUIRED) fprintf(stderr, "improv: authorized by the action button\n");
         set_state(IMPROV_AUTHORIZED); auth_until = now + AUTH_MS;
@@ -346,6 +357,7 @@ int improv_button(void)
 void improv_hold(void)
 {
     pthread_mutex_lock(&lk);
+    if (!started) { pthread_mutex_unlock(&lk); return; }           /* no radio of ours: nothing would close it again */
     if (enabled && state != IMPROV_PROVISIONING) open_window(0);
     else if (!enabled) fprintf(stderr, "improv: action button held, but Wi-Fi setup over Bluetooth is switched off\n");
     pthread_mutex_unlock(&lk);
@@ -396,7 +408,7 @@ static void *thread(void *arg)
 void improv_init(const struct improv_handler *h, const char *name, const char *version)
 {
     uint8_t u[16], s16[2];
-    H = h; dev_name = name; dev_version = version;
+    H = h; dev_name = name; dev_version = version; started = 1;
     gatts_init(&g, &ops, NULL);
     s16[0] = 0x00; s16[1] = 0x18; gatts_service(&g, s16, 2);                     /* GAP */
     s16[0] = 0x00; s16[1] = 0x2a; gatts_char(&g, s16, 2, GATTS_READ, ID_NAME);

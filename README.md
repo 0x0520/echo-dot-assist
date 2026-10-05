@@ -192,8 +192,8 @@ Details:
   - **How.** In Home Assistant the Echo then shows up under Settings → Devices & services as a discovered
     "Improv via BLE" device (Home Assistant needs Bluetooth itself, or a Bluetooth proxy near the Echo; another Echo
     with hassmic is one). Or open [improv-wifi.com](https://www.improv-wifi.com/) in Chrome or Edge on a phone or PC
-    with Bluetooth and pick "Connect device to Wi-Fi". Either asks you to **press the action button** on the Echo:
-    that allows it for a minute. Then enter the network name and password. The Echo joins, keeps the network for the
+    with Bluetooth and pick "Connect device to Wi-Fi". Once connected, either asks you to **press the action button** on the
+    Echo: that allows the connected app for a minute. Then enter the network name and password. The Echo joins, keeps the network for the
     next boots, and Home Assistant finds it again on its own (as before, over mDNS). With a wrong password the app says
     it could not connect and the Echo stays on the network it had.
   - WPA/WPA2 with a password (8 to 63 characters) or open networks; no enterprise login, no WPA3-only networks.

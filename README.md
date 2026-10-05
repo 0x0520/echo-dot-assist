@@ -59,6 +59,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Whisper detection                             | ✅ answers in a whisper | sensor for the conversation agent's prompt ([details](#whisper)) | ❌ |
 | Motion sensor                                 | ❌                      | **experimental**, off by default: from the Wi-Fi signal ([details](#wifi-motion)) | ❌ |
 | Encrypted link to Home Assistant              | –                       | ✅ key set by Home Assistant                 | ❌ plain TCP             |
+| Change Wi-Fi without a PC                     | ✅ (Alexa app)          | ✅ over Bluetooth, from HA's Improv integration or the Improv app ([details](#wifi-setup)) | ✅ same (no switch) |
 | Talks to Amazon                               | always                  | never (firewalled)                           | never (firewalled)       |
 | Updates                                       | automatic, from Amazon  | signed: pushed from your PC, or online from Home Assistant (off by default) | signed, pushed from your PC |
 
@@ -196,6 +197,24 @@ Details:
     frame from your router in the driver. It is only loaded once you switch Wi-Fi motion on (within 10 s), and then
     stays loaded until the Echo restarts. Running on an Echo Dot 3, an Echo Dot 2 and an Echo 2.
   - ESPHome only. It does not use the microphones; muting the Echo does not stop it.
+- **Wi-Fi setup over Bluetooth**<a id="wifi-setup"></a>: the Echo can be given a new Wi-Fi network without a PC, the
+  way ESPHome devices are: with [Improv Wi-Fi](https://www.improv-wifi.com/). For a new router, a new password, or an
+  Echo that moved house. It is offered only for a while, and only to someone at the Echo:
+  - **When.** By itself when the Echo has had no Wi-Fi address for 2 minutes (after starting without Wi-Fi, or after
+    the link went), for 5 minutes, once per outage; or at any time when you **hold the action button (the dot) for 5
+    seconds**, as on a stock Echo. While it is offered the ring shows the orange setup spinner, and a short press of
+    the action button only allows the setup (it starts no voice command). It closes after 5 minutes, a minute after it
+    worked, or as soon as the Echo has Wi-Fi again (if nobody is connected to it).
+  - **How.** In Home Assistant the Echo then shows up under Settings → Devices & services as a discovered
+    "Improv via BLE" device (Home Assistant needs Bluetooth itself, or a Bluetooth proxy near the Echo; another Echo
+    with hassmic is one). Or open [improv-wifi.com](https://www.improv-wifi.com/) in Chrome or Edge on a phone or PC
+    with Bluetooth and pick "Connect device to Wi-Fi". Once connected, either asks you to **press the action button** on the
+    Echo: that allows the connected app for a minute. Then enter the network name and password. The Echo joins, keeps the network for the
+    next boots, and Home Assistant finds it again on its own (as before, over mDNS). With a wrong password the app says
+    it could not connect and the Echo stays on the network it had.
+  - WPA/WPA2 with a password (8 to 63 characters) or open networks; no enterprise login, no WPA3-only networks.
+  - "Wi-Fi setup over Bluetooth" (a switch in Home Assistant, on by default) turns it off completely, button
+    included. Needs the Bluetooth radio to be hassmic's (not with `-B`).
 - **No cloud**: Alexa client, updater and telemetry are stopped at every boot; a firewall drops everything that is not
   going to a local address. Only hassmic itself may go further, to fetch replies and music from where Home Assistant or
   Music Assistant point it. See [Security](#security).
@@ -212,7 +231,8 @@ Details:
   `scripts/ota-push.sh` with the release build of a published commit, and `scripts/adb-wifi.sh`.
 - **Home Assistant** with a working Assist pipeline (speech-to-text, conversation agent, text-to-speech). Test it with
   the app first. Optional: Music Assistant (tested with 2.10.4).
-- **Wi-Fi** with WPA2 passphrase (no captive portal, no enterprise login) that reaches Home Assistant.
+- **Wi-Fi** with WPA2 passphrase (no captive portal, no enterprise login) that reaches Home Assistant. Set at the
+  install; changed later without a PC through [Wi-Fi setup over Bluetooth](#wifi-setup).
 
 ## Install
 
@@ -394,6 +414,12 @@ older one installed is refused with a message.
   checks the signature with the tool and keys from the system partition or the installed copy before anything is
   unpacked. Your key also opens adb over Wi-Fi; the release key does not.
 - **Bluetooth**: keys in `state/ble_bonds` (proxy) and `state/bt_keys` (speaker), both under `/data/local/hassmic/`.
+- **Wi-Fi setup over Bluetooth**: the Echo advertises it only while it has no Wi-Fi (2 minutes after it lost it, then
+  for 5 minutes) or after its action button was held 5 seconds, and takes a network only within a minute of a press of
+  that button: someone has to be at the Echo, as with stock's setup. Improv has no encryption of its own: the password
+  crosses the air in the clear to the Echo, within Bluetooth range and those few minutes, as with every Improv
+  device. hassmic hands it to root in a file only root and hassmic can read; root checks it again and passes it to
+  `wpa_cli` as data, never through a shell. Switch it off in Home Assistant if you do not want it.
 
 ## Development
 

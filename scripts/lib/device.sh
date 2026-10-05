@@ -53,10 +53,10 @@ ship_bins() {
     return 0
 }
 # ship_scripts: what runs as root on the Echo next to them (scripts/system: boot integration; scripts/device: firewall,
-# Alexa off and on).  device.conf, the keys and hassmic.rc are added by each caller, which treats them differently.
+# Alexa off and on, joining Wi-Fi).  device.conf, the keys and hassmic.rc are added by each caller, which treats them differently.
 ship_scripts() {
     echo scripts/system/main.sh scripts/system/boot.sh scripts/system/sysinstall.sh \
-         scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh
+         scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh scripts/device/wifi-join.sh
 }
 
 # The binaries link against one firmware's libraries; on another one they may crash or misbehave in the audio path.

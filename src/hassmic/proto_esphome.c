@@ -36,6 +36,8 @@
  *                    switch, a time entity and a repeat select; stop and snooze buttons, a ringing binary sensor, an
  *                    event when one starts ringing, and the next ring as a timestamp.  The wall clock is Home
  *                    Assistant's: GetTimeRequest to the voice assistant's client when it subscribes, then every hour
+ *   Wi-Fi setup      a switch, on by default: Improv Wi-Fi over Bluetooth when the Echo has no Wi-Fi or the action button
+ *                    is held (improv.c); listed where the radio is ours
  */
 #include <ctype.h>
 #include <errno.h>
@@ -62,6 +64,7 @@
 #include "core.h"
 #include "micgain.h"
 #include "hash.h"
+#include "improv.h"
 #include "noise.h"
 #include "outq.h"
 #include "sendspin.h"
@@ -106,7 +109,7 @@ enum { KEY_NOISE = 2, KEY_MIC_LEVEL, KEY_MULT, KEY_MUTE, KEY_WAKE_SOUND, KEY_SEN
        KEY_BT_OUT_SEARCH, KEY_BT_OUT, KEY_BT_OUT_STATUS, KEY_BT_OUT_DELAY, KEY_WIFI_MOTION_ON, KEY_WIFI_MOTION, KEY_WIFI_MOTION_SENS,
        KEY_UPDATE_CHANNEL, KEY_UPDATE, KEY_WHISPERED,
        KEY_ALARM_ON, KEY_ALARM_TIME = KEY_ALARM_ON + ALARM_SLOTS, KEY_ALARM_REPEAT = KEY_ALARM_TIME + ALARM_SLOTS,
-       KEY_ALARM_STOP = KEY_ALARM_REPEAT + ALARM_SLOTS, KEY_ALARM_SNOOZE, KEY_ALARM_RINGING, KEY_ALARM_EVENT, KEY_ALARM_NEXT };
+       KEY_ALARM_STOP = KEY_ALARM_REPEAT + ALARM_SLOTS, KEY_ALARM_SNOOZE, KEY_ALARM_RINGING, KEY_ALARM_EVENT, KEY_ALARM_NEXT, KEY_IMPROV };
 enum { MP_KEY = 1, MP_IDLE = 1, MP_PLAYING = 2, MP_CMD_STOP = 2, MP_CMD_MUTE = 3, MP_CMD_UNMUTE = 4 };
 #define MEDIA_RATE 48000        /* what we ask Home Assistant to transcode announcements and media to: WAV mono s16 */
 
@@ -362,16 +365,20 @@ static int bt_lang;                     /* lock held: index into bt_langs */
 static int have_light;                  /* a light sensor answered at start: illuminance and auto brightness are listed */
 
 static const char *settings_path(void) { const char *p = getenv("HASSMIC_SETTINGS"); return p ? p : "/data/local/hassmic/state/settings"; }
+static char field16[16] = "-";          /* lock held: settings field 16, not ours (settings_load) */
 
 static void settings_load(void)
 {
-    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, wm = 0, ws = WIFIMOTION_SENS_DEFAULT, uc = UPDATE_OFF; float v; char l[8] = ""; FILE *f = fopen(settings_path(), "r");
+    int n, g, m, w, a = 1, d = 0, fmt = 0, la = 1, lb = -1, sd = 0, wm = 0, ws = WIFIMOTION_SENS_DEFAULT, uc = UPDATE_OFF, im = 1; float v;
+    char l[8] = ""; FILE *f = fopen(settings_path(), "r");
     if (!f) { core_mic_level(mic_level); return; }
     /* older files: 5 fields (before Bluetooth announcements), 6 (before do not disturb), 7 (before their language), 8 (before
      * the mic level: the first three fields held noise suppression, auto gain and volume multiplier for Home Assistant,
      * which ignored them; unused since), 9 (before LED brightness: auto, as stock), 11 (before sound detection: off), 12
- * (before Wi-Fi motion: off, default sensitivity), 14 (before online updates: off). */
-    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &wm, &ws, &uc) >= 5) {
+ * (before Wi-Fi motion: off, default sensitivity), 14 (before online updates: off), 15 (before Wi-Fi setup over
+ * Bluetooth: on).  Field 16 is another branch's (alarms): kept as it is, "-" until that branch writes it. */
+    if (fscanf(f, "%d %d %f %d %d %d %d %7s %d %d %d %d %d %d %d %15s %d", &n, &g, &v, &m, &w, &a, &d, l, &fmt, &la, &lb, &sd, &wm, &ws, &uc,
+               field16, &im) >= 5) {
         if (fmt == 2) { mic_level = g < MICGAIN_LEVEL_MIN ? MICGAIN_LEVEL_MIN : g > MICGAIN_LEVEL_MAX ? MICGAIN_LEVEL_MAX : g; core_mic_denoise(n < 0 ? 0 : n > 3 ? 3 : n); }
         core_soft_mute(m != 0); core_wake_sound(w != 0); core_bt_announce(a != 0); core_dnd(d != 0);
         for (int i = 0; i < BT_LANGS; i++) if (!strcmp(l, bt_langs[i].code)) bt_lang = i;     /* the code, not the index: the list may grow */
@@ -379,6 +386,7 @@ static void settings_load(void)
         core_sound(sd != 0);
         wifimotion_enable(wm != 0); wifimotion_sensitivity(ws);
         update_channel(uc);
+        improv_enable(im != 0);
     }
     fclose(f);
     core_mic_level(mic_level);
@@ -388,8 +396,9 @@ static void settings_save(void)
 {
     FILE *f = fopen(settings_path(), "w");
     if (!f) { fprintf(stderr, "settings: cannot write %s\n", settings_path()); return; }
-    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d %d %d %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
-            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), wifimotion_enable(-1), wifimotion_sensitivity(-1), update_channel(-1));
+    fprintf(f, "%d %d 1 %d %d %d %d %s 2 %d %d %d %d %d %d %s %d\n", core_mic_denoise(-1), mic_level, core_soft_mute(-1), core_wake_sound(-1), core_bt_announce(-1), core_dnd(-1),
+            bt_langs[bt_lang].code, core_led_auto(-1), core_led_brightness(-1), core_sound(-1), wifimotion_enable(-1), wifimotion_sensitivity(-1), update_channel(-1),
+            field16, improv_enable(-1));
     fclose(f);
 }
 
@@ -412,6 +421,7 @@ static void send_setting(int key)       /* lock held */
     case KEY_SS_UNPAIRED: if (core_sendspin_port) { pb_uint(&b, 2, sendspin_unpaired(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_ADB_WIFI: pb_uint(&b, 2, adbwifi_open()); send_state(SWITCH_STATE, &b); break;
     case KEY_SOUND_DETECTION: pb_uint(&b, 2, core_sound(-1)); send_state(SWITCH_STATE, &b); break;
+    case KEY_IMPROV: if (ble_present() && core_bluetooth(-1)) { pb_uint(&b, 2, improv_enable(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_WIFI_MOTION_ON: if (wifimotion_present()) { pb_uint(&b, 2, wifimotion_enable(-1)); send_state(SWITCH_STATE, &b); } break;
     case KEY_WIFI_MOTION_SENS: if (wifimotion_present()) { pb_float(&b, 2, wifimotion_sensitivity(-1)); send_state(NUMBER_STATE, &b); } break;
     case KEY_WHISPERED:                 /* unknown until a request has been scored */
@@ -717,6 +727,9 @@ static void send_setting_entities(void)
       pb_str(&b, 3, "Bluetooth announcement language"); pb_str(&b, 5, "mdi:translate");
       for (int i = 0; i < BT_LANGS; i++) pb_str(&b, 6, bt_langs[i].name);
       pb_uint(&b, 8, 1); send_msg(LIST_SELECT, &b); }
+    /* Improv Wi-Fi (improv.c): offered only without Wi-Fi or after the action button was held, and only once pressed */
+    if (ble_present() && core_bluetooth(-1)) { PB(b, 160); pb_str(&b, 1, "wifi_setup_over_bluetooth"); pb_fixed32(&b, 2, KEY_IMPROV);
+      pb_str(&b, 3, "Wi-Fi setup over Bluetooth"); pb_str(&b, 5, "mdi:wifi-cog"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
     /* a root shell without a password for the whole network while it is on: closes by itself after 30 min (lockdown.sh) */
     { PB(b, 160); pb_str(&b, 1, "debug_access_adb"); pb_fixed32(&b, 2, KEY_ADB_WIFI); pb_str(&b, 3, "Debug access (adb over Wi-Fi)");
       pb_str(&b, 5, "mdi:console-network"); pb_uint(&b, 8, 1); send_msg(LIST_SWITCH, &b); }
@@ -793,6 +806,7 @@ static void on_setting(unsigned type, const unsigned char *p, const unsigned cha
         send_setting(key); return;
     }
     else if (type == SWITCH_COMMAND && key == KEY_SOUND_DETECTION) { core_sound(on); settings_save(); send_setting(key); return; }
+    else if (type == SWITCH_COMMAND && key == KEY_IMPROV && ble_present() && core_bluetooth(-1)) { improv_enable(on); settings_save(); send_setting(key); return; }
     else if (type == SELECT_COMMAND && key == KEY_UPDATE_CHANNEL) {
         /* what this Echo runs is root's business: only Home Assistant with the key picks where it comes from */
         int c = client_of(reply_fd);
@@ -1475,7 +1489,7 @@ static int handle(unsigned type, const unsigned char *p, size_t len)
         send_setting(KEY_SS_UNPAIRED); send_setting(KEY_ADB_WIFI);
         send_setting(KEY_BT_OUT_SEARCH); send_setting(KEY_BT_OUT); send_setting(KEY_BT_OUT_STATUS); send_setting(KEY_BT_OUT_DELAY);
         for (int k = KEY_WIFI_MOTION_ON; k <= KEY_WIFI_MOTION_SENS; k++) send_setting(k);
-        send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE); send_setting(KEY_WHISPERED); send_alarm_states();
+        send_setting(KEY_UPDATE_CHANNEL); send_setting(KEY_UPDATE); send_setting(KEY_WHISPERED); send_setting(KEY_IMPROV); send_alarm_states();
         send_token_state(); send_light_states(); send_diag_states(); break;
     case SELECT_COMMAND: case NUMBER_COMMAND: case SWITCH_COMMAND: case TIME_COMMAND: case BUTTON_COMMAND: on_setting(type, p, end); break;
     case GET_TIME_RESP:    on_time(p, end); break;

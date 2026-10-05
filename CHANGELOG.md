@@ -15,6 +15,12 @@ What changed for people using the Echo, newest first. Details and measurements a
   minutes. "Alarm ringing", the "Alarm" event and "Next alarm" are there for automations. The Echo takes the time and
   time zone from Home Assistant (summer time included); after the Echo restarts, alarms ring only once Home Assistant
   has told it the time again.
+- **New Wi-Fi without a PC: Wi-Fi setup over Bluetooth.** When the Echo has had no Wi-Fi for 2 minutes, or after you
+  hold its action button for 5 seconds, it offers [Improv Wi-Fi](https://www.improv-wifi.com/) over Bluetooth for 5
+  minutes (orange spinner on the ring). Home Assistant's Improv integration or the Improv web app then asks you to press
+  the action button and hands over the network name and password; the Echo joins and keeps the network. A wrong
+  password leaves the Echo on the network it had. A switch in Home Assistant, "Wi-Fi setup over Bluetooth" (on by
+  default), turns it off. See [Wi-Fi setup over Bluetooth](README.md#wifi-setup). **Not tried on an Echo yet.**
 - **A client with a bad connection no longer stalls the Echo.** When one of the connected clients (Home Assistant, or a
   second one such as a debugging tool) stopped taking data, for example because its Wi-Fi dropped, the wake word,
   the buttons and every other client could hang for up to 5 seconds. Each client now gets what is sent to it from a

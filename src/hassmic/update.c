@@ -33,6 +33,7 @@
 #include "core.h"
 #include "net.h"
 #include "ota.h"
+#include "threadname.h"
 
 #ifdef RELEASE
 #define CURRENT VERSION                 /* a build CI published (Makefile RELEASE) */
@@ -324,6 +325,7 @@ out:
 
 static void *thread(void *arg)
 {
+    thread_name("update");
     time_t next = time(NULL) + FIRST_LOOK;
     (void)arg;
     pthread_mutex_lock(&ulock);

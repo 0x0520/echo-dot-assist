@@ -8,6 +8,7 @@
 #include "core_int.h"
 #include "micdenoise.h"
 #include "micgain.h"
+#include "threadname.h"
 
 static atomic_int streaming;                        /* mic audio goes to the pipeline; set under core_lock, read anywhere */
 static struct micgain mic_gain;                     /* under lock: gain settings as Home Assistant set them (micgain.h); the
@@ -161,6 +162,7 @@ static void mic_start(struct micgain *g, float kdb, int denoise)       /* mic se
 
 void *mic_sender(void *arg)
 {
+    thread_name("mic sender");
     static struct mblock b;
     static int16_t out[MQ_BLOCK + MICDENOISE_FRAME];
     static struct micgain g;

@@ -6,6 +6,7 @@
 #include <string.h>
 #include "audio.h"
 #include "core_int.h"
+#include "threadname.h"
 
 /* Replies are numbered streams: core_tts_begin starts the next one.  A cut (barge-in, "stop", Home Assistant's media
  * stop) drops the stream that is queued or playing and everything before it; it can never outlast that stream, so the
@@ -73,6 +74,7 @@ void tts_pending_spent(void)
 
 void *playback_thread(void *arg)
 {
+    thread_name("playback");
     int open = 0;
     (void)arg;
     for (;;) {

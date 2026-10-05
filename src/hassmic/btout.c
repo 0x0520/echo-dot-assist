@@ -38,6 +38,7 @@
 #include "core.h"
 #include "hci.h"
 #include "sbc.h"
+#include "threadname.h"
 
 #define RATE 44100                      /* the HAL's output, fixed */
 #define QUEUE_MS 200
@@ -82,6 +83,7 @@ static void set_route(int on, uint64_t addr)
  * full scale) before the route goes back to the Echo's speaker; the speaker's volume takes over only once routed. */
 static void *route_thread(void *arg)
 {
+    thread_name("btout route");
     (void)arg;
     /* left on the speaker by a hassmic that is gone: back to the Echo (core_volume has the mixer's level back already) */
     char out[64]; char *get[] = { "/system/bin/lipc-get-prop", "-s", "com.doppler.audiod", "OutputDevice", NULL };
@@ -142,6 +144,7 @@ static int aipc_handler(struct aipc_task *t)
  * (created plainly they would be aipcd_tmpfs, which it may not).  The label is for what this thread creates. */
 static void *aipc_thread(void *arg)
 {
+    thread_name("btout aipc");
     (void)arg;
     void *lib = dlopen("libace_aipc.so", RTLD_NOW);
     aceAipc_start_fn start = lib ? (aceAipc_start_fn)dlsym(lib, "aceAipc_start") : NULL;
@@ -219,6 +222,7 @@ static void queue_push(const unsigned char *p, size_t n, unsigned frames)
 
 static void *hal_thread(void *arg)
 {
+    thread_name("btout hal");
     int lc = ((int *)arg)[0], ld = ((int *)arg)[1], ctrl = -1, data = -1;
     struct sbc_enc enc; int gen = -1; unsigned k = 1, nf = 0, fill = 0;
     int16_t pcm[2 * SBC_ENC_FRAMES]; unsigned char pkt[1024]; size_t plen = 13;

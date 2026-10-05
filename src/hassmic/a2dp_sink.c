@@ -21,6 +21,7 @@
 #include "bt_int.h"
 #include "core.h"
 #include "hci.h"
+#include "threadname.h"
 
 #define PREBUF_MS 150                   /* jitter buffer while playing: Wi-Fi shares the antenna and delays packets */
 #define MIXER_US 60000                  /* kept queued in the mixer beyond that */
@@ -62,6 +63,7 @@ static void ring_push(const int16_t *pcm, unsigned frames, unsigned ch, unsigned
 
 static void *player(void *arg)
 {
+    thread_name("a2dp player");
     enum { MAXCHUNK = 48000 * CHUNK_MS / 1000 };
     int16_t buf[MAXCHUNK * 2], in[(MAXCHUNK + 8) * 2], prev[2] = { 0, 0 };
     unsigned rate = 0; int open = 0, primed = 0, peak = 0; long long quiet = 0, stat = 0;

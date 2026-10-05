@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+#include "threadname.h"
 
 #define ANSWER_SECS 15          /* the watcher looks every 5 s; no answer after this long: nobody is there */
 
@@ -62,6 +63,7 @@ void adbwifi_ask(int on, const char *from)
 
 static void *watcher(void *arg)
 {
+    thread_name("adb watch");
     int last = adbwifi_open();
     (void)arg;
     for (;;) {

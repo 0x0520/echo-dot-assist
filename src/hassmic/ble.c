@@ -56,6 +56,7 @@
 #include "ble_crypto.h"
 #include "hci.h"
 #include "keyfile.h"
+#include "threadname.h"
 
 #define SCAN_INTERVAL 512                       /* 320 ms, units of 0.625 ms */
 #define SCAN_WINDOW 48                          /* 30 ms */
@@ -1088,6 +1089,7 @@ static void drop_all(void)                                  /* controller lost: 
 
 static void *thread(void *arg)
 {
+    thread_name("ble controller");
     (void)arg;
     for (int said = 0;; sleep(5)) {
         if (stock_bt_running()) { if (!said++) fprintf(stderr, "bluetooth: waiting for %s to stop\n", board.bt_service); continue; }

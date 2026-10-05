@@ -10,6 +10,7 @@
 #include "alarms.h"
 #include "core_int.h"
 #include "keyfile.h"
+#include "threadname.h"
 
 const char *const alarm_repeat_names[] = { "Once", "Every day", "Weekdays", "Weekends", "Mondays", "Tuesdays", "Wednesdays",
                                            "Thursdays", "Fridays", "Saturdays", "Sundays" };
@@ -217,6 +218,7 @@ static int tick(void)
 
 void *alarm_thread(void *arg)
 {
+    thread_name("alarms");
     (void)arg;
     while (!core_quitting()) {
         usleep(500000);

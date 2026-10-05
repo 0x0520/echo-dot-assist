@@ -44,6 +44,7 @@
 #include "adbwifi.h"
 #include "net.h"
 #include "netio.h"
+#include "threadname.h"
 
 #define MAX_BUNDLE (16u << 20)
 #define HEAD_MS    10000        /* the request line */
@@ -210,6 +211,7 @@ static void serve(int c)
 
 static void *listener(void *arg)
 {
+    thread_name("ota push");
     int ls = net_listen(port);
     (void)arg;
     if (ls < 0) { perror("update: listen"); return NULL; }

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include "threadname.h"
 
 #define SHORT_PRESS_MS 1000            /* longer holds belong to acebuttond: 5 s setup mode, 21 s factory reset */
 #define HOLD_MS 5000                   /* stock's setup mode: here Wi-Fi setup over Bluetooth (improv.c).  acebuttond still
@@ -58,6 +59,7 @@ static void latch_check(void)
 
 static void *latch_poll(void *arg)
 {
+    thread_name("mute latch");
     (void)arg;
     for (;;) { sleep(1); latch_check(); }
     return NULL;
@@ -71,6 +73,7 @@ static long long now_ms(void)
 
 static void *reader(void *arg)
 {
+    thread_name("buttons");
     int rfd = (int)(long)arg;
     struct input_event ev; long long action_down = 0; int held = 0;
     for (;;) {
@@ -117,6 +120,7 @@ static void *reader(void *arg)
  * its own input device.  Whatever event arrives there, the truth is the sysfs state. */
 static void *privacy_reader(void *arg)
 {
+    thread_name("privacy key");
     struct input_event ev; int pfd = (int)(long)arg;
     while (read(pfd, &ev, sizeof ev) == sizeof ev) {
         if (ev.type == EV_SYN) continue;

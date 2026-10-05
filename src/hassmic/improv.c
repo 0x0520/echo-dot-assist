@@ -33,6 +33,7 @@
 #include "ble.h"
 #include "board.h"
 #include "gatts.h"
+#include "threadname.h"
 
 #define NO_WIFI_MS (120 * 1000)         /* without an address this long: the window opens */
 #define WINDOW_MS (5 * 60 * 1000)
@@ -400,6 +401,7 @@ static long long mono_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONI
 
 static void *thread(void *arg)
 {
+    thread_name("improv");
     (void)arg;
     for (;;) { improv_tick(mono_ms(), wlan_up()); usleep(500000); }
     return NULL;

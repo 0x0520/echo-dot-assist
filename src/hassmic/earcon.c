@@ -13,6 +13,7 @@
 #include "core_int.h"
 #include "sendspin.h"
 #include "wake.h"
+#include "threadname.h"
 
 static int use_earcon = 1;                          /* under lock (or before the threads start) */
 static atomic_int sounds_pending;
@@ -95,6 +96,7 @@ void core_music(int source, int on)
 
 void *earcon_thread(void *arg)
 {
+    thread_name("earcon");
     enum { RATE = 48000, N = RATE * 12 / 100 };
     static short tone[N];
     static const char *const snd_names[SND_COUNT] = { "wake", "touch", "mics off", "mics on", "volume", "bluetooth connected",

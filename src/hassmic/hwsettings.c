@@ -15,6 +15,7 @@
 #include "board.h"
 #include "core_int.h"
 #include "sendspin.h"
+#include "threadname.h"
 
 static int use_led = 1, use_volume = 1;            /* set before the threads start */
 
@@ -193,6 +194,7 @@ void on_volume(int dir)
 
 void *volume_led_thread(void *arg)
 {
+    thread_name("volume led");
     int tick = 0;
     (void)arg;
     while (!core_quitting()) {

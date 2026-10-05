@@ -59,6 +59,7 @@
 #include <unistd.h>
 #include "hash.h"
 #include "net.h"
+#include "threadname.h"
 #include "ws.h"
 #include "../third_party/monocypher.h"
 
@@ -397,6 +398,7 @@ static void on_packet(const uint8_t *p, size_t n, uint32_t from, long long now)
 
 static void *loop(void *arg)
 {
+    thread_name("arbitration");
     uint8_t buf[512]; struct pollfd pf = { sock, POLLIN, 0 };
     (void)arg;
     for (;;) {

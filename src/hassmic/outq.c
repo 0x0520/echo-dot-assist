@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include "outq.h"
+#include "threadname.h"
 
 struct item { struct item *next; size_t len; unsigned char data[]; };
 
@@ -41,6 +42,7 @@ static int write_all_fd(int fd, const unsigned char *p, size_t n)
 
 static void *writer(void *arg)
 {
+    thread_name("outq writer");
     struct outq *q = arg;
     pthread_mutex_lock(&q->lock);
     for (;;) {

@@ -41,6 +41,7 @@
 #include "ota.h"
 #include "sendspin.h"
 #include "board.h"
+#include "threadname.h"
 
 #define PIPELINE_TIMEOUT_MS 30000   /* in LISTENING or THINKING before giving up */
 
@@ -332,6 +333,7 @@ static atomic_long cap_bytes;
 
 static void *selftest_thread(void *arg)
 {
+    thread_name("selftest");
     (void)arg;
     for (int i = 0; i < 300 && !atomic_load(&quit); i++) {          /* 30 s */
         if (atomic_load(&cap_bytes) >= CAP_RATE * 2) { fprintf(stderr, "self test: passed\n"); ota_healthy(); return NULL; }
@@ -343,6 +345,7 @@ static void *selftest_thread(void *arg)
 
 static void *capture_thread(void *arg)
 {
+    thread_name("capture");
     FILE *dump = NULL;
     (void)arg;
     while (!atomic_load(&quit)) {
@@ -387,7 +390,14 @@ static void *capture_thread(void *arg)
     return NULL;
 }
 
-static void *serve_thread(void *arg) { int c = (int)(long)arg; proto->serve(c); close(c); return NULL; }
+static void *serve_thread(void *arg)
+{
+    int c = (int)(long)arg; char name[16];
+    snprintf(name, sizeof name, "%s client", proto->id);     /* "esphome client", "wyoming client" */
+    thread_name(name);
+    proto->serve(c); close(c);
+    return NULL;
+}
 
 /* -W: a Wyoming client is whoever connects (the protocol has no authentication), and the newest one wins, so anyone on
  * the network could take Home Assistant's place and hear the microphone.  Closed at accept, before serve() gets it and

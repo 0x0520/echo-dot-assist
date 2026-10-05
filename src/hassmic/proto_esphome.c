@@ -70,6 +70,7 @@
 #include "noise.h"
 #include "outq.h"
 #include "sendspin.h"
+#include "threadname.h"
 #include "update.h"
 #include "wifimotion.h"
 #include "net.h"
@@ -610,6 +611,7 @@ static void ask_time(void);
 
 static void *diag_thread(void *arg)
 {
+    thread_name("diag");
     (void)arg;
     cpu_usage();
     for (int n = 1;; n++) {
@@ -634,6 +636,7 @@ static float sent_lux = NAN; static int sent_level = -1; static time_t sent_at; 
 
 static void *light_thread(void *arg)
 {
+    thread_name("light");
     (void)arg;
     for (;;) {
         sleep(1);
@@ -1000,6 +1003,7 @@ static int play_url(struct media_job *job, int fd)
 
 static void *media_thread(void *arg)
 {
+    thread_name("media fetch");
     struct media_job *job = arg; int ok = 0, began = 0;
     for (int i = 0; i < 2; i++) {
         if (!job->url[i][0] || core_tts_flushing()) continue;
@@ -1263,6 +1267,7 @@ static void bt_try(void)                /* lock held */
 
 static void *bt_thread(void *arg)
 {
+    thread_name("bt announce");
     (void)arg;
     for (;;) { usleep(200000); pthread_mutex_lock(&core_lock); bt_try(); pthread_mutex_unlock(&core_lock); }
     return NULL;

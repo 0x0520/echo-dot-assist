@@ -37,6 +37,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include "threadname.h"
 
 #define IFACE "wlan0"
 #define HOLD_MS 30000                   /* motion stays on this long after the last movement, as a PIR's */
@@ -155,6 +156,7 @@ int wifimotion_present(void)
 
 static void *poll_thread(void *arg)
 {
+    thread_name("wifi motion");
     (void)arg;
     char *buf = malloc(BUF); struct wm_det d; struct wm_kinds kinds; int fails = 0; long frames = -1; float v;
     /* the PC test cannot wait 30 s for motion to clear */

@@ -15,6 +15,7 @@
 #include "bt_int.h"
 #include "core.h"
 #include "hci.h"
+#include "threadname.h"
 
 static atomic_int echo_volume = -1, vol_dirty, key_req, avrcp_links;
 
@@ -26,6 +27,7 @@ static int vol_want = -1;                               /* vol_lock */
 
 static void *volume_thread(void *arg)
 {
+    thread_name("avrcp volume");
     (void)arg;
     for (;;) {
         pthread_mutex_lock(&vol_lock);

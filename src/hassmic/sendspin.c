@@ -36,6 +36,7 @@
 #include "hash.h"
 #include "netio.h"
 #include "noise.h"
+#include "threadname.h"
 #include "ws.h"
 #define DR_FLAC_IMPLEMENTATION
 #define DR_FLAC_NO_STDIO
@@ -161,6 +162,7 @@ static void q_push(long long ts, const uint8_t *pcm, size_t len)
 
 static void *player_thread(void *arg)
 {
+    thread_name("sendspin play");
     static int16_t silence[RATE / 100 * CHANNELS]; int open = 0; double smooth = 0; long long stat_t = 0; long adj_total = 0;
     (void)arg;
     for (;;) {
@@ -524,6 +526,7 @@ static int outbox_send(struct session *s)
  * timeout), then the clock exchange and the outbox. */
 static void *time_thread(void *arg)
 {
+    thread_name("sendspin time");
     struct session *s = arg; long long deadline = raw_us() + HANDSHAKE_US;
     while (!s->up && !s->closing) {
         if (raw_us() > deadline) { fprintf(stderr, "sendspin: handshake not done in %d s, closing\n", HANDSHAKE_US / 1000000); shutdown(s->fd, SHUT_RDWR); break; }
@@ -776,6 +779,7 @@ static struct session *session_new(int fd)
 
 static void *serve(void *arg)
 {
+    thread_name("sendspin conn");
     struct session *s = arg; uint8_t *plain = malloc(PLAIN_MAX); char path[128]; int op, ws_up = 0, tt_up = 0; uint8_t *d; size_t n; pthread_t tt;
     if (plain && !pthread_create(&tt, NULL, time_thread, s)) tt_up = 1;
     if (tt_up && !ws_accept(&s->ws, s->fd, path, sizeof path)) {
@@ -814,6 +818,7 @@ static void *serve(void *arg)
 
 static void *listen_thread(void *arg)
 {
+    thread_name("sendspin listen");
     int ls = net_listen(port); char token[160];
     (void)arg;
     if (ls < 0) { perror("sendspin: listen"); return NULL; }

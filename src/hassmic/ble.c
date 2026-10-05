@@ -29,7 +29,8 @@
  * ever connect, the device never needs to recognise or encrypt towards us.
  *
  * BR/EDR (the Bluetooth speaker) shares this thread and the controller: a2dp.c gets the events and ACL packets that
- * are not LE's, its own share of the controller's buffers, and sends its commands from upkeep() (hci.h).
+ * are not LE's, its own share of the controller's buffers, and sends its commands from upkeep() (hci.h).  The ACL
+ * queue, flow control and L2CAP framing both sides use are acl.c.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -44,10 +45,12 @@
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
 #endif
+#include "acl.h"
 #include "ble.h"
 #include "board.h"
 #include "ble_crypto.h"
 #include "hci.h"
+#include "keyfile.h"
 
 #define SCAN_INTERVAL 512                       /* 320 ms, units of 0.625 ms */
 #define SCAN_WINDOW 48                          /* 30 ms */
@@ -141,14 +144,10 @@ static struct conn {
     unsigned char val[512]; size_t vlen; size_t off;   /* long read / long write progress */
     int phase, idx; unsigned next;              /* discovery */
     struct ble_db *db;
-    unsigned char rx[4 + ATT_MTU + 64]; size_t rxlen, rxwant;  /* L2CAP reassembly */
+    unsigned char rx[4 + ATT_MTU + 64]; struct l2cap_rx rxs;   /* L2CAP reassembly */
     unsigned char upd_par[8];                   /* LE Connection Update wanted by the device */
-    int unacked;                                /* ACL packets sent, not yet reported complete */
+    struct acl_tx tx;                           /* ACL packets queued, sent but not yet reported complete */
 } conns[BLE_MAX_CONN];
-
-static unsigned acl_len = 27, acl_num = 1; static int credits, shared_acl;     /* shared_acl: no LE buffers of its own */
-struct frag { struct frag *next; int handle; size_t len; unsigned char b[]; };
-static struct frag *fhead, **ftail = &fhead;
 
 static void set_slot(struct conn *c, uint64_t addr)
 {
@@ -162,39 +161,15 @@ static struct conn *by_addr(uint64_t a) { for (int i = 0; i < BLE_MAX_CONN; i++)
 static struct conn *by_handle(int h) { for (int i = 0; i < BLE_MAX_CONN; i++) if (conns[i].state >= C_MTU && conns[i].handle == h) return &conns[i]; return NULL; }
 static struct conn *in_state(int s) { for (int i = 0; i < BLE_MAX_CONN; i++) if (conns[i].state == s) return &conns[i]; return NULL; }
 
-static void acl_flush(void)
-{
-    while (fhead && credits > 0) {
-        struct frag *f = fhead;
-        if (!(fhead = f->next)) ftail = &fhead;
-        struct conn *c = by_handle(f->handle);
-        if (c) {
-            if (write(fd, f->b, f->len) != (ssize_t)f->len) fprintf(stderr, "bluetooth: ACL write failed\n");
-            else { credits--; c->unacked++; }
-        }
-        free(f);
-    }
-}
+static struct acl_tx *tx_by_handle(int h) { struct conn *c = by_handle(h); return c ? &c->tx : NULL; }
+/* LE's ACL queue: first fragments not automatically flushable (all LE allows) */
+static struct acl_queue aq = ACL_QUEUE(aq, "bluetooth", tx_by_handle, 0x00, ATT_MTU + 16);
+static int shared_acl;                          /* no LE buffers of its own: aq.own is the pool BR/EDR counts in too */
 
 /* One L2CAP frame, cut into ACL packets the controller takes */
-static void l2cap_send(struct conn *c, unsigned cid, const void *pdu, size_t n)
-{
-    unsigned char fr[4 + ATT_MTU + 16];
-    if (n > sizeof fr - 4) return;
-    put16(fr, n); put16(fr + 2, cid); memcpy(fr + 4, pdu, n); n += 4;
-    for (size_t o = 0; o < n; o += acl_len) {
-        size_t k = n - o < acl_len ? n - o : acl_len;
-        struct frag *f = malloc(sizeof *f + 5 + k);
-        if (!f) return;
-        f->next = NULL; f->handle = c->handle; f->len = 5 + k;
-        f->b[0] = H4_ACL; f->b[1] = c->handle; f->b[2] = (c->handle >> 8 & 0x0f) | (o ? 0x10 : 0x00);   /* continuing / first */
-        put16(f->b + 3, k); memcpy(f->b + 5, fr + o, k);
-        *ftail = f; ftail = &f->next;
-    }
-    acl_flush();
-}
+static void conn_send(struct conn *c, unsigned cid, const void *pdu, size_t n) { l2cap_send(&aq, c->handle, &c->tx, cid, pdu, n); }
 
-static void att_send(struct conn *c, const void *pdu, size_t n) { l2cap_send(c, CID_ATT, pdu, n); }
+static void att_send(struct conn *c, const void *pdu, size_t n) { conn_send(c, CID_ATT, pdu, n); }
 
 static struct conn *dh_owner;                   /* the one DHKey computation the controller does at a time */
 
@@ -204,12 +179,7 @@ static void free_conn(struct conn *c)
     if (dh_owner == c) dh_owner = NULL;
     for (struct op *o = c->ops, *n; o; o = n) { n = o->next; free(o); }
     free(c->cur); free(c->db);
-    for (struct frag **p = &fhead; *p; ) {                      /* its queued packets die with it */
-        struct frag *f = *p;
-        if (f->handle == c->handle) { *p = f->next; free(f); } else p = &f->next;
-    }
-    ftail = &fhead; while (*ftail) ftail = &(*ftail)->next;
-    credits += c->unacked;                                      /* the controller forgets them at disconnection */
+    acl_forget(&aq, c->handle, &c->tx);                         /* its queued packets die with it */
     memset(c, 0, sizeof *c);
     set_slot(c, 0);
 }
@@ -432,10 +402,10 @@ static void sig_rx(struct conn *c, const unsigned char *p, size_t n)
     if (p[0] == 0x12 && n >= 12) {                          /* Connection Parameter Update Request */
         memcpy(c->upd_par, p + 4, 8); c->upd = 1;
         r[0] = 0x13; r[1] = p[1]; put16(r + 2, 2); put16(r + 4, 0);
-        l2cap_send(c, CID_SIG, r, 6);
+        conn_send(c, CID_SIG, r, 6);
     } else if (p[0] != 0x01 && p[0] != 0x13 && p[0] != 0x15 && p[0] != 0x07) {  /* not a response: Command Reject */
         r[0] = 0x01; r[1] = p[1]; put16(r + 2, 2); put16(r + 4, 0);
-        l2cap_send(c, CID_SIG, r, 6);
+        conn_send(c, CID_SIG, r, 6);
     }
 }
 
@@ -450,20 +420,13 @@ static int have_sc, pk_ready; static unsigned char local_pk[64];   /* SMP order 
 static void swap_coords(unsigned char *out, const unsigned char *in) { bytes_reverse(out, in, 32); bytes_reverse(out + 32, in + 32, 32); }
 static unsigned char own_addr[6];                                  /* public, least significant octet first */
 
-static const char *bonds_path(void)
-{
-    static char p[256]; const char *d = getenv("HASSMIC_STATE");
-    snprintf(p, sizeof p, "%s/ble_bonds", d ? d : "/data/local/hassmic/state");
-    return p;
-}
-
 static void hexout(FILE *f, const unsigned char *b, size_t n) { for (size_t i = 0; i < n; i++) fprintf(f, "%02x", b[i]); fputc(' ', f); }
 static int hexin(const char *s, unsigned char *b, size_t n) { for (size_t i = 0; i < n; i++) if (sscanf(s + 2 * i, "%2hhx", &b[i]) != 1) return -1; return 0; }
 
 /* one line per device: address type sc keysize ediv ltk rand irk|- (hex, keys as the controller takes them) */
 static void bonds_load(void)
 {
-    char l[256], ltk[40], rnd[24], irk[40]; FILE *f = fopen(bonds_path(), "r"); unsigned long long a;
+    char l[256], ltk[40], rnd[24], irk[40]; FILE *f = keyfile_read("ble_bonds"); unsigned long long a;
     if (!f) return;
     while (nbonds < MAX_BONDS && fgets(l, sizeof l, f)) {
         struct bond *b = &bonds[nbonds];
@@ -478,9 +441,8 @@ static void bonds_load(void)
 
 static void bonds_save(void)
 {
-    char tmp[300]; snprintf(tmp, sizeof tmp, "%s.tmp", bonds_path());
-    int fdw = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600); FILE *f = fdw >= 0 ? fdopen(fdw, "w") : NULL;
-    if (!f) { if (fdw >= 0) close(fdw); fprintf(stderr, "bluetooth: cannot write %s\n", tmp); return; }
+    struct keyfile k; FILE *f = keyfile_write(&k, "ble_bonds", "bluetooth");
+    if (!f) return;
     for (int i = 0; i < nbonds; i++) {
         struct bond *b = &bonds[i];
         fprintf(f, "%012llx %u %u %u %u ", (unsigned long long)b->addr, b->type, b->sc, b->keysize, b->ediv);
@@ -488,7 +450,7 @@ static void bonds_save(void)
         if (b->has_irk) hexout(f, b->irk, 16); else fputs("- ", f);
         fputc('\n', f);
     }
-    if (fclose(f) || rename(tmp, bonds_path())) { unlink(tmp); fprintf(stderr, "bluetooth: cannot write %s\n", bonds_path()); }
+    keyfile_commit(&k);
 }
 
 static void addr_bytes(uint64_t a, unsigned char o[6]) { for (int i = 0; i < 6; i++) o[i] = a >> (8 * i); }
@@ -508,7 +470,7 @@ static void bond_forget(struct bond *b)
     *b = bonds[--nbonds]; bonds_save();
 }
 
-static void smp_send(struct conn *c, const void *p, size_t n) { l2cap_send(c, CID_SMP, p, n); }
+static void smp_send(struct conn *c, const void *p, size_t n) { conn_send(c, CID_SMP, p, n); }
 
 static void pair_done(struct conn *c, int ok, int err)
 {
@@ -727,18 +689,10 @@ static void encrypted(struct conn *c, int status)
 static void acl_rx(const unsigned char *p, size_t n)     /* p: after the H4 type byte */
 {
     if (n < 4) return;
-    struct conn *c = by_handle(u16(p) & 0x0fff); unsigned pb = p[1] >> 4 & 3; size_t len = u16(p + 2);
+    struct conn *c = by_handle(u16(p) & 0x0fff);
     if (!c) { a2dp_acl(p, n); return; }
-    if (len > n - 4) return;
-    p += 4;
-    if (pb != 1) {                                          /* first fragment (not "continuing"): L2CAP header inside */
-        if (len < 4) return;
-        c->rxwant = 4 + u16(p); c->rxlen = 0;
-    } else if (!c->rxwant) return;
-    if (c->rxlen + len > sizeof c->rx) { c->rxwant = 0; return; }       /* bigger than we ever asked for: drop */
-    memcpy(c->rx + c->rxlen, p, len); c->rxlen += len;
-    if (c->rxlen < c->rxwant) return;
-    c->rxwant = 0; c->heard = 1;
+    if (!l2cap_reassemble(&c->rxs, c->rx, sizeof c->rx, p, n)) return;
+    c->heard = 1;
     unsigned cid = u16(c->rx + 2); size_t l = u16(c->rx);
     if (cid == CID_ATT) att_rx(c, c->rx + 4, l);
     else if (cid == CID_SIG) sig_rx(c, c->rx + 4, l);
@@ -816,11 +770,11 @@ static void event(const unsigned char *p, size_t n)            /* p: event code,
         for (unsigned i = 0; n >= 1 && i < q[0] && 1 + 4 * i + 4 <= n; i++) {
             unsigned k = u16(q + 3 + 4 * i);
             if (a2dp_completed(u16(q + 1 + 4 * i) & 0x0fff, k)) continue;      /* BR/EDR buffers: counted apart */
-            credits += k; if (credits > (int)acl_num) credits = acl_num;
-            if ((c = by_handle(u16(q + 1 + 4 * i) & 0x0fff))) { c->unacked -= k; if (c->unacked < 0) c->unacked = 0; }
+            c = by_handle(u16(q + 1 + 4 * i) & 0x0fff);
+            acl_completed(&aq, c ? &c->tx : NULL, k);
         }
-        acl_flush();
-        if (shared_acl) a2dp_acl_flush();                   /* the pool is a2dp's too: its queue may go on */
+        acl_flush(&aq);
+        if (shared_acl) a2dp_acl_flush();                   /* the pool is BR/EDR's too: its queue may go on */
         break;
     case EV_LE_META:
         if (n < 1) break;
@@ -913,13 +867,14 @@ static int setup(void)
         return -1;
     }
     shared_acl = 0;
+    unsigned acl_len = aq.len, acl_num = aq.num;           /* the last ones if neither command answers */
     if (cmd(OP_LE_READ_BUFFER, NULL, 0) == 0 && u16(cc_ret)) { acl_len = u16(cc_ret); acl_num = cc_ret[2]; }
     else if (cmd(OP_READ_BUFFER, NULL, 0) == 0) {           /* shared with BR/EDR: one pool of credits for both (hci.h) */
         acl_len = u16(cc_ret); acl_num = u16(cc_ret + 3); shared_acl = 1;
     }
     if (acl_len < 27) acl_len = 27;
     if (!acl_num) acl_num = 1;
-    credits = acl_num;
+    acl_buffers(&aq, acl_len, acl_num, NULL);
     /* LE Secure Connections needs the controller's P-256: supported commands octet 34, bits 1 and 2 */
     have_sc = pk_ready = 0;
     if (cmd(OP_READ_LOCAL_CMDS, NULL, 0) == 0 && (cc_ret[34] & 0x06) == 0x06 && cmd(OP_LE_READ_PK, NULL, 0) == 0) {
@@ -1094,8 +1049,7 @@ static void drop_all(void)                                  /* controller lost: 
         uint64_t a = conns[i].addr; free_conn(&conns[i]);
         if (H->connection) H->connection(a, 0, 0, HCI_E_TIMEOUT);
     }
-    for (struct frag *f = fhead, *n; f; f = n) { n = f->next; free(f); }
-    fhead = NULL; ftail = &fhead;
+    acl_clear(&aq);
     a2dp_lost();
 }
 
@@ -1177,7 +1131,7 @@ int hci_cmd(unsigned op, const void *par, unsigned n) { return cmd(op, par, n); 
 const unsigned char *hci_ret(void) { return cc_ret; }
 int hci_write(const void *b, size_t n) { return write(fd, b, n) == (ssize_t)n ? 0 : -1; }
 void hci_poke(void) { poke(); }
-int *hci_acl_pool(void) { return shared_acl ? &credits : NULL; }
+int *hci_acl_pool(void) { return shared_acl ? &aq.own : NULL; }
 
 void ble_start(const struct ble_handler *h)
 {

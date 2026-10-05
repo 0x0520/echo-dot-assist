@@ -50,11 +50,11 @@ r=$(printf 'HMOTA-FACTORY1 9.9.9+test\n' | timeout 3 nc -q1 127.0.0.1 $OP 2>/dev
 # One connection at a time: one trickling a byte every 3 s (each read well inside any per-read timeout) must still be
 # cut off, and the push queued behind it go through
 python3 -c '
-import socket, select, time
-s = socket.create_connection(("127.0.0.1", $OP)); t = time.time(); got = b""
+import socket, select, sys, time
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1]))); t = time.time(); got = b""
 while time.time() - t < 25 and not got:
     s.sendall(b"H"); got = s.recv(200) if select.select([s], [], [], 3)[0] else b""
-print("%.0f %s" % (time.time() - t, got.decode().strip()))' > $T/trickle &
+print("%.0f %s" % (time.time() - t, got.decode().strip()))' $OP > $T/trickle &
 TR=$!; sleep 0.5
 rm -rf $T/installed; installer 100 & r=$($O push 127.0.0.1 $OP $T/good.bundle $T/good.bundle.sig); wait $!; wait $TR
 read secs why < $T/trickle

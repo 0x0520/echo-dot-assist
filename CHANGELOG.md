@@ -48,6 +48,14 @@ What changed for people using the Echo, newest first. Details and measurements a
   Assistant off the Echo, then play or change the volume; now such a connection can only pair. A server that stops
   reading can no longer freeze the Echo (volume buttons included), connections that never finish connecting are dropped
   after 10 seconds, and at most four connect at a time, so a flood of them cannot lock your Music Assistant out.
+- **Bluetooth is harder to attack.** A phone or device in radio range could crash hassmic with crafted AAC audio, and
+  a device pretending to be a paired one could make the Echo forget the real pairing and pair itself in its place.
+  Both are closed, along with a series of smaller checks on what other Bluetooth devices send (see PLAN.md).
+- **A forgotten Bluetooth pairing is no longer repaired behind your back.** If a speaker the Echo plays on is reset,
+  run "Bluetooth speaker search" again; a phone that forgot the Echo pairs again with "Bluetooth pairing" on, as
+  before. For the Bluetooth proxy, Home Assistant's "pair" pairs such a device afresh. Before, the Echo deleted the
+  pairing on the other side's word and re-paired with whoever answered.
+- **Bluetooth proxy pairing needs full-length keys** (16 bytes), which every current device offers.
 - **Whisper detection: one download, the one that exists.** Amazon has a single whisper model for every language
   and hands it out only when asked for American English, so `scripts/artifacts.sh` now asks for just that, whatever
   language is picked. Before, it asked for the picked language first and took the English one as a fallback.

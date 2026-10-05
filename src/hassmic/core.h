@@ -46,7 +46,8 @@ extern const char *core_name;
 const char *core_node_name(void);               /* "Echo Dot" -> "echo-dot": the ESPHome device (host) name */
 extern int core_local_wake, core_port, core_sendspin_port;
 
-/* lock held */
+/* lock held, except core_state: any thread may read it without the lock as a snapshot (the music players duck by it
+ * every 10 ms and must not wait behind the volume helpers that hold the lock); acting on it needs the lock */
 enum state core_state(void);
 void core_set_state(enum state s);
 void core_link(int connected, int ready);       /* client connection / server wants pipelines.  (0,0) ends a running pipeline */

@@ -1080,6 +1080,30 @@ Run in this order. Each step says what it proves.
       Monocypher's, BLAKE2b): same keys and byte-identical signatures as the C one (tests/otatool_test.sh, 9 checks), the
       real release bundle verifies, one flipped byte does not; ota_push_test and fake_ha_update pass with it.
       probe.sh: devices/<codename>/probe.md5 from the pinned firmware (all three firmwares' sha256 match their pins).
+- [x] Update and boot hardening (2026-10-05, review of the root side). Found on a Windows checkout: `core.autocrlf=true`
+      and no `.gitattributes`, so main.sh, lockdown.sh and device.conf were CR LF in the work tree, and `ota-push.sh` with
+      PREBUILT packs the work tree. Such a bundle was refused only by luck (device.conf's `PRODUCT=donut` is not this
+      Echo, "built for donut"), and `install-system.sh` from that tree likewise. Now `.gitattributes` (`eol=lf`),
+      `bundle.sh` and `sysinstall.sh` refuse CR, and ota_watch rejects a bundle with CR in `*.sh`/device.conf/hassmic.rc
+      or a script that fails `sh -n`. Fixed with it: root wrote `state/ota/result.tmp` (the daemon's directory) and
+      chowned it, following a link the daemon may have put there (e.g. to `/data/local/hassmic/hassmic`, which
+      satellite runs as root for `-S`): now written in `ota/` and renamed over. The start counter was reset by
+      `(sleep 60; pidof hassmic)` in every copy, so after a fall back the factory copy cleared it and the next boot tried
+      the broken update again, and a hung update never fell back; now only `state/ota/healthy` from the update's own
+      binary resets it. The fast-exit fall back left the update's netwatch (fwcheck) running beside the factory copy's.
+      A deploy.sh test binary in /data is removed when an update installs. hassmic.conf: CR LF converted, checked with
+      `sh -n` and in a subshell first; mksh does not stop at a syntax error in a dot script but reports it and goes on
+      (seen in the test), an `exit` would end the firewall service. `tests/boot_test.sh` runs main.sh itself (paths under
+      `HASSMIC_BASE`) with stand-ins for getprop/start/stop/pidof: 17 checks, all good with mksh (16 with dash, which has
+      no `read -d`) in a Debian container; ota_push_test and otatool_test still pass. From the review of this change: the
+      watcher kill loop now runs before a config or device.conf failure execs the watcher (two watchers after a push
+      otherwise, the old one left over); a config that does not load resets the counter (not the update's fault); the
+      self test now runs without the push port too (`-o 0` would otherwise undo every update after three boots).
+      Left: a link to a directory in place of `state/ota/result` makes mv put the result inside it (toybox mv has no -T;
+      fixed name, never run); a deploy.sh test binary on an Echo with an installed update now falls back after three
+      boots (the counter only trusts the update's own binary); an Echo whose mic delivers nothing never passes the self
+      test and so keeps the factory copy (muted is not that: micAsr still delivers, as digital silence, see the Echo 2
+      above). Not on a device yet.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

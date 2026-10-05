@@ -4,6 +4,22 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-05
 
+- **Updates from a Windows PC can no longer break the boot.** A checkout on Windows turned the line endings of the
+  Echo's boot scripts into CR LF, which its shell reads as part of every word. The repository now keeps them LF on every
+  PC, `scripts/bundle.sh` refuses to pack such a file, and the Echo refuses to install a bundle whose scripts carry CR LF
+  or do not parse, saying so in the push result.
+- **A broken `hassmic.conf` no longer takes the firewall down.** A stray quote or an `exit` in a hand-edited config now
+  means "no satellite" and a line in `boot.log`; the egress lock comes up regardless. A config with Windows line endings
+  is converted. A name given to `scripts/install-system.sh` may contain quotes and `$`.
+- **Falling back to the last working version sticks.** After an update failed to come up, the factory copy reset the
+  start counter a minute later, and the next boot tried the broken update again. Only the update's own self test
+  (started, wake word engine, a second of microphone audio) now counts as it coming up, so an update that hangs falls
+  back after three boots too.
+- **A test binary left by `scripts/deploy.sh` no longer hides updates.** It went on running after every push or online
+  update, and the update never became the fallback; installing an update now removes it.
+- **Hardened the root side of updates** against a compromised hassmic: root no longer writes the update result through
+  a name in hassmic's own directory, which could have been made to point at a file root then runs.
+
 - **Whisper detection: one download, the one that exists.** Amazon has a single whisper model for every language
   and hands it out only when asked for American English, so `scripts/artifacts.sh` now asks for just that, whatever
   language is picked. Before, it asked for the picked language first and took the English one as a fallback.

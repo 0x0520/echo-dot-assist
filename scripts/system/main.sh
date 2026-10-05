@@ -15,20 +15,44 @@
 umask 022                                   # init gives us 077; what we create must be readable by the daemon's user
 D=${HASSMIC_DIR:-/system/hassmic}
 SYS=${HASSMIC_SYS:-/system/hassmic}
-OTA=/data/local/hassmic/ota
-CONF=/data/local/hassmic/hassmic.conf
-LOG=/data/local/hassmic/boot.log
+BASE=${HASSMIC_BASE:-/data/local/hassmic}      # only tests/boot_test.sh sets it
+OTA=$BASE/ota
+CONF=$BASE/hassmic.conf
+LOG=$BASE/boot.log
 [ -f $CONF ] || exit 0
-# Without the model's facts the satellite cannot start, but the firewall needs none of them: it must go up regardless.
-if [ ! -f $D/device.conf ]; then
-    echo "== $D/device.conf missing: no satellite" >> $LOG
-    [ "$1" = firewall ] && exec sh $D/lockdown.sh watch >> $LOG 2>&1
-    exit 1
+# A push update runs "firewall" again (exec, same PID) while the previous firewall watcher is still looping: stop it first,
+# or every update adds one and old and new rules take turns.  Matched by command line, which also catches the ones that
+# earlier versions left behind.  Read with the shell itself: a process that exits between the open and the read leaves
+# the Echo 2's tr (Fire OS 6572) spinning on the read error for ever, and this script never got to the firewall watcher
+# and the installer below (seen 2026-09-30 right after a boot: no egress lock, push updates unanswered).
+if [ "$1" = firewall ]; then
+    for p in /proc/[0-9]*; do
+        c=; while IFS= read -r -d '' a; do c="$c $a"; done 2>/dev/null < $p/cmdline
+        case "$c" in *lockdown.sh*watch*) kill ${p#/proc/} 2>/dev/null;; esac
+    done
 fi
+
+# Without the model's facts or a config that loads the satellite cannot start, but the firewall needs neither: it must go
+# up regardless.  A config that does not load is not the update's fault: that start does not count against it (boot.sh).
+no_satellite() {
+    echo "== $1: no satellite" >> $LOG
+    [ "$MAIN_MODE" = firewall ] && exec sh $D/lockdown.sh watch >> $LOG 2>&1
+    [ "$2" = conf ] && echo 0 > $OTA/tries
+    exit 1
+}
+MAIN_MODE=$1
+[ -f $D/device.conf ] || no_satellite "$D/device.conf missing"
 . $D/device.conf
 # Root runs what this file says, and ADB_WIFI in it opens a root shell: nobody else may write it.  "adb push" leaves it
 # writable for everyone (seen on two of three Echos), and hassmic faces the network.
 chown root:root $CONF; chmod 644 $CONF
+# The config is edited by hand, and pushed from Windows it comes with CR LF: mksh keeps the CR in every value.  An `exit`
+# in it would end this script while sourcing it, firewall service included, so it is tried in a subshell first; a stray
+# quote mksh reports and then goes on past (tests/boot_test.sh), with whatever half of the file it got, so -n for that.
+if grep -q "$(printf '\r')" $CONF; then
+    tr -d '\r' < $CONF > $CONF.tmp && chmod 644 $CONF.tmp && mv $CONF.tmp $CONF && echo "== $CONF had CR LF line endings, converted" >> $LOG
+fi
+sh -n $CONF 2> /dev/null && [ "$(. $CONF > /dev/null 2>&1; echo ok)" = ok ] || no_satellite "$CONF does not load (shell syntax)" conf
 . $CONF
 NAME=${NAME:-$DEFAULT_NAME}
 
@@ -74,7 +98,7 @@ fwcheck() {
 kmod() {
     [ -n "$KMOD" ] && [ -f $D/$KMOD ] || return 0
     grep -q "^${KMOD%.ko} " /proc/modules && return 0
-    set -- $(cat /data/local/hassmic/state/settings 2>/dev/null)
+    set -- $(cat $BASE/state/settings 2>/dev/null)
     [ "${13}" = 1 ] || return 0
     if out=$(insmod $D/$KMOD $KMOD_ARGS 2>&1); then echo "kmod: $KMOD loaded (Wi-Fi motion switched on)"
     else echo "kmod: $KMOD not loaded, not tried again until reboot: $out"; KMOD=; fi
@@ -107,45 +131,67 @@ netwatch() {
 # Assistant, update.c).  The release key of the copy that runs wins over the factory copy's: both are root's, written
 # from bundles that verified, and so a new release key can come with an update signed by the old one.
 release_pub() { for k in $D/release.pub $SYS/release.pub; do [ -s $k ] && { echo $k; return; }; done; }
-rejected() { echo "== update rejected: $1"; rm -rf $new; echo "FAILED $1" > $IN/result.tmp; }
+rejected() { echo "== update rejected: $1"; rm -rf $new; echo "FAILED $1" > $RES; }
+# What boot.sh and init will run from the bundle must parse as it is: a CR (packed from a Windows checkout) becomes part
+# of every value, `D=/system/hassmic\r` and nothing after boot starts, the egress lock included.
+broken_scripts() {
+    for f in $1/*.sh $1/device.conf $1/hassmic.rc; do
+        [ -f "$f" ] || continue
+        if grep -q "$(printf '\r')" "$f"; then echo "${f##*/} has CR LF line endings"; return; fi
+        case "$f" in *.sh) sh -n "$f" 2> /dev/null || { echo "${f##*/} does not parse"; return; };; esac
+    done
+    return 1
+}
+# The hassmic that runs is the installed update's own binary: not the factory copy after a fall back, not a test binary
+# from deploy.sh in /data.
+runs_current() {
+    for p in $(pidof hassmic); do [ "$(readlink /proc/$p/exe)" = "$1/hassmic" ] && return 0; done
+    return 1
+}
 # The installed update passed its self test (hassmic left state/ota/healthy: started, wake word engine loaded, a second
 # of microphone audio; main.c): it becomes the factory copy on the system partition, bootstrap included, so the Echo
-# falls back to the last version that worked.  Only if it is the update installed now and the hassmic running is its
-# binary: not after a fall back to the factory copy, not with a test binary from deploy.sh in /data.
+# falls back to the last version that worked.  Only if it is the update installed now and runs_current.
 factory() {
     want=$1 cur=$(readlink $OTA/current)
     have=$(cat $cur/VERSION 2>/dev/null)
-    running=
-    for p in $(pidof hassmic); do [ "$(readlink /proc/$p/exe)" = "$cur/hassmic" ] && running=1; done
     if [ -z "$cur" ] || [ "$have" != "$want" ]; then echo "FAILED $want is not the installed update (that is ${have:-none}); nothing written"
-    elif [ -z "$running" ]; then echo "FAILED $want is installed but not what runs now (fell back to the factory copy?); nothing written"
+    elif ! runs_current $cur; then echo "FAILED $want is installed but not what runs now (fell back to the factory copy?); nothing written"
     elif cmp -s $cur/VERSION $SYS/VERSION; then echo "OK $want is the factory copy already"
     elif out=$(sh $cur/sysinstall.sh factory $cur 2>&1); then echo "$out" >&2; echo "OK $want is now the factory copy"
     else echo "$out" >&2; echo "FAILED $(echo "$out" | tail -1)"
     fi
 }
+# state/ota/ is the daemon's: whatever root writes there goes through a name the daemon may have made a link to another
+# file (result.tmp -> /data/local/hassmic/hassmic, and root would create and chown that for it, then run it).  So the
+# result is written in root's own directory and renamed into place; a rename replaces a link, it does not follow it.
+RES=$OTA/result.tmp
 ota_watch() {
-    IN=/data/local/hassmic/state/ota
+    IN=$BASE/state/ota
     while sleep 2; do
         if [ -f $IN/healthy ]; then
             rm -f $IN/healthy
             cur=$(readlink $OTA/current)
+            # Only a self test that passed counts as the update coming up: a hassmic that merely runs may hang without a
+            # push port, and the factory copy running after a fall back must not wipe the count that caused it.
+            [ -n "$cur" ] && runs_current $cur && echo 0 > $OTA/tries
             # every start says so; only an update that is not the factory copy yet has anything to do
             if [ -n "$cur" ] && [ -f $cur/VERSION ] && ! cmp -s $cur/VERSION $SYS/VERSION; then
                 echo "== factory copy: $(factory "$(cat $cur/VERSION)")"      # its stderr: the log
             fi
         fi
         [ -f $IN/request ] || continue
-        rm -f $IN/request $IN/result
+        rm -f $IN/request $IN/result $RES
         new=$OTA/v$(cut -d. -f1 /proc/uptime)-$$
         key=
         for k in $SYS/update.pub $(release_pub); do
             [ -s $k ] && $SYS/otatool verify $k $IN/bundle $IN/bundle.sig > /dev/null 2>&1 && { key=$k; break; }
         done
-        if [ ! -f $SYS/update.pub ]; then echo "FAILED no update key on this device (install-system.sh puts it there)" > $IN/result.tmp
+        if [ ! -f $SYS/update.pub ]; then echo "FAILED no update key on this device (install-system.sh puts it there)" > $RES
         elif [ -z "$key" ]; then rejected "the signature verifies against neither the update key nor the release key"
         elif ! ver=$($SYS/otatool install $key $IN/bundle $IN/bundle.sig $new 2>&1); then
             rejected "$(echo "$ver" | tail -1)"
+        elif why=$(broken_scripts $new); then
+            rejected "version $ver: $why; not installed"
         elif prod=$(. $new/device.conf 2>/dev/null && echo "$PRODUCT"); [ "$prod" != "$(getprop ro.product.device)" ]; then
             rejected "version $ver is built for ${prod:-an unknown model}, this Echo is $(getprop ro.product.device); not installed"
         elif ! { chmod 755 $new && [ -f $new/main.sh ] && $new/runas $DAEMON_USER shell $new/hassmic -T > /dev/null 2>&1; }; then  # the daemon's user can really run it
@@ -159,30 +205,21 @@ ota_watch() {
             ln -sfn $new $OTA/current                   # toybox: replaces the link itself (checked on the device); no mv -T there
             echo 0 > $OTA/tries
             for d in $OTA/v*; do [ "$d" = "$new" ] || [ "$d" = "$old" ] || rm -rf "$d"; done        # keep the previous one
+            # A test binary from deploy.sh would go on running instead, and the update never become the factory copy.
+            [ -f $BASE/hassmic ] && rm -f $BASE/hassmic && echo "== test binary $BASE/hassmic removed: the update runs instead"
             echo "== update $ver installed (signed with ${key##*/}), restarting"
-            echo "OK $ver" > $IN/result.tmp
+            echo "OK $ver" > $RES
         fi
         rm -f $IN/bundle $IN/bundle.sig
-        chown $DAEMON_USER $IN/result.tmp; mv $IN/result.tmp $IN/result
-        if grep -q "^OK" $IN/result; then
+        res=$(cat $RES)
+        chown $DAEMON_USER $RES; mv -f $RES $IN/result
+        case "$res" in OK*)
             sleep 2                                     # let hassmic relay the result to the pusher
             stop hassmic; start hassmic
             exec sh $SYS/boot.sh firewall               # and run the new firewall script as well
-        fi
+        esac
     done
 }
-
-# A push update runs "firewall" again (exec, same PID) while the previous firewall watcher is still looping: stop it first,
-# or every update adds one and old and new rules take turns.  Matched by command line, which also catches the ones that
-# earlier versions left behind.  Read with the shell itself: a process that exits between the open and the read leaves
-# the Echo 2's tr (Fire OS 6572) spinning on the read error for ever, and this script never got to the firewall watcher
-# and the installer below (seen 2026-09-30 right after a boot: no egress lock, push updates unanswered).
-if [ "$1" = firewall ]; then
-    for p in /proc/[0-9]*; do
-        c=; while IFS= read -r -d '' a; do c="$c $a"; done 2>/dev/null < $p/cmdline
-        case "$c" in *lockdown.sh*watch*) kill ${p#/proc/} 2>/dev/null;; esac
-    done
-fi
 
 if [ "$MODE" = stock-online ]; then
     # hassmic is off on purpose: that must not count as an update that failed to come up.
@@ -207,12 +244,12 @@ satellite)
         sh $D/alexa-off.sh; quiet
     } >> $LOG 2>&1
     # A binary in /data wins over the installed one: lets a new build be tried without a trip through TWRP.
-    BIN=$D/hassmic; [ -x /data/local/hassmic/hassmic ] && BIN=/data/local/hassmic/hassmic
+    BIN=$D/hassmic; [ -x $BASE/hassmic ] && BIN=$BASE/hassmic
     # hassmic offers Wi-Fi motion where the module can be loaded (wifimotion.c), the loop below loads it when needed
     [ -n "$KMOD" ] && [ -f $D/$KMOD ] && export HASSMIC_WIFI_KMOD=/proc/${KMOD%.ko}
     # online updates: hassmic checks downloads against the key root will check them against (ota.c)
     export HASSMIC_RELEASE_PUB=$(release_pub)
-    netwatch >> $LOG 2>&1 &
+    netwatch >> $LOG 2>&1 & NETWATCH=$!
     # mDNS through the stock avahi-daemon: hassmic prints the service file for its protocol, name and MAC address.
     # The MAC in it is how Home Assistant tells devices apart.  On radar wlan0 appears only later in the boot, hassmic
     # printed its placeholder MAC, and Home Assistant offered the adopted Echo as a new device.  So wait for Wi-Fi
@@ -240,8 +277,7 @@ satellite)
         stop avahi-daemon; pkill avahi-daemon; sleep 1
         avahi-daemon -f $conf --no-drop-root > /dev/null 2>&1 &
     ) >> $LOG 2>&1 &
-    # The bootstrap counted this start as an attempt; a minute of hassmic running counts as success.
-    (sleep 60; pidof hassmic > /dev/null && echo 0 > $OTA/tries) &
+    # The bootstrap counted this start as an attempt; the self test passing counts as success (ota_watch).
     fast=0
     while :; do
         t0=$(cut -d. -f1 /proc/uptime)
@@ -257,6 +293,7 @@ satellite)
         if [ $fast -ge 5 ] && [ "$D" != "$SYS" ]; then
             echo "== update $(cat $D/VERSION 2>/dev/null) keeps exiting: running the factory copy" >> $LOG
             echo 3 > $OTA/tries
+            kill $NETWATCH 2>/dev/null     # the factory copy starts its own: two would both reload the firewall
             exec sh $SYS/boot.sh satellite
         fi
         # ALEXA_PROP may have been set again meanwhile (ledcontroller restart)

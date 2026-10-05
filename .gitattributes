@@ -1,0 +1,8 @@
+# Everything that goes onto the Echo is run or sourced by its mksh, which takes a CR as part of the word: a checkout with
+# Windows line endings (core.autocrlf) must still produce LF files, or `D=/system/hassmic\r` breaks the boot scripts.
+* text=auto eol=lf
+*.raw binary
+*.pub binary
+*.key binary
+*.bundle binary
+*.sig binary

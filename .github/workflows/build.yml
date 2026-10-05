@@ -165,7 +165,7 @@ jobs:
       - name: Packages
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libopus-dev libcurl4 netcat-openbsd ffmpeg sbc-tools > /dev/null
+          sudo apt-get install -y -qq libopus-dev libcurl4 netcat-openbsd ffmpeg sbc-tools mksh > /dev/null
           python -m venv .venv
           .venv/bin/pip install -q -r tests/requirements.txt
       - name: Build
@@ -176,6 +176,8 @@ jobs:
         run: sh tests/otatool_test.sh
       - name: Push updates
         run: sh tests/ota_push_test.sh
+      - name: Boot logic (root side of updates, with the Echo's shell)
+        run: sh tests/boot_test.sh
       - name: Online updates
         run: .venv/bin/python tests/fake_ha_update.py
       - name: ESPHome native API

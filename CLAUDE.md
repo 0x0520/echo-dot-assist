@@ -40,6 +40,7 @@ aioesphomeapi, wyoming, aiosendspin, noiseprotocol, aiohttp):
 .venv/bin/python tests/fake_ma_sendspin.py    # Sendspin, as Music Assistant
 .venv/bin/python tests/fake_ha_update.py      # online updates: HA select + update entity, fake GitHub, root's installer
 tests/ota_push_test.sh                        # signed push-update path end to end
+tests/boot_test.sh                            # main.sh itself: which bundles root installs, start counter, bad config
 tests/otatool_test.sh                         # scripts/otatool.py against the C otatool: same keys, signatures, bundles
 ```
 

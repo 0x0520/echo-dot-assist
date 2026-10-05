@@ -1325,7 +1325,9 @@ int main(int argc, char **argv)
     int ls = net_listen(core_port);
     if (ls < 0) { perror("listen"); return 1; }
     fprintf(stderr, "hassmic " VERSION " (" BUILD ") %s on %d, wake=%s\n", proto->id, core_port, core_local_wake ? "local" : "remote");
-    if (ota_port) { pthread_t st; if (!pthread_create(&st, NULL, selftest_thread, NULL)) pthread_detach(st); }
+    /* Also without the push port: the passed self test is what keeps an installed update from being undone after three
+     * boots (main.sh), online updates included. */
+    { pthread_t st; if (!pthread_create(&st, NULL, selftest_thread, NULL)) pthread_detach(st); }
     while (!atomic_load(&quit)) {
         int c = net_accept(ls);
         if (c < 0) break;

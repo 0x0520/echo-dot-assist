@@ -37,7 +37,9 @@ if [ "$1" != --uninstall ]; then
         # Base = the policy as boot-root left it.  On a re-install /sepolicy is already patched; the untouched copy is kept beside it.
         BASEF=/sepolicy; t "[ -f /sepolicy.pre-hassmic ]" && BASEF=/sepolicy.pre-hassmic
         adb pull $BASEF device-logs/backup/sepolicy.boot-root >/dev/null
-        printf 'NAME="%s"\nARGS="%s"\n' "$NAME" "$DEFAULT_ARGS" > $OUT/hassmic.conf
+        # root sources this file: a quote, $ or backquote in the name must stay part of the name
+        qname=$(printf '%s' "$NAME" | sed 's/[\\"$`]/\\&/g')
+        printf 'NAME="%s"\nARGS="%s"\n' "$qname" "$DEFAULT_ARGS" > $OUT/hassmic.conf
         t "mkdir -p /data/local/hassmic"; adb push $OUT/hassmic.conf /data/local/hassmic/hassmic.conf >/dev/null
         t "rm -rf /data/local/hassmic/ota; rm -f /data/local/hassmic/hassmic"      # boot.sh prefers a binary here (scripts/deploy.sh test builds); the fresh install wins
         # Patch the policy here, not in TWRP: magiskpolicy is dynamically linked and aborts in the recovery environment.

@@ -1297,6 +1297,36 @@ Run in this order. Each step says what it proves.
       one rings late), the full suite, every model with STUBS=1 and the PC build without warnings. Needs the device: the
       ring at the Echo's volume over a night, `boot_id` readable by the daemon user under SELinux (else the clock is
       never kept over a restart), Home Assistant's real answer (its TZ string), the RTC question above.
+- [x] Local hardening, 2026-10-06 (branch `sec/local-hardening`). (1) `main.sh satellite` ran `$BIN -S` as root, and
+      `$BIN` may be the test binary in `/data/local/hassmic`; its output went through root's `>` into the daemon's own
+      `/data/misc/avahi/services/`, and root then chowned that name: a link the daemon left there made root write and
+      chown any file. Now `runas $DAEMON_USER $DAEMON_GROUPS $BIN ... -S` (it only reads `state/api_key` and the MAC),
+      written to root's `/data/misc/avahi/hassmic.service.new`, the node name read from there, renamed in; a link or
+      directory in its place is removed first. (2) `ota_watch`: a directory (or a link to one) at `state/ota/result` made
+      `mv -f` drop the result inside it; now removed with `rm -rf` before the rename (rm does not follow the link it is
+      given). A race stays: the daemon can recreate it between rm and mv (toybox has no `mv -T`); the worst outcome is a
+      result file inside the daemon's own directory. (3) "Bluetooth AAC" switch, settings field 18, off: the AAC
+      endpoint is left out of AVDTP Discover, and Get Capabilities / Set Configuration for its SEID answer bad ACP SEID,
+      so phones pick SBC or aptX (the A2DP SDP record names no codecs). SEIDs stay as they were; a stream configured
+      before the switch went off plays on. (4) "Bluetooth proxy: secure pairing only", field 19, off: a Pairing Response
+      without the SC bit gets Pairing Failed 0x03 (Authentication Requirements, as Secure Connections Only mode in the
+      spec); a controller without P-256 fails every pairing with 0x05; legacy bonds are not used to encrypt (on connect;
+      a Security Request then does nothing rather than replace the bond on the device's word) and Home Assistant's pair
+      makes an SC bond in their place. Switching either the weaker way needs the keyed connection, as adb does. Fields
+      16 and 17 are read as tokens and written back as they were ("0" when absent) for the builds that use them.
+      (5) An alarm-clock alarm at a volume under 30 rings at 30 (`ALARM_MIN_VOLUME`), restored when it stops if nobody
+      moved it meanwhile; timers unchanged (set a moment before, at a volume the user just heard). Tested: `make unit`
+      (new `ble_test.c`: legacy device paired by default, refused with 0x03 with the switch, SC device paired, controller
+      without P-256 refuses with 0x05, legacy bond unused and a Security Request ignored; `a2dp_test.c`: Discover without
+      AAC, its SEID refused for capabilities and configuration, both back with the switch), `boot_test.sh` (directory
+      at `result` replaced; satellite: `-S` through runas as the daemon's user, a link at `hassmic.service` replaced and
+      its target untouched, avahi host name from root's copy; both fail on the old main.sh), `fake_ha_esphome` (volume
+      0, the alarm rings at 30, back to 0 after stop), the full suite, every model with STUBS=1 and the PC build without
+      warnings. Needs the device: `boot.log` shows the mDNS wait and avahi starts, Home Assistant still finds the Echo
+      (same MAC, same node name); `ls -l /data/misc/avahi/services/` shows a regular file of the daemon user, 644; an
+      iPhone and an Android phone connect with AAC off (`a2dp: ... configured SBC` or aptX) and, after reconnecting, with
+      AAC on (`configured AAC`); pairing a legacy-only BLE sensor fails in Home Assistant with the switch on and works
+      with it off, an SC one works with it on; an alarm at volume 0 is heard at 30 and the volume slider returns to 0.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); reminders (HA has timers only; the alarm clock is done, above).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

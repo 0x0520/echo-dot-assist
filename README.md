@@ -47,7 +47,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Announcements, follow-up questions            | ✅                      | ✅                                           | ❌                       |
 | Media player entity (TTS, `play_media`)       | ❌                      | ✅                                           | ❌                       |
 | Multiroom music                               | Amazon speaker groups   | Music Assistant (Sendspin)                   | Music Assistant (Sendspin) |
-| Bluetooth speaker                             | SBC                     | SBC, AAC, aptX, aptX HD; pairing from HA     | reconnects already paired devices only |
+| Bluetooth speaker                             | SBC                     | SBC, aptX, aptX HD, AAC optional; pairing from HA | reconnects already paired devices only |
 | Play on a Bluetooth speaker                   | ✅ (Alexa app)          | ✅ found and paired from HA, SBC ([details](#bluetooth-speaker-output)) | keeps playing on one already set up |
 | Bluetooth proxy for Home Assistant            | ❌                      | ✅ scanning, connections, pairing            | ❌                       |
 | Buttons, LED ring, hardware mute              | ✅                      | ✅                                           | ✅                       |
@@ -97,7 +97,9 @@ Details:
     can trust after a reboot or a power cut, so no alarm rings until Home Assistant has told it the time; one that
     should have rung in the last 10 minutes then rings late, an older one is skipped. "Next alarm" stays unknown until
     then. hassmic itself restarting (an update) does not lose the time.
-  - Same sound as a timer, at the Echo's volume. ESPHome only, not with Wyoming.
+  - Same sound as a timer, at the Echo's volume, but **at least 30 %**: an alarm set at night with the volume turned
+    down to 0 would ring unheard. The volume goes back once it stops, unless you changed it while it rang. Timers ring
+    at the volume as it is (you set them a moment before). ESPHome only, not with Wyoming.
 - **Music**: one source at a time, the newest wins. A phone starting over Bluetooth pauses Music Assistant (the whole
   group), Music Assistant starting on the Echo pauses the phone. The voice assistant ducks both.
 - **Playing on a Bluetooth speaker**<a id="bluetooth-speaker-output"></a>: everything the Echo plays (replies, timers,
@@ -123,11 +125,25 @@ Details:
   pairing only, with full-length (16-byte) keys. A device that has forgotten its pairing keeps its bond on the Echo until
   Home Assistant pairs it again (which replaces the bond) or unpairs it. While a phone plays, the proxy stops scanning:
   the radio cannot do both without the music stuttering.
+  - **"Bluetooth proxy: secure pairing only"** (off by default): pairs only devices that can do LE Secure Connections.
+    Older devices only know "legacy" pairing, and its key can be worked out by anyone who recorded the pairing over the
+    air (tools such as crackle do it in seconds), and with it everything sent later. On, such a device is refused (Home
+    Assistant shows the pairing failed), and a legacy pairing made earlier is no longer used: the link stays
+    unencrypted until you pair the device again, which works only if it can do Secure Connections. Off, as before, so
+    that sensors which only know legacy pairing keep working.
+  - **"Bluetooth AAC"** (off by default): whether phones may send AAC. AAC is decoded by the Echo's own copy of FFmpeg,
+    an old version this project cannot update, fed by whatever a paired phone (or something pretending to be it) sends
+    over the radio; SBC and aptX are decoded by small code of this project's own. Off, phones use SBC, or aptX where
+    they have it. On the Echo's small speaker the difference is small: SBC at the bitrate most phones use is close to
+    AAC; a phone that sends SBC at a low bitrate may sound slightly duller in the highs. A change
+    counts from the phone's next connection: disconnect it and connect it again.
 - **Settings in Home Assistant**: "Mic level" (how loud speech reaches the voice assistant, -35 to -15 dBFS, default
   -26; the Echo adjusts its gain to it), "Noise reduction" (off by default; low, medium, high: RNNoise on what the voice
   assistant gets takes the background down by up to 6, 9 or 12 dB), mute switch, "Do not disturb"
   switch (drops announcements, purple pulse when switched on), "Wake sound" switch (covers all local sounds),
   "Bluetooth pairing" switch (blue chaser on the ring while it is on), "Bluetooth announcements" switch and their language,
+  "Bluetooth AAC" and "Bluetooth proxy: secure pairing only" switches (both off by default, see Bluetooth above;
+  switching either the less safe way is taken only over the encrypted connection with Home Assistant's key),
   "Bluetooth speaker search" and "Play on Bluetooth speaker" switches, "Bluetooth speaker" state and "Bluetooth speaker
   delay" (see [Playing on a Bluetooth speaker](#bluetooth-speaker-output)), "Join arbitration network" switch, "Music Assistant without pairing" switch (off by default:
   only Sendspin servers paired with the token may play), equalizer (bass, mid, treble, −6 to +6 dB, Amazon's own,
@@ -394,6 +410,8 @@ older one installed is refused with a message.
   checks the signature with the tool and keys from the system partition or the installed copy before anything is
   unpacked. Your key also opens adb over Wi-Fi; the release key does not.
 - **Bluetooth**: keys in `state/ble_bonds` (proxy) and `state/bt_keys` (speaker), both under `/data/local/hassmic/`.
+  Legacy LE pairing (crackable when recorded) is allowed unless "Bluetooth proxy: secure pairing only" is on; AAC from
+  phones, decoded by the firmware's old FFmpeg, only while "Bluetooth AAC" is on.
 
 ## Development
 

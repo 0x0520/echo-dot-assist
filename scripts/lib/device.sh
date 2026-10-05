@@ -8,7 +8,7 @@ die() { echo "$*" >&2; exit 1; }
 # Git Bash, MSYS2 and Cygwin on Windows run these scripts only part of the way: the Makefile wants Linux compilers,
 # and stat -c, nc -q, .venv/bin and the setup's package managers are not there.  So stop before anything is done.  Works
 # there: pushing a release build (ota-push.sh and bundle.sh, which set PC_ANY=1; Python's otatool, no compiler) and
-# adb-wifi.sh, which does not load this.
+# adb-wifi.sh and top.sh, which do not load this.
 on_windows() { case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0;; esac; return 1; }
 WSL_HINT="run it in WSL2 (Ubuntu: wsl --install), from a clone made there; for adb over USB attach the Echo with usbipd-win (README.md, Requirements)"
 [ -n "$PC_ANY" ] || ! on_windows || die "${0##*/} needs Linux, this is $(uname -s): $WSL_HINT"

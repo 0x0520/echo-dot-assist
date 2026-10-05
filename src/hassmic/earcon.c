@@ -28,6 +28,8 @@ void sound_unqueue_wake(void) { atomic_fetch_and(&sounds_pending, ~(1 << SND_WAK
 int core_wake_sound(int set) { if (set >= 0) use_earcon = set; return use_earcon; }
 
 static atomic_int alarm_on;
+static atomic_llong alarm_limit_ms;                 /* how long the alarm asked for last rings at most ... */
+static atomic_int alarm_renew;                      /* ... from when the earcon thread sees this (it keeps the longer) */
 static atomic_int tts_on, music_on;                 /* something plays: the wake word model lowers its threshold then.
                                                     * music_on: MUSIC_* bits */
 static atomic_int earcon_sounding;                  /* one of our sounds plays ... */
@@ -64,14 +66,18 @@ int own_sound_hold(void)
     return atomic_load(&sounds_pending) || atomic_load(&earcon_sounding) || mono_ms() < atomic_load(&earcon_heard_until);
 }
 
-void core_alarm(int on)
+static void alarm_set(int on, long long limit_ms)
 {
-    if (atomic_exchange(&alarm_on, on) == on) return;
+    if (on) { atomic_store(&alarm_limit_ms, limit_ms); atomic_store(&alarm_renew, 1); }
+    if (atomic_exchange(&alarm_on, on) == on) { if (on) ear_wake(); return; }
     ear_wake();
     fprintf(stderr, "alarm: %s\n", on ? "ringing" : "off");
     led(on ? "-s" : "-u", "active_timer");
     playback_hint();
 }
+
+void core_alarm(int on) { alarm_set(on, 60000); }                          /* a timer: a minute, as stock */
+void alarm_ring(int seconds) { alarm_set(1, seconds * 1000LL); }
 
 /* The newest music source wins: a Bluetooth device that starts pauses the Sendspin group (the controller role; the
  * whole group, since a player cannot tell whether it has the group to itself), a Sendspin stream that starts pauses the
@@ -110,8 +116,9 @@ void *earcon_thread(void *arg)
             atomic_store(&earcon_sounding, 0);
         }
         long long wait_until = 0;                       /* 0: until something is asked for */
-        if (atomic_load(&alarm_on)) {                   /* timer finished: triple blip every 1.2 s, at most a minute */
-            if (!alarm_end) alarm_end = mono_ms() + 60000;
+        if (atomic_load(&alarm_on)) {                   /* timer or alarm clock: triple blip every 1.2 s, for its time */
+            /* a timer finishing while the alarm clock rings must not cut that short, nor the other way round */
+            if (atomic_exchange(&alarm_renew, 0)) { long long e = mono_ms() + atomic_load(&alarm_limit_ms); if (e > alarm_end) alarm_end = e; }
             if (mono_ms() > alarm_end) core_alarm(0);
             else { for (int k = 0; k < 3; k++) play_earcon(tone, N, RATE); wait_until = mono_ms() + 800; }
         } else alarm_end = 0;

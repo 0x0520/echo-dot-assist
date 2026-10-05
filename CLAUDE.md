@@ -192,6 +192,14 @@ through narrow headers:
   libcurl (dlopen; sockets via `net_socket` so the egress lock lets them out), hands it to root through `ota_handoff`.
   Root (`main.sh` ota_watch) accepts the owner's `update.pub` or the release key (`release.pub` of the running copy, else
   the system partition). Channel change and install only over the keyed connection.
+- **Alarm clock** (`alarms.c`, `alarms.h`; arithmetic in `alarmtime.c`, unit-tested in `tests/unit/alarmtime_test.c`): three
+  alarms (switch, time entity, repeat select each; stop/snooze buttons, "Alarm ringing", event "Alarm", "Next alarm"
+  timestamp) that ring through `alarm_ring()` (earcon.c, up to 10 min) without Home Assistant. Wall clock = HA's
+  GetTimeResponse (asked of the voice assistant's client on subscribe and hourly, only its answer counts) as an offset to
+  `CLOCK_BOOTTIME`; its POSIX TZ string is parsed by `alarmtime.c`, not the libc. `state/clock` keeps offset + TZ with the
+  kernel's boot id: a hassmic restart keeps the clock, a reboot does not (no alarm rings until HA answers; one missed by
+  up to 10 min then rings late). `state/alarms`: one line per slot, with up to when its occurrences are done (no double
+  ring after a restart). No settings-file field. ESPHome only.
 - `src/include/`: headers for the reversed Amazon libraries (`mixer_api.h`, `pryon_api.h`, `aipc_api.h`) and `netio.h`.
 - `src/tools/`: standalone device tools (`mixcap`, `mixplay`, `pryon_test`, `aed_test`, `latency`, `runas` — AIPC refuses uid 0 and
   the image has no `su`; `curlspy`, `hciscan`, `a2dpprobe` not in `all`).

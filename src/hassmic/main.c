@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include "audio.h"
 #include "a2dp.h"
+#include "alarms.h"
 #include "arb.h"
 #include "buttons.h"
 #include "netio.h"
@@ -411,13 +412,15 @@ int main(int argc, char **argv)
     pthread_mutex_lock(&core_lock); listening(0); pthread_mutex_unlock(&core_lock);
     if (core_local_wake && !wake_words_init(manifest)) { fprintf(stderr, "cannot load a wake word model\n"); return 1; }
     detect_init();
+    alarms_init();
     if (arb_port && core_local_wake && proto->arb_send && wakedet_arb_start(arb_port)) fprintf(stderr, "arbitration: not available\n");
     /* Read once now, so that their first use (Home Assistant's first look, a volume button) does not run the mixer's tools
      * under core_lock */
     pthread_mutex_lock(&core_lock); core_volume(); core_eq(0); pthread_mutex_unlock(&core_lock);
 
     /* Without any one of these the satellite only looks alive: better that init starts it again */
-    static void *(*const core_threads[])(void *) = { capture_thread, mic_sender, playback_thread, earcon_thread, volume_led_thread };
+    static void *(*const core_threads[])(void *) = { capture_thread, mic_sender, playback_thread, earcon_thread, volume_led_thread,
+                                                       alarm_thread };
     for (size_t i = 0; i < sizeof core_threads / sizeof *core_threads; i++) {
         pthread_t t; int e = pthread_create(&t, NULL, core_threads[i], NULL);
         if (e) { fprintf(stderr, "cannot start a core thread: %s\n", strerror(e)); return 1; }

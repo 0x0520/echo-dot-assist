@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Plays Home Assistant's side of the ESPHome native API against build/hassmic-host, using the reference
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
-import asyncio, base64, io, math, os, random, signal, socket, struct, subprocess, sys, tempfile, threading, time, wave
+import asyncio, base64, datetime, io, math, os, random, signal, socket, struct, subprocess, sys, tempfile, threading, time, wave
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
-from aioesphomeapi import ZERO_NOISE_PSK, EventInfo, BinarySensorInfo, BinarySensorState, MediaPlayerCommand
+from aioesphomeapi import ZERO_NOISE_PSK, EventInfo, BinarySensorInfo, BinarySensorState, MediaPlayerCommand, TimeInfo, TimeState, ButtonInfo
 from aioesphomeapi.model import Event
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
 
@@ -65,7 +66,15 @@ async def main():
         os.makedirs(os.path.join(state, "models", m)); open(os.path.join(state, "models", m, "pryon.manifest"), "w").close()
     with open(mdns, "w") as f:                          # what main.sh does at boot
         subprocess.run([f"{ROOT}/build/hassmic-host", "-P", "esphome", "-p", str(PORT), "-n", "Echo Dot", "-S"], env=env, stdout=f, check=True)
-    proc = subprocess.Popen([f"{ROOT}/build/hassmic-host", "-P", "esphome", "-p", str(PORT), "-n", "Echo Dot", "-L"], env=env)
+    log = []                                            # hassmic's stderr, passed on and kept: what it does without a client
+    def start_hassmic():
+        p = subprocess.Popen([f"{ROOT}/build/hassmic-host", "-P", "esphome", "-p", str(PORT), "-n", "Echo Dot", "-L"], env=env,
+                             stderr=subprocess.PIPE, text=True, bufsize=1)
+        def tee():
+            for line in p.stderr: sys.stderr.write(line); log.append(line.rstrip("\n"))
+        threading.Thread(target=tee, daemon=True).start()
+        return p
+    proc = start_hassmic()
     httpd = ThreadingHTTPServer(("127.0.0.1", HTTP_PORT), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     await asyncio.sleep(0.5)
@@ -601,11 +610,128 @@ async def main():
         check(all(gone), f"silent connections let go after 10 s: {gone}")
         check((await asyncio.wait_for(c2.device_info(), 5)).name == "echo-dot", "the client that talks stays connected")
         await c2.disconnect()
+        await alarm_clock(env, state, log, start_hassmic, lambda: proc)
     finally:
-        proc.terminate(); httpd.shutdown()
+        (alarm_clock.proc or proc).terminate(); httpd.shutdown()
         for f in (play, settings):
             if os.path.exists(f): os.unlink(f)
     print("FAILED" if check.failed else "all good")
     sys.exit(1 if check.failed else 0)
+
+async def wait_for(cond, secs):
+    for _ in range(int(secs * 20)):
+        if cond(): return True
+        await asyncio.sleep(0.05)
+    return cond()
+
+
+async def alarm_clock(env, state, log, start_hassmic, cur):
+    """Alarms that ring on the Echo itself.  Home Assistant here is in Berlin (aioesphomeapi answers GetTimeRequest with
+    the time and the zone's POSIX TZ string, as Home Assistant does), and sets the alarms through their entities; the
+    alarm then rings without it too, and after a restart of hassmic, but not on a clock it cannot trust."""
+    proc = alarm_clock.proc = cur()
+    berlin = ZoneInfo("Europe/Berlin")
+    async def nothing(*a): pass
+    async def no_pipeline(*a): return 0
+    async def connect():
+        ha = APIClient("127.0.0.1", PORT, None, timezone="Europe/Berlin")
+        await asyncio.wait_for(ha.connect(login=True), 5)
+        ents = {e.object_id: e for e in (await ha.list_entities_services())[0]}
+        st = []; ha.subscribe_states(st.append)
+        ha.subscribe_voice_assistant(handle_start=no_pipeline, handle_stop=nothing, handle_audio=nothing, handle_announcement_finished=nothing)
+        return ha, ents, st
+    def ahead(s):                                       # Berlin's wall clock s seconds from now, and that moment in UTC
+        t = datetime.datetime.now(berlin).replace(microsecond=0) + datetime.timedelta(seconds=s)
+        return t, t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    def last_obj(st, k, t): return ([x for x in st if isinstance(x, t) and x.key == k] or [None])[-1]
+    def last(st, k, t): x = last_obj(st, k, t); return x.state if x else None
+    def logged(text, since): return any(text in l for l in log[since:])
+
+    ha, by, st = await connect()
+    n = len(log)
+    check(await wait_for(lambda: os.path.exists(os.path.join(state, "clock")) and "CET-1CEST,M3.5.0,M10.5.0/3" in open(os.path.join(state, "clock")).read(), 3),
+          "asks Home Assistant for the time when it subscribes; the time and Berlin's TZ string kept in state/clock")
+    sw = [by.get(f"alarm_{i}") for i in (1, 2, 3)]; tm = [by.get(f"alarm_{i}_time") for i in (1, 2, 3)]; rp = [by.get(f"alarm_{i}_repeat") for i in (1, 2, 3)]
+    stop, snooze, ringing, ev, nxt = by.get("stop_alarm"), by.get("snooze_alarm"), by.get("alarm_ringing"), by.get("alarm"), by.get("next_alarm")
+    check(all(isinstance(x, SwitchInfo) for x in sw) and all(isinstance(x, TimeInfo) for x in tm) and all(isinstance(x, SelectInfo) for x in rp)
+          and list(rp[0].options)[:4] == ["Once", "Every day", "Weekdays", "Weekends"] and len(rp[0].options) == 11
+          and isinstance(stop, ButtonInfo) and isinstance(snooze, ButtonInfo) and isinstance(ringing, BinarySensorInfo)
+          and isinstance(ev, EventInfo) and list(ev.event_types) == ["alarm_1", "alarm_2", "alarm_3"]
+          and isinstance(nxt, TextSensorInfo) and nxt.device_class == "timestamp", "alarm clock entities listed")
+    await asyncio.sleep(0.3)
+    t1 = last_obj(st, tm[0].key, TimeState)
+    check(last(st, sw[0].key, SwitchState) is False and t1 and (t1.hour, t1.minute) == (7, 0) and last(st, rp[0].key, SelectState) == "Once"
+          and last(st, nxt.key, TextSensorState) == "" and last(st, ringing.key, BinarySensorState) is False,
+          "alarms off at 07:00 once by default; next alarm unknown, not ringing")
+
+    # one alarm a few seconds ahead: it rings, says so, and the stop button ends it; once, so it switches itself off
+    t, iso = ahead(4)
+    ha.time_command(tm[0].key, t.hour, t.minute, t.second); ha.switch_command(sw[0].key, True)
+    await asyncio.sleep(0.5)
+    check(last(st, nxt.key, TextSensorState) == iso and last(st, sw[0].key, SwitchState) is True, f"alarm 1 set {t:%H:%M:%S} Berlin: next alarm {iso}")
+    ok = await wait_for(lambda: last(st, ringing.key, BinarySensorState) is True, 7)
+    evs = [x.event_type for x in st if isinstance(x, Event) and x.key == ev.key]
+    check(ok and evs == ["alarm_1"] and logged("alarm: ringing", n), f"it rings on time, event {evs}")
+    ha.button_command(stop.key)
+    ok = await wait_for(lambda: last(st, ringing.key, BinarySensorState) is False, 3)
+    check(ok and logged("alarm: off", n) and last(st, sw[0].key, SwitchState) is False and last(st, nxt.key, TextSensorState) == "",
+          "the stop button ends it; once: switched off, no next alarm")
+    check(open(os.path.join(state, "alarms")).read().split("\n")[0].split()[:4] == ["0", "0", f"{t:%H:%M:%S}", "0"],
+          f"kept in state/alarms: {open(os.path.join(state, 'alarms')).read().splitlines()[0]!r}")
+
+    # snooze: rings again in 9 minutes; the stop button then drops that too, and the daily alarm is tomorrow's
+    t, iso = ahead(3)
+    ha.time_command(tm[1].key, t.hour, t.minute, t.second); ha.select_command(rp[1].key, "Every day"); ha.switch_command(sw[1].key, True)
+    ok = await wait_for(lambda: last(st, ringing.key, BinarySensorState) is True, 6)
+    ha.button_command(snooze.key)
+    await wait_for(lambda: last(st, ringing.key, BinarySensorState) is False, 3)
+    want = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=540))
+    got = last(st, nxt.key, TextSensorState)
+    off = abs((datetime.datetime.fromisoformat(got) - want).total_seconds()) if got else 999
+    check(ok and last(st, ringing.key, BinarySensorState) is False and off < 3 and last(st, sw[1].key, SwitchState) is True,
+          f"daily alarm 2 rang; snoozed: quiet, next alarm in 9 min ({got})")
+    ha.button_command(stop.key); await asyncio.sleep(0.5)
+    tomorrow = (t + datetime.timedelta(days=1)).astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    check(last(st, nxt.key, TextSensorState) == tomorrow, f"stop drops the snooze: next is tomorrow's {tomorrow}")
+    ha.switch_command(sw[1].key, False); await asyncio.sleep(0.3)
+
+    # Home Assistant gone: the alarm rings all the same, and "<wake word>, stop" (SIGHUP) ends it
+    t, iso = ahead(5)
+    ha.time_command(tm[2].key, t.hour, t.minute, t.second); ha.switch_command(sw[2].key, True); await asyncio.sleep(0.5)
+    n = len(log); await ha.disconnect()
+    ok = await wait_for(lambda: logged("alarm clock: alarm 3 rings", n) and logged("alarm: ringing", n), 8)
+    check(ok and logged("client disconnected (0 left)", n), "without Home Assistant connected: alarm 3 rings")
+    proc.send_signal(signal.SIGHUP)
+    check(await wait_for(lambda: logged("alarm: off", n), 3), '"stop" ends it')
+
+    # hassmic restarting (an update) keeps the clock: an alarm rings with no client ever connected
+    def restart(boot=None, ring_in=5):
+        nonlocal proc
+        proc.terminate(); proc.wait()
+        t = datetime.datetime.now(berlin).replace(microsecond=0) + datetime.timedelta(seconds=ring_in)
+        with open(os.path.join(state, "alarms"), "w") as f:
+            f.write(f"0 1 {t:%H:%M:%S} 0 {int(time.time())}\n1 0 07:00:00 0 -1\n2 0 07:00:00 0 -1\n")
+        if boot:
+            path = os.path.join(state, "clock"); lines = open(path).read().splitlines()
+            open(path, "w").write("\n".join(f"boot {boot}" if l.startswith("boot ") else l for l in lines) + "\n")
+        n = len(log); proc = alarm_clock.proc = start_hassmic()
+        return n
+    n = restart()
+    ok = await wait_for(lambda: logged("alarm clock: alarm 1 rings", n), 9)
+    check(ok and logged("kept from before the restart", n), "after a restart of hassmic (same boot): the clock is kept, the alarm rings without Home Assistant")
+    proc.send_signal(signal.SIGHUP); await asyncio.sleep(0.5)
+
+    # after a reboot (another kernel boot id) there is no clock to trust: nothing rings until Home Assistant has said the
+    # time; then an alarm missed by a little rings late
+    n = restart(boot="00000000-0000-0000-0000-000000000000", ring_in=2)
+    await asyncio.sleep(5)
+    check(logged("no alarm rings until Home Assistant has told it", n) and not logged("alarm: ringing", n), "after a reboot: no clock, the alarm does not ring")
+    ha, by, st = await connect()
+    ok = await wait_for(lambda: logged("alarm clock: alarm 1 rings", n), 4)
+    check(ok and last(st, ringing.key, BinarySensorState) is True, "Home Assistant tells the time: the alarm missed by a few seconds rings late")
+    ha.button_command(stop.key)
+    check(await wait_for(lambda: last(st, ringing.key, BinarySensorState) is False, 3), "and stops")
+    await ha.disconnect()
+alarm_clock.proc = None
 
 asyncio.run(main())

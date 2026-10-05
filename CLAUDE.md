@@ -27,6 +27,7 @@ make host                # build/hassmic-host (PC: file audio + no wake word, SI
                          # build/donut/hassmic-qemu (ARM + real Pryon, run via tools/qrun.sh), build/otatool-host (the Echo's
                          # otatool for the PC, as tests' stand-in for the device side). Needs libopus
 make unit                # C unit tests; ws/noise are checked against Python reference impls in .venv
+make lint                # shellcheck + mksh -n on the Echo's scripts, no CR in any tracked text file
 make build/hassmic-host  # single target
 ```
 
@@ -65,8 +66,12 @@ There is no single-test selector: run one unit test by building/running its line
   watcher opens it and marks it with `/data/local/hassmic/adb-open`), by `scripts/adb-wifi.sh [host]` (signs a challenge
   on the push port with `secrets/update.key`; no HA needed), or kept open by `ADB_WIFI=1` in `hassmic.conf`. Then
   `adb connect <echo-ip>:5555`. USB always works.
+- What goes onto the Echo is listed once: `ship_bins`/`ship_scripts` in `scripts/lib/device.sh` (bundle.sh,
+  install-system.sh, deploy.sh and CI take it from there).
 - `scripts/deploy.sh`: build + push to `/data/local/hassmic` for trial runs (`adb shell sh /data/local/hassmic/run.sh`).
 - `scripts/ota-push.sh [host]`: build, sign with `secrets/update.key`, push bundle to TCP 28929 on an installed Echo.
+  A bundle signed only with the release key that is older than the running or factory version is refused (the
+  owner's update key may go back). The start counter `ota/tries` is reset only by the update's own passed self test.
   The Echo verifies against the public key on its system partition and falls back if the new build does not stay up.
   Every update (pushed or online) is promoted without approval as soon as it passes its self test (`main.c`: started,
   wake word engine loaded, ports bound, 1 s of mic audio within 30 s -> `ota_healthy()` -> `state/ota/healthy`):
@@ -88,7 +93,8 @@ There is no single-test selector: run one unit test by building/running its line
   after loading each with the Echo's `pryon_test`, and other artifacts (the sound detection model), kept on the PC for tests.
   Downloads come from Amazon in one go (stock-online + Alexa app registration, undone afterwards).
 - `scripts/probe.sh` checks the device's libraries match the analysed firmware. Everything assumes exactly that version.
-- PC scripts that use adb (`deploy`, `probe`, `install-system`, `capture-test`, `mic-compare`) detect the model from `ro.product.device`
+- PC scripts stop at once on Windows (Git Bash/MSYS/Cygwin: use WSL2) except ota-push.sh/bundle.sh/adb-wifi.sh.
+  PC scripts that use adb (`deploy`, `probe`, `install-system`, `capture-test`, `mic-compare`) detect the model from `ro.product.device`
   via `scripts/lib/device.sh`; `ota-push.sh` takes `DEVICE` (default donut). With two Echos on adb set `ANDROID_SERIAL`.
 
 ## Models

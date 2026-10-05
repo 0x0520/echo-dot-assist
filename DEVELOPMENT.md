@@ -33,7 +33,7 @@ rules. `DEVICE` picks one (default `donut`). The adb scripts check it against th
 | `src/tools/` | `mixcap`, `mixplay`, `pryon_test`, `aed_test` (stock sound detector, `docs/re-aed.md`), `whisper_test` (whisper detector, `docs/re-whisper.md`), `latency`, `otatool`, `runas` (AIPC refuses uid 0, the image has no `su`), `curlspy`, `hciscan` (raw HCI on `/dev/stpbt`), `a2dpprobe` (stands in for the Bluetooth stack on the mixer's A2DP output) |
 | `src/include/` | C headers for the reversed `libmixerAPI.so` and `libpryon.so` |
 | `src/third_party/` | monocypher 4.0.2, `dr_flac.h`, `minimp3.h`, libfreeaptx 0.2.2, RNNoise 0.1.1 (own licences, see README) |
-| `scripts/` | PC side: `setup.sh` (guided install), `artifacts.sh` (Amazon artifacts for an installed Echo: more wake words, the whisper detection model, the newest sound detection model), `deploy.sh`, `probe.sh`, `capture-test.sh`, `mic-compare.sh` (micRaw against micAsr on a running Echo), `wifi-join.sh`, `install-system.sh`, `ota-push.sh`, `bundle.sh` (packs and signs an update; also CI's), `otatool.py` (bundles on the PC: keys, signing, checking, pushing; the Echo's own is `src/tools/otatool.c`), `adb-wifi.sh` (adb over Wi-Fi with the update key); `lib/device.sh` picks the model, `lib/build.sh` builds the Echo's binaries or takes the commit's release build, `lib/setup.sh` has the guided setup's helpers, `lib/wakeword.sh` the wake word installer |
+| `scripts/` | PC side: `setup.sh` (guided install), `artifacts.sh` (Amazon artifacts for an installed Echo: more wake words, the whisper detection model, the newest sound detection model), `deploy.sh`, `probe.sh`, `capture-test.sh`, `mic-compare.sh` (micRaw against micAsr on a running Echo), `wifi-join.sh`, `install-system.sh`, `ota-push.sh`, `bundle.sh` (packs and signs an update; also CI's), `otatool.py` (bundles on the PC: keys, signing, checking, pushing; the Echo's own is `src/tools/otatool.c`), `adb-wifi.sh` (adb over Wi-Fi with the update key); `lib/device.sh` picks the model and lists what goes onto the Echo (`ship_bins`, `ship_scripts`: bundles, `install-system.sh`, `deploy.sh`, CI), `lib/build.sh` builds the Echo's binaries or takes the commit's release build, `lib/setup.sh` has the guided setup's helpers, `lib/artifacts.sh` the artifact installer shared with `artifacts.sh` |
 | `scripts/device/`, `scripts/system/` | run on the Echo, reading the model's `device.conf` next to them; boot integration (`boot.sh`, `main.sh`) |
 | `tools/` | `mkstubs.sh` (stand-ins for the stock libraries, for building without the firmware), OTA payload dumper, Thumb disassembly helpers, `qrun.sh` (device binaries under qemu-arm), `davs-fetch.py` |
 | `tests/` | protocol tests against the reference implementations |
@@ -58,6 +58,7 @@ make unit                                         # C unit tests
 tests/ota_push_test.sh                            # signed push-update path end to end
 tests/boot_test.sh                                # root side: main.sh ota_watch, start counter, config check (mksh if there)
 tests/otatool_test.sh                             # the PC's otatool (Python) against the Echo's (C)
+make lint                                         # the Echo's scripts: shellcheck, mksh -n, no CR in tracked files
 .venv/bin/python tests/fake_ha_update.py          # online updates: Home Assistant, GitHub and root's installer in one
 ```
 
@@ -145,9 +146,12 @@ protect both branches. A new key goes out signed by the old one: Echos prefer th
 over the one on their system partition.
 
 What the key does not cover, on purpose: root accepts a release-signed bundle that hassmic hands it whatever "Online
-updates" is set to (the select is enforced by hassmic, which only downloads with a channel picked), and an older one
-as well as a newer one (switching from beta back to release relies on that). So a hassmic taken over through the
-network could put an older release back; it could not install code of its own.
+updates" is set to (the select is enforced by hassmic, which only downloads with a channel picked). It does not go
+back, though: a release-signed bundle older than the copy that runs or the factory copy is refused (versions compared
+by their commit time, `+<commit>` and `-beta` ignored), so a hassmic taken over through the network cannot put an old
+release with a fixed hole back. Switching from beta back to release keeps the newer beta until a newer release comes
+out (Home Assistant offers nothing older either). Going back on purpose takes the owner's key: `scripts/ota-push.sh`
+from an older checkout.
 
 **Trying the workflow locally** with [nektos/act](https://github.com/nektos/act): the publishing step only says what it
 would publish under act. The toolchains go on a volume: unpacked inside the job containers (3 GB), act times out

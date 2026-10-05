@@ -19,6 +19,14 @@ What changed for people using the Echo, newest first. Details and measurements a
   update, and the update never became the fallback; installing an update now removes it.
 - **Hardened the root side of updates** against a compromised hassmic: root no longer writes the update result through
   a name in hassmic's own directory, which could have been made to point at a file root then runs.
+- **No going back to an older release behind your back.** The Echo now refuses a build signed with the project's
+  release key that is older than the version it runs or falls back to: every release ever published carries a valid
+  signature, so an old one handed in again could have put back a problem a later release fixed. Switching online
+  updates from `beta` to `release` keeps the newer beta until a newer release is out. Going back on purpose still
+  works: push the older version from your PC with `scripts/ota-push.sh` (your own update key).
+- **The PC scripts say right away when they are started on Windows** (Git Bash, MSYS2, Cygwin) and point to WSL2,
+  instead of failing halfway through. `scripts/ota-push.sh` with a published release build and `scripts/adb-wifi.sh`
+  keep working there. `scripts/install-system.sh` now also installs the `latency` tool, as updates already did.
 
 - **Whisper detection: one download, the one that exists.** Amazon has a single whisper model for every language
   and hands it out only when asked for American English, so `scripts/artifacts.sh` now asks for just that, whatever

@@ -50,7 +50,7 @@ Legend: `[x]` done, `[~]` partly done (note says what is missing), `[ ]` open. *
 - [x] `hassmic` daemon: capture + Pryon wake word + Wyoming server + playback queue + LED states
 - [x] Protocol test against reference `wyoming` 1.10.2 library: `tests/fake_ha.py` passes (host build)
 - [x] Same test with the ARM build and real Pryon under qemu: `tests/fake_ha.py --qemu` passes
-- [x] Host-side PoC script `scripts/poc-host.sh` (reference `wyoming-satellite` on PC, Echo only moves audio)
+- [x] Host-side PoC script `scripts/poc-host.sh` (reference `wyoming-satellite` on PC, Echo only moves audio; superseded by hassmic, removed 2026-10-05)
 - [x] Deployment scripts: `scripts/deploy.sh`, `scripts/probe.sh`, `scripts/capture-test.sh`, `scripts/device/alexa-{off,on}.sh`
 - [x] Action button = manual trigger; mic-mute latch blocks triggers and drives the LED (`src/hassmic/buttons.c`)
 - [x] Volume buttons → `MainVolume` + LED volume step (switch off with `-V` if a stock daemon already does it)
@@ -1082,7 +1082,7 @@ Run in this order. Each step says what it proves.
       probe.sh: devices/<codename>/probe.md5 from the pinned firmware (all three firmwares' sha256 match their pins).
 - [x] Update and boot hardening (2026-10-05, review of the root side). Found on a Windows checkout: `core.autocrlf=true`
       and no `.gitattributes`, so main.sh, lockdown.sh and device.conf were CR LF in the work tree, and `ota-push.sh` with
-      PREBUILT packs the work tree. Such a bundle was refused only by luck (device.conf's `PRODUCT=donut` is not this
+      PREBUILT packs the work tree. Such a bundle was refused only by luck (device.conf's `PRODUCT=donut\r` is not this
       Echo, "built for donut"), and `install-system.sh` from that tree likewise. Now `.gitattributes` (`eol=lf`),
       `bundle.sh` and `sysinstall.sh` refuse CR, and ota_watch rejects a bundle with CR in `*.sh`/device.conf/hassmic.rc
       or a script that fails `sh -n`. Fixed with it: root wrote `state/ota/result.tmp` (the daemon's directory) and
@@ -1104,6 +1104,24 @@ Run in this order. Each step says what it proves.
       boots (the counter only trusts the update's own binary); an Echo whose mic delivers nothing never passes the self
       test and so keeps the factory copy (muted is not that: micAsr still delivers, as digital silence, see the Echo 2
       above). Not on a device yet.
+- [x] Build and CI hygiene (2026-10-05). Wi-Fi motion's module: kbuild's output went through `| grep -v ... || true`,
+      so a failed build passed and the `.ko` of the build before was copied and shipped; now filtered from a log, the
+      status kept, the old `.ko` removed first (checked: a failing kbuild fails make and leaves no `.ko`); the same for
+      `modules_prepare`. `pryon_test` lacked `libz.so` as a prerequisite: `make -j16 STUBS=1` from clean linked it
+      before the stand-in existed. Downgrade protection in ota_watch: a bundle that verifies only against the release
+      key and is older than `$D/VERSION` or `$SYS/VERSION` is refused (the 14 digits of the commit time compared as
+      text, `+commit`/`-beta` ignored; mksh's arithmetic is 32 bits); the update key may go back. boot_test: 22 checks
+      with mksh, 5 new (older release refused, older than a `+commit-dirty` build that runs refused, older with the
+      update key installed, newer and equal release installed). One list of what goes onto the Echo
+      (`scripts/lib/device.sh` `ship_bins`/`ship_scripts`) for bundle.sh, install-system.sh (which lacked `latency`),
+      deploy.sh and CI's artifacts; `aed_test`/`whisper_test` stay off the Echo (research tools, nothing there runs
+      them; `pryon_test` ships because artifacts.sh loads each wake word set with it). CI: actions pinned to commits,
+      `make lint` job (shellcheck `-s sh` with `.shellcheckrc`, which only leaves out style: no real bug found;
+      `mksh -n` over the scripts and device.conf; no CR in tracked files: one was in this file), pip cache, and the
+      Wyoming, arbitration and Sendspin tests (in the dev container: 3 s, 82 s, 32 s; ESPHome 131 s, update 15 s);
+      `av`, `numpy`, `pillow` (aiosendspin's server extra) pinned in tests/requirements.txt. ota_push_test: free ports,
+      waits for the push port instead of 0.7 s. PC scripts on Git Bash/MSYS2/Cygwin stop at once and point to WSL2
+      (ota-push.sh with a release build and adb-wifi.sh still run there). `scripts/poc-host.sh` removed.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

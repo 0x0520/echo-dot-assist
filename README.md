@@ -186,6 +186,10 @@ Details:
 - A [supported Echo](#supported-echos) and a USB way into it: a plain cable on the Echo Dot 2, wires soldered or held
   on test pads on the Echo Dot 3 and Echo 2. The model's page says what exactly.
 - A **Linux PC** with `adb`, `fastboot`, `python3`, `make`, `unzip`, `debugfs` (e2fsprogs), `sqlite3`, ~5 GB free disk.
+  On **Windows** use WSL2 (`wsl --install`, then work from a clone made inside it), with
+  [usbipd-win](https://github.com/dorssel/usbipd-win) to hand the Echo's USB connection to WSL. The scripts stop with
+  a message when started from Git Bash, MSYS2 or Cygwin, except the two that need no compiler, only Python:
+  `scripts/ota-push.sh` with the release build of a published commit, and `scripts/adb-wifi.sh`.
 - **Home Assistant** with a working Assist pipeline (speech-to-text, conversation agent, text-to-speech). Test it with
   the app first. Optional: Music Assistant (tested with 2.10.4).
 - **Wi-Fi** with WPA2 passphrase (no captive portal, no enterprise login) that reaches Home Assistant.
@@ -233,6 +237,8 @@ bundle for this model from the project's GitHub releases and installs it, as a p
 checks the release key's signature (`keys/release.pub`, in every build) and falls back by itself if the new version
 does not stay up. Only an encrypted connection to Home Assistant, with the key Home Assistant set, may switch the
 channel or install. Once the new version passes its self test it also becomes the copy the Echo falls back to, as for a push.
+A release-signed build older than what the Echo has is refused, so switching from `beta` to `release` keeps the newer
+beta until a newer release is out; to go back on purpose, push the older version from your PC (`scripts/ota-push.sh`).
 ESPHome mode only. The release key arrives with the install or with the first push from a build that has it; until
 then the entity says so.
 

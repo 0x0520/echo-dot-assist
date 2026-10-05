@@ -21,12 +21,12 @@ struct proto {
     int port;                                   /* default; the stock firewall admits inbound TCP 16384-32767 only */
     int threaded;                               /* serve() may run for several clients at once, one thread each */
     void (*serve)(int fd);                      /* one client until it disconnects; no lock held */
-    /* all below: core_lock held */
+    /* all below: core_lock held.  They only queue what goes to a client (outq.h, one writer thread per connection): a
+     * client whose link stalls holds up nobody, and is let go once its queue passes its limit */
     void (*start)(void);                        /* ask the server to run a pipeline; mic audio follows */
-    void (*audio)(const void *pcm, size_t len); /* 16 kHz mono s16le while streaming.  Called by the mic sender thread only,
-                                                 * never by the capture thread: a write that blocks on a stalled client holds
-                                                 * up core_lock, but not the wake word.  The capture thread queues the mic
-                                                 * blocks (2 s, oldest dropped) and takes core_lock only to act on an event */
+    void (*audio)(const void *pcm, size_t len); /* 16 kHz mono s16le while streaming.  Called by the mic sender thread only;
+                                                 * the capture thread queues the mic blocks (2 s, oldest dropped) and takes
+                                                 * core_lock only to act on an event.  Left out while the client is behind */
     void (*stop)(void);                         /* may be NULL: pipeline given up while the mic was streaming */
     void (*cancel)(void);                       /* may be NULL: the user cancelled the run (action button); have the server
                                                  * abort it and drop what it still sends for it.  The mic is already off */
@@ -44,10 +44,11 @@ struct proto {
 };
 extern const struct proto proto_wyoming, proto_esphome;
 
-extern pthread_mutex_t core_lock;               /* guards state, the client socket (writes) and everything marked "lock held".
-                                                 * Held while writing to a client, so for up to its send timeout (5 s): the
-                                                 * capture thread must not need it per block.  Leaf locks the core takes inside
-                                                 * it: the playback queue's, the earcon thread's; never the other way round */
+extern pthread_mutex_t core_lock;               /* guards state, what is queued to the clients (and the order of it: Noise
+                                                 * nonces are spent under it) and everything marked "lock held".  Nothing
+                                                 * under it waits for a client any more, but the capture thread still takes
+                                                 * it only for events.  Leaf locks taken inside it: the playback queue's, the
+                                                 * earcon thread's, each client's outgoing queue's; never the other way round */
 extern const char *core_name;
 const char *core_node_name(void);               /* "Echo Dot" -> "echo-dot": the ESPHome device (host) name */
 extern int core_local_wake, core_port, core_sendspin_port;

@@ -171,7 +171,7 @@ SOUND := $(if $(filter %wake_pryon.c,$(WAKE)),src/hassmic/sound_pryon.c,src/hass
 WHISPER := $(if $(filter %wake_pryon.c,$(WAKE)),src/hassmic/whisper_pryon.c,src/hassmic/whisper_none.c)
 
 RNNOISE := $(addprefix src/third_party/rnnoise/,denoise.c rnn.c rnn_data.c pitch.c kiss_fft.c celt_lpc.c)
-HASSMIC := src/hassmic/main.c src/hassmic/spawn.c src/hassmic/hwsettings.c src/hassmic/earcon.c src/hassmic/playback.c src/hassmic/mic.c \
+HASSMIC := src/hassmic/main.c src/hassmic/outq.c src/hassmic/spawn.c src/hassmic/hwsettings.c src/hassmic/earcon.c src/hassmic/playback.c src/hassmic/mic.c \
            src/hassmic/wakewords.c src/hassmic/wakedet.c src/hassmic/detect.c src/hassmic/wyoming.c src/hassmic/proto_wyoming.c src/hassmic/proto_esphome.c src/hassmic/buttons.c \
            src/hassmic/sendspin.c src/hassmic/arb.c src/hassmic/ble.c src/hassmic/ble_crypto.c src/hassmic/a2dp.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/hassmic/btout.c src/hassmic/ota.c src/hassmic/update.c src/hassmic/adbwifi.c src/hassmic/wifimotion.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.c src/hassmic/hash.c src/hassmic/sounds.c src/hassmic/micgain.c src/hassmic/micdenoise.c \
            src/third_party/monocypher.c src/third_party/freeaptx.c $(RNNOISE)

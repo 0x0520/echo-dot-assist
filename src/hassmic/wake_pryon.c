@@ -79,15 +79,18 @@ static void on_result(const char *decoderId, PryonEnumeratedResult *r)
     if (r->detectionType == PRYON_DETECTION_TYPE_ACCEPT && r->keyword) callback(r->keyword, r->beginSampleIndex, r->endSampleIndex);
 }
 
+/* A model set that loads but whose decoder does not (a manifest the engine reads but cannot run) used to stay behind
+ * under MODEL_SET, loaded, and the fallback to the stock model asked for a new one under the same name */
 int wake_open(const char *manifest, wake_cb cb)
 {
     PryonMultichannelAudioFormat fmt;
+    if (opened) return -1;
     callback = cb;
     PryonApi_SetLoggingCallback(on_log);
     PryonApi_SetEnumeratedResultCallback(on_result);
     if (PryonModelSet_New(MODEL_SET, manifest, "")) return -1;
     PryonDecoder_NewPryonMultichannelAudioFormat_Default(&fmt);
-    if (PryonDecoder_NewSpotterAudioDecoder(DECODER, MODEL_SET, "pryon", fmt, "{}")) return -1;
+    if (PryonDecoder_NewSpotterAudioDecoder(DECODER, MODEL_SET, "pryon", fmt, "{}")) { PryonModelSet_Delete(MODEL_SET); return -1; }
     pthread_mutex_lock(&props_lock);
     opened = 1;
     push_props();
@@ -95,16 +98,18 @@ int wake_open(const char *manifest, wake_cb cb)
     return 0;
 }
 
-void wake_feed(const int16_t *samples, size_t count)
+void wake_feed(const int16_t *samples, size_t count)        /* the thread that opens and closes it */
 {
+    if (!opened) return;
     PryonDecoder_PushAudioEventSamples(DECODER, sample_index, samples, count);
     sample_index += count;
 }
 
 void wake_reset(void)
 {
-    PryonDecoder_SessionEnd(DECODER);
-    pthread_mutex_lock(&props_lock); push_props(); pthread_mutex_unlock(&props_lock);
+    pthread_mutex_lock(&props_lock);
+    if (opened) { PryonDecoder_SessionEnd(DECODER); push_props(); }
+    pthread_mutex_unlock(&props_lock);
 }
 
 void wake_property(const char *name, int value)
@@ -119,6 +124,8 @@ void wake_property(const char *name, int value)
 
 void wake_close(void)
 {
-    PryonDecoder_Delete(DECODER);
-    PryonModelSet_Delete(MODEL_SET);
+    pthread_mutex_lock(&props_lock);    /* wake_property from another thread must not push to a decoder going away */
+    if (opened) { PryonDecoder_Delete(DECODER); PryonModelSet_Delete(MODEL_SET); }
+    opened = 0;
+    pthread_mutex_unlock(&props_lock);
 }

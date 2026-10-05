@@ -27,6 +27,20 @@ What changed for people using the Echo, newest first. Details and measurements a
 - **The PC scripts say right away when they are started on Windows** (Git Bash, MSYS2, Cygwin) and point to WSL2,
   instead of failing halfway through. `scripts/ota-push.sh` with a published release build and `scripts/adb-wifi.sh`
   keep working there. `scripts/install-system.sh` now also installs the `latency` tool, as updates already did.
+- **Stopping the media player while an announcement or reply is still loading no longer silences the Echo.** Every
+  reply after such a stop used to stay silent until hassmic restarted; now the stop drops only what it was meant for.
+- **A Wi-Fi hiccup no longer makes the Echo deaf.** The microphone audio for Home Assistant is now sent by a thread of
+  its own: while the network stalls, the wake word, the buttons and everything else carry on, and the Echo drops the
+  audio Home Assistant could not take instead of stopping.
+- **A stock helper tool that hangs can no longer stall the Echo.** The tools hassmic runs for the volume, the
+  equalizer and the wake word's loudness are stopped after a second.
+- **Fewer background processes:** the volume is checked with one helper every 2 s instead of three, the rest once a
+  minute.
+- **A wake word model that does not load** falls back to "Alexa" cleanly, and Home Assistant then shows "Alexa" as the
+  active wake word instead of the one that failed.
+- **Replies are no longer held in memory without limit:** a client sending audio much faster than it plays (Wyoming
+  has no login) is slowed down instead.
+- **A sound asked for while a timer rings plays at once**, not after the pause between the beeps.
 
 - **Nothing on the network can lock Home Assistant out of the Echo any more.** Four connections that never said
   anything used to take every place the Echo has for Home Assistant until they closed; now a connection has 10 s to

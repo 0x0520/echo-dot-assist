@@ -23,7 +23,10 @@ struct proto {
     void (*serve)(int fd);                      /* one client until it disconnects; no lock held */
     /* all below: core_lock held */
     void (*start)(void);                        /* ask the server to run a pipeline; mic audio follows */
-    void (*audio)(const void *pcm, size_t len); /* 16 kHz mono s16le while streaming */
+    void (*audio)(const void *pcm, size_t len); /* 16 kHz mono s16le while streaming.  Called by the mic sender thread only,
+                                                 * never by the capture thread: a write that blocks on a stalled client holds
+                                                 * up core_lock, but not the wake word.  The capture thread queues the mic
+                                                 * blocks (2 s, oldest dropped) and takes core_lock only to act on an event */
     void (*stop)(void);                         /* may be NULL: pipeline given up while the mic was streaming */
     void (*cancel)(void);                       /* may be NULL: the user cancelled the run (action button); have the server
                                                  * abort it and drop what it still sends for it.  The mic is already off */
@@ -41,7 +44,10 @@ struct proto {
 };
 extern const struct proto proto_wyoming, proto_esphome;
 
-extern pthread_mutex_t core_lock;               /* guards state, the client socket (writes) and everything marked "lock held" */
+extern pthread_mutex_t core_lock;               /* guards state, the client socket (writes) and everything marked "lock held".
+                                                 * Held while writing to a client, so for up to its send timeout (5 s): the
+                                                 * capture thread must not need it per block.  Leaf locks main.c takes inside
+                                                 * it: the playback queue's, the earcon thread's; never the other way round */
 extern const char *core_name;
 const char *core_node_name(void);               /* "Echo Dot" -> "echo-dot": the ESPHome device (host) name */
 extern int core_local_wake, core_port, core_sendspin_port;
@@ -90,11 +96,14 @@ extern const char *const core_sound_events[];
 extern const int core_sound_nevents;
 
 /* no lock needed */
-void   core_tts_begin(unsigned rate, unsigned channels);   /* lock held for this one: switches to SPEAKING */
-void   core_tts_data(const void *pcm, size_t len);
+void   core_tts_begin(unsigned rate, unsigned channels);   /* lock held for this one: switches to SPEAKING, a new stream */
+void   core_tts_data(const void *pcm, size_t len);          /* NOT under core_lock: waits while 1 MiB is queued (back
+                                                               pressure), up to 5 s of a playback that does not move */
 void   core_tts_end(void);                                  /* drains, then played() and core_pipeline_finish() */
-int    core_tts_flushing(void);                             /* barge-in: drop audio until core_tts_end() */
-void   core_tts_flush(void);
+int    core_tts_flushing(void);                             /* the stream is cut: stop producing, then core_tts_end() */
+void   core_tts_flush(void);                                /* cut the stream queued or playing; with none, the next one
+                                                               (a fetch under way), unless the pipeline ends first.  A cut
+                                                               never reaches past its stream */
 size_t core_tts_queued(void);                               /* bytes not yet played: for back pressure */
 void   core_alarm(int on);                                  /* timer finished: ring until button, wake word or 60 s */
 enum { MUSIC_SENDSPIN = 1, MUSIC_BLUETOOTH = 2 };
@@ -102,5 +111,6 @@ void   core_music(int source, int on);                      /* a music stream ru
 void   core_bt_device(const char *name, int on);            /* a Bluetooth speaker source connected / went (not the lock) */
 void   core_bt_pairing(int on);                             /* the Bluetooth speaker's pairing window opened / closed (not the lock) */
 void   core_run(char *const argv[], char *out, size_t n);   /* runs a stock tool the way the core does, until it closes its
-                                                               stdout, which lands in out (any thread, not the lock) */
+                                                               stdout, which lands in out (any thread, not the lock); killed
+                                                               after 2 s */
 #endif

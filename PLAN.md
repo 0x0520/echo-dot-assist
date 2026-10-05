@@ -1179,6 +1179,32 @@ Run in this order. Each step says what it proves.
       iPhone and an Android phone still plays (their LATM passes the check), SBC/aptX unchanged, a phone that forgot the
       Echo re-pairs with "Bluetooth pairing" on, speaker search + reconnect, LE proxy pairing with a real device (16-byte
       keys, SC), whether LE Read Buffer Size reports 0 on donut/biscuit/radar (log line "shared with LE").
+- [x] Core locking and liveness (2026-10-05, review of main.c's threads). Found and fixed:
+      a media stop from Home Assistant during a fetch left the playback flush flag set for good (only a played stream's
+      end cleared it, and the media thread queues none when nothing began): every later ESPHome reply silent until a
+      restart; the playback thread also cleared it before taking core_lock, so a wake word in between could leave it set.
+      Replies are now numbered streams; a cut drops its stream and those before it and cannot reach the next one, a stop
+      with nothing queued waits for the stream being fetched and is spent with the pipeline (no proto_esphome.c change).
+      The capture thread sent mic audio itself under core_lock, through a write with a 5 s send timeout: a stalled
+      client made the wake word deaf and blocked every thread. Now a 2 s queue (oldest dropped) and a mic sender thread;
+      noise reduction and gain run there outside the lock (its own micgain copy, taken when the level setting changes,
+      so the talker's level still carries over between pipelines); the capture thread takes core_lock only for events,
+      the pipeline timeout reads an atomic copy of the state (monotonic now, was `time()`). Wake word detections and
+      "stop" are handed from Pryon's thread to the capture thread (it read the ring while the capture thread wrote it,
+      and waited for core_lock); `wake_reset` from other threads is a request the capture thread carries out.
+      Stock tools: `run_output` waits at most 1 s (`core_run` 2 s), then kills the tool's process group; pipe with
+      O_CLOEXEC; vfork on the Echo (bionic), fork on the PC; volume and EQ read at start, so no first-use fork under the
+      lock. volume_sync: MainVolume every 2 s, Mute and TTSVolume once a minute (was all three every 2 s). wake_open
+      frees the model set when the decoder fails, wake_close resets its state, a failed switch falls back and reports
+      Alexa. Whisper: the last detector is retired at the next request with a bounded backlog wait (300, presumably ms)
+      instead of -1 on the capture thread. Earcon thread on a condition variable (polled every 20 ms), sounds no longer
+      wait out the alarm's pause. TTS queue bounded at 1 MiB, the producer waits up to 5 s. Core threads are checked.
+      Tested: all PC suites (`fake_ha_esphome` with a new check: media stop during a slow fetch, then an announcement
+      and a reply both play; fails on the old code), unit tests, every model with STUBS=1, no warnings.
+      Open: client and listen sockets still lack SOCK_CLOEXEC (net.c, other branch); `ota_push_test.sh` and
+      `boot_test.sh` not run in this environment. Needs the device: wake word and replies under a Wi-Fi stall, vfork
+      with the real ledctrl/lipc tools, `WhisperApi_backlogWait`'s timeout unit and return value, a model switch to a
+      broken model.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

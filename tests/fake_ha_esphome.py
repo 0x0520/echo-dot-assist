@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plays Home Assistant's side of the ESPHome native API against build/hassmic-host, using the reference
 `aioesphomeapi` client (the library Home Assistant itself uses), so framing and protobuf layout are checked by the real parser."""
-import asyncio, base64, io, math, os, random, signal, struct, subprocess, sys, tempfile, threading, time, wave
+import asyncio, base64, io, math, os, random, signal, socket, struct, subprocess, sys, tempfile, threading, time, wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
@@ -529,6 +529,23 @@ async def main():
         c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_ERROR, {"code": "x", "message": "end of test pipeline"})
         await asyncio.sleep(0.5)
         await c.disconnect()
+
+        # connections that never say anything held all four slots and kept Home Assistant out until they closed
+        idle = [socket.create_connection(("127.0.0.1", PORT)) for _ in range(4)]
+        await asyncio.sleep(0.3)
+        c2 = APIClient("127.0.0.1", PORT, None); await asyncio.wait_for(c2.connect(login=True), 5)
+        check((await asyncio.wait_for(c2.device_info(), 5)).name == "echo-dot", "four silent connections do not keep a new client out")
+        await asyncio.sleep(10.5)
+        def closed(s):
+            s.settimeout(0.5)
+            try: return s.recv(1) == b""
+            except socket.timeout: return False
+            except OSError: return True     # reset
+        gone = [closed(s) for s in idle]
+        for s in idle: s.close()
+        check(all(gone), f"silent connections let go after 10 s: {gone}")
+        check((await asyncio.wait_for(c2.device_info(), 5)).name == "echo-dot", "the client that talks stays connected")
+        await c2.disconnect()
     finally:
         proc.terminate(); httpd.shutdown()
         for f in (play, settings):

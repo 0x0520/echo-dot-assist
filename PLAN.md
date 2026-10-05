@@ -1122,6 +1122,29 @@ Run in this order. Each step says what it proves.
       `av`, `numpy`, `pillow` (aiosendspin's server extra) pinned in tests/requirements.txt. ota_push_test: free ports,
       waits for the push port instead of 0.7 s. PC scripts on Git Bash/MSYS2/Cygwin stop at once and point to WSL2
       (ota-push.sh with a release build and adb-wifi.sh still run there). `scripts/poc-host.sh` removed.
+- [x] Network limits (2026-10-05, review findings): ESPHome: a connection has FIRST_MSG_S = 10 s (SO_RCVTIMEO,
+      handshake included) for its first message; with all 4 slots taken the longest silent one, else the oldest unkeyed
+      non-voice-assistant one, is pushed out (a slot passes to the new fd; the old reader finds it gone; Noise rx is the
+      reader's own now). Silent ones older than 10 s are let go at every accept. key_set() closes every unkeyed client at
+      once; VA_AUDIO only after the keyed check and only from the voice assistant client. Media jobs carry their own
+      buffers and minimp3 state (cancel() frees the slot while the old thread runs), feed() stops on `aborted`; WAV frames
+      `n - n % (2*ch)`, WAV and Wyoming audio-start limited to 8-48 kHz, 1-2 ch. pb_next: varints at most 10 bytes, cut
+      ones fail, field numbers 1..2^29-1. Header and body in one writev; header lines (HTTP, WebSocket, Wyoming, push
+      port) by MSG_PEEK up to the delimiter (`net_read_until`) instead of a read() per byte. Wyoming: one thread per
+      client, the newest replaces the old one. Push port: 10 s for the request line, 20 s more for the adb signature,
+      30 s + 1 s per 64 KiB announced for signature and bundle (16 MiB: 4 min 46 s), all against one deadline (poll).
+      Arbitration: a candidate counts once heard twice >= 9 s apart (loners beacon every 10 s), only those get pushed,
+      at most one hand-over per 5 s in all, `pushed` set before wrap_key (a low-order key no longer retries every 100 ms);
+      new keys evict only unestablished candidates. Joining takes ~10 s longer, merging two networks up to two member
+      beacon intervals (60 s). mDNS: random query id, answers only from port 5353 on a local subnet, cached for their TTL
+      (max 300 s), dropped when connecting to the cached address fails.
+      Tests: fake_ha_esphome 104 ok (4 silent sockets do not keep a client out, all let go after 10 s), fake_ha (an idle
+      Wyoming connection is replaced; 1 MHz x7 audio-start refused, reply still ends), fake_ha_arbitration (beacon heard
+      once: nothing; 48 forged keys: no hand-over to them), ota_push_test (a byte every 3 s cut off after 10 s, the push
+      queued behind it installs). Open: adb opened via the push port's challenge still opens for every address (would
+      need lockdown.sh to take the requester's IP); a determined LAN peer can still fill the arbitration candidate table
+      with keys it beacons twice, and can keep reconnecting to the one push port. Device test: HA reconnect after a
+      Wi-Fi drop (ESPHome and Wyoming), push of a real bundle, announcements from `homeassistant.local`.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

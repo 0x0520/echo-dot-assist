@@ -38,12 +38,17 @@ async def main():
     proc = subprocess.Popen(cmd + ["-p", str(PORT), "-n", "Test Dot"], env=env, start_new_session=True)
     try:
         await asyncio.sleep(6 if qemu else 0.3)
+        idle_r, idle_w = await asyncio.open_connection("127.0.0.1", PORT)      # connects, says nothing
+        await asyncio.sleep(0.2)
         async with AsyncTcpClient("127.0.0.1", PORT) as client:
             await client.write_event(Describe().event())
             info = Info.from_event(await expect(client, Info.is_type, "info"))
             assert info.satellite and info.satellite.name == "Test Dot", info
             assert info.satellite.supports_trigger
             print("ok   info:", info.satellite.name, info.satellite.version)
+            assert await asyncio.wait_for(idle_r.read(1), 2) == b"", "the idle connection is still open"
+            idle_w.close()
+            print("ok   an idle connection does not keep Home Assistant out: the newer one replaces it")
 
             await client.write_event(Ping(text="x").event())
             await expect(client, Pong.is_type, "pong")
@@ -78,6 +83,14 @@ async def main():
                 raise AssertionError("still streaming after pipeline end")
             except asyncio.TimeoutError:
                 print("ok   streaming stopped")
+
+            size = os.path.getsize(play)                           # a format the mixer must never be asked for
+            await client.write_event(AudioStart(rate=1000000, width=2, channels=7).event())
+            await client.write_event(AudioChunk(rate=1000000, width=2, channels=7, audio=tone[:2048]).event())
+            await client.write_event(AudioStop().event())
+            await expect(client, Played.is_type, "played after a refused audio-start", timeout=5)
+            assert os.path.getsize(play) == size, "audio of a refused format was played"
+            print("ok   audio-start with 1 MHz x7 refused, nothing played, the reply still ends")
 
             if not qemu:                                           # barge-in: wake during a 4 s answer
                 proc.send_signal(signal.SIGUSR1)

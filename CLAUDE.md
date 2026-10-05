@@ -98,7 +98,7 @@ There is no single-test selector: run one unit test by building/running its line
   after loading each with the Echo's `pryon_test`, and other artifacts (the sound detection model), kept on the PC for tests.
   Downloads come from Amazon in one go (stock-online + Alexa app registration, undone afterwards).
 - `scripts/probe.sh` checks the device's libraries match the analysed firmware. Everything assumes exactly that version.
-- PC scripts stop at once on Windows (Git Bash/MSYS/Cygwin: use WSL2) except ota-push.sh/bundle.sh/adb-wifi.sh.
+- PC scripts stop at once on Windows (Git Bash/MSYS/Cygwin: use WSL2) except ota-push.sh/bundle.sh/adb-wifi.sh/top.sh.
   PC scripts that use adb (`deploy`, `probe`, `install-system`, `capture-test`, `mic-compare`) detect the model from `ro.product.device`
   via `scripts/lib/device.sh`; `ota-push.sh` takes `DEVICE` (default donut). With two Echos on adb set `ANDROID_SERIAL`.
 
@@ -184,6 +184,16 @@ through narrow headers:
   which opens it for the signer's address only. The push port serves one connection at a time, so an address that
   fails three times in a minute is turned away for a minute (`net_backoff_*` in `net.c`).
   Wi-Fi setup over Bluetooth hands its credentials to root the same way (`state/wifi-request`, above).
+- **Task manager** (`taskmgr.c`): the diag thread of `proto_esphome.c` samples `/proc` every 10 s while a client
+  subscribes (outside core_lock; static buffers; CPU as deltas of utime+stime against the machine's jiffies, all cores
+  = 100 %; a process is pid + start time; `HASSMIC_PROC` points tests at fixtures): memory, load, hassmic's CPU/RSS
+  sensors, "Top processes" and "hassmic threads" text sensors (255 chars). Every thread names itself as it starts
+  (`threadname.h`, `thread_name()`; a new thread needs one too; not the main thread: pidof matches its name). ESPHome
+  action `kill_process` (pid, signal), keyed connection only: hassmic writes `state/kill-request` (pid, start time,
+  TERM|KILL); root's `kill_watch` in `main.sh` (ota_watch loop) re-reads the process and refuses init, core daemons
+  (`KILL_KEEP`), kernel threads, `wpa_supplicant`/`dhcpcd`, the mixer, the boot/firewall scripts and their children
+  (hassmic itself excepted), sends TERM, KILL after 3 s, answers in `state/kill-result` ("Last kill").
+  `scripts/top.sh` shows the same live over adb (allowed on Windows: it does not load `lib/device.sh`).
 - **Who may connect** (`net.c`): `-W <ip>[,<ip>/<len>...]` limits the protocol port to those peers (meant for Wyoming,
   which has no authentication; ESPHome has its key), closed at accept in `main.c`. Arbitration (`arb.c`) takes at
   most 2 unknown keys per source address and 8 new ones a minute in all.

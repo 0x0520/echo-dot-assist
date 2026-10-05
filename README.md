@@ -153,6 +153,22 @@ Details:
   own logic, on by default); setting a level holds it there and switches the automatic off. "Illuminance": the Echo's
   light sensor in lux, as Amazon reads it, for automations.
   Diagnostics, off by default: SoC temperature, CPU usage.
+- **Task manager**<a id="task-manager"></a>: what the Echo's CPU and memory go to, to see how much room is left. In
+  Home Assistant on the Echo's device page under Diagnostic: "Memory used" (on by default), and, to be enabled there
+  (they are off by default, the two lists most of all: a new text every 10 s fills the recorder): "Memory available",
+  "Load average", "hassmic CPU", "hassmic memory", "Top processes" (the five busiest in the last 10 s as
+  `name pid cpu% memory`, e.g. `mixer 512 6.3% 21MB`) and "hassmic threads" (hassmic's own, each by name, busiest
+  first: `capture`, `mic sender`, `esphome client`, ...). CPU shares are of all cores together, as "CPU usage".
+  Updated every 10 s while Home Assistant is connected; one look takes a few milliseconds (hassmic's log says how long
+  once, and the `diag` thread shows its share). The same live every 2 s on a PC: `scripts/top.sh` (needs only adb,
+  works on Windows).
+  **Ending a process**: the action `esphome.<node>_kill_process` (Developer tools, Actions) with `pid` from "Top
+  processes" and `signal` `term` (or empty) or `kill`. "Last kill" shows the outcome. It is taken only over the
+  encrypted connection with Home Assistant's key, and root decides: Amazon's daemons may be ended, and hassmic itself
+  (it starts again within seconds), but not what keeps the Echo running, reachable or locked down (init and the system
+  daemons, kernel threads, `wpa_supplicant`, `dhcpcd`, the `mixer` hassmic's audio depends on, the firewall and boot
+  scripts and whatever they run). `term` first; whatever is still there 3 s later gets `kill`. A process ended this way
+  may be started again by Android's init; it stays gone only until the next reboot either way.
 - **Sound detection** (optional, off by default)<a id="sound-detection"></a>: the "Sound detection" switch runs Amazon's
   own Alexa Guard model on the Echo, beside the wake word, and the "Sound" event entity reports what it heard:
   `smoke_or_co_alarm`, `glass_break`, `dog_bark`, `baby_cry`, `snoring`, `cough`, `water`, `beeping_appliance`. Use it
@@ -454,6 +470,10 @@ older one installed is refused with a message.
 - **Bluetooth**: keys in `state/ble_bonds` (proxy) and `state/bt_keys` (speaker), both under `/data/local/hassmic/`.
   Legacy LE pairing (crackable when recorded) is allowed unless "Bluetooth proxy: secure pairing only" is on; AAC from
   phones, decoded by the firmware's old FFmpeg, only while "Bluetooth AAC" is on.
+- **Ending processes** (task manager): hassmic cannot signal another user's process. It asks root through a file in
+  `state/`, naming the process by pid and start time, so a request for one that has ended cannot hit another that got
+  its number; root reads both again and refuses what keeps the Echo running, reachable or locked down (see
+  [Task manager](#task-manager)). Only over the encrypted connection with Home Assistant's key.
 - **Wi-Fi setup over Bluetooth**: the Echo advertises it only while it has no Wi-Fi (2 minutes after it lost it, then
   for 5 minutes) or after its action button was held 5 seconds, and takes a network only within a minute of a press of
   that button: someone has to be at the Echo, as with stock's setup. Improv has no encryption of its own: the password

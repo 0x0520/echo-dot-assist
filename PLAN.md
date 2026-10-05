@@ -1418,6 +1418,66 @@ Run in this order. Each step says what it proves.
         stops it); the 21 s factory reset is still acebuttond's;
       - the ring: "setup-mode" shows and is unset when the window closes; identify's chime;
       - MTU: a client that keeps 23 bytes gets the device info result cut (notifications are not split).
+- [x] Task manager (2026-10-06, `taskmgr.c`, `threadname.h`; root side `main.sh` kill_watch; `scripts/top.sh`), to
+      measure how much optimisation is needed. **Sampling**: the ESPHome diag thread, now on a 10 s tick (temperature and
+      CPU usage stay at 30 s, the time request hourly), samples only while a client subscribes to states, outside
+      core_lock: `/proc/stat` (jiffies of all cores), `/proc/meminfo` (MemAvailable, else free + buffers + cached),
+      `/proc/loadavg`, `/proc/uptime`, every `/proc/<pid>/stat` and `/proc/self/task/<tid>/stat`, read with
+      open/read into static buffers (two sets of 512 processes and 128 threads, swapped per sample; qsort + bsearch by pid).
+      CPU = utime + stime since the last sample over the machine's jiffies (all cores = 100 %, as "CPU usage"). A
+      process is pid + start time: a reused pid counts as new; one not in the last sample counts in full if it started
+      after it, else (unreadable then) stays out of the ranking. **Entities** (all diagnostic): sensors "Memory used"
+      (enabled), "Memory available", "Load average", "hassmic CPU", "hassmic memory" (statm), text sensors "Top
+      processes" (5 by CPU, `name pid cpu% rssMB`), "hassmic threads" (`N threads: name cpu%, ...` busiest first, idle
+      left out, whole entries up to 255 chars), "Last kill" (enabled); the lists are disabled by default since a text
+      every 10 s fills the recorder. **Thread names**: every `pthread_create` target calls `thread_name()`
+      (PR_SET_NAME, 15 chars) first: capture, mic sender, playback, earcon, volume led, alarms, selftest, `<proto>
+      client`, outq writer, media fetch, bt announce, diag, light, kill wait, adb watch, ota push, update, arbitration,
+      improv, ble controller, a2dp player, avrcp volume, btout route/aipc/hal, buttons, mute latch, privacy key,
+      sendspin play/listen/conn/time, wifi motion. Not the main thread (pidof matches it); the libraries' own threads
+      (AIPC, Pryon) stay "hassmic". **Kill**: ESPHome action `kill_process` (pid int, signal string: term/empty or
+      kill; HA makes both required). Keyed connection only, else refused and logged. hassmic reads the process's start
+      time (refuses here if it cannot read it), writes `state/kill-request` (0600, `pid start TERM|KILL`), one at a time,
+      and polls `state/kill-result` for 20 s (a "kill wait" thread). Root (`kill_watch` in ota_watch, every 2 s): takes
+      the file into its directory, refuses a link, more than 64 bytes, anything but three fields of digits (no leading
+      zero, pid <= 7 digits) and TERM/KILL; re-reads `/proc/<pid>/stat` (name up to the last ") ") and refuses a
+      different start time, pid 1/2, ppid 2, an empty cmdline, `KILL_KEEP` by comm or argv[0] (init, ueventd, logd,
+      servicemanagers, vold, netd, adbd, zygote/main, surfaceflinger, watchdogd, lmkd, healthd, kthreadd,
+      wpa_supplicant, dhcpcd, mixer, iptables*), a command line with main.sh/boot.sh/lockdown.sh/sysinstall.sh/
+      wifi-join.sh, and any child of those except an exe ending in /hassmic (the satellite loop restarts it). The mixer
+      is kept: hassmic's capture would die with it and nobody has seen it come back. Then TERM, polling 3 s; still
+      there (same start time, not a zombie) -> KILL, 1 s; answer "OK <comm> (<pid>) ended on TERM|KILL[, TERM was
+      ignored for 3 s]" / "FAILED refused: ..." / "FAILED ... still runs" into `state/kill-result` (renamed in, like
+      wifi-result: `answer()` now serves both) and boot.log. A result answered after hassmic killed itself is read at
+      the next start. Firewall invariant untouched: no new port, no new egress.
+      `scripts/top.sh [secs]`: one `adb shell` per refresh (two looks at `/proc/stat` and hassmic's threads 1 s apart,
+      meminfo, loadavg, `top -b -n 1 -m 15`, and `ps -A -o PID,USER,PCPU,RSS,NAME` or `ps` when that top prints
+      nothing), rendered with awk on the PC; no `lib/device.sh`, so Git Bash works; `ONCE=1` for one look.
+      Measured on the PC (x86, container): a sample of the 44 processes of Docker Desktop's VM (`--pid=host`) takes
+      0.84 ms, all of it CPU (mean of 20; the first, cold, 6.8 ms); in fake_ha_esphome.py's namespace (4 processes, 18
+      threads) 0.6 ms. For ~200 processes on the Echo's A35 that suggests a few ms every 10 s, well under 0.1 % of a core.
+      Tested (container): `make unit` (new `taskmgr_test.c`: stat parsing incl. names with spaces and ")", the 15-char
+      cut, broken lines; two samples of fixture /proc with a process gone, one new, a reused pid, one unreadable before
+      and one unreadable throughout -> exact top five and thread list; 63 busy threads and five long names stay within
+      255 with whole entries; kill: bad signal and missing pid refused with nothing written, request `200 400 TERM` mode
+      600, a second one while pending refused, root's answer taken with control characters masked, then the next one),
+      `fake_ha_esphome.py` (entities with units, enabled/disabled and category; both actions listed; unkeyed
+      kill_process refused, nothing written; states arrive, top/threads match their formats within 255; the real
+      threads of hassmic-host named; the cost logged once; keyed kill writes `pid start KILL`, Last kill "asked", then
+      root's answer; "hup" refused), `fake_ha_arbitration.py` (two actions now), `boot_test.sh` (stale start time
+      refused and the process left alone, a stand-in ended on TERM, one ignoring TERM ended on KILL after 3 s, a shell
+      running lockdown.sh and its child refused, a process named logd refused, a hassmic run by a main.sh ended, pid 1
+      refused, eight malformed requests refused with nothing run, a link refused, all in boot.log), the full suite,
+      every model with STUBS=1 and the PC build without warnings, `make lint`.
+      **Needs the device**: (1) SELinux and /proc for other uids: does hassmic (puffin, its domain) read
+      `/proc/<pid>/stat` of root's and system's processes? The log line "task manager: a sample of N processes (M
+      unreadable)" says it; with many unreadable, "Top processes" lacks them and they cannot be killed through Home
+      Assistant (hassmic needs the start time). (2) The sampler's cost on the A35: that log line (expected a few ms for
+      ~200 processes), and the diag thread's share in "hassmic threads". (3) toybox `top -b -n 1 -m 15` on Fire OS 6
+      (else `scripts/top.sh` falls back to ps; whether toybox ps knows `-A -o`). (4) Thread names in `top -H`. (5) A kill
+      end to end: an Amazon daemon (init may restart it: the result still says ended), hassmic itself (restarted, "Last
+      kill" from the result left behind), a protected one refused (mixer, wpa_supplicant, lockdown.sh's shell), and that
+      `read -d ''` of /proc cmdline and `readlink /proc/<pid>/exe` work under mksh in hassmic_fw's domain.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): offline alarm clock and
       reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

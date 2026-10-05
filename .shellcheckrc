@@ -1,0 +1,10 @@
+# make lint: the scripts that run on the Echo (scripts/system, scripts/device), as POSIX sh.  What is left out is style
+# these scripts use on purpose, not bugs:
+# - paths and word lists are unquoted on purpose: the Echo's paths have no spaces, and lists of services, files and
+#   iptables arguments are meant to split (SC2086, SC2046, SC2231)
+# - device.conf and hassmic.conf are sourced from paths known only on the Echo (SC1090, SC1091)
+# - `a && b || c` where c is meant to run when either fails (SC2015)
+# - export of a command substitution whose status does not matter (SC2155)
+# - read without -r of /proc values that hold no backslashes (SC2162)
+# - ps | grep and ls in probe.sh: toybox, a debugging aid (SC2009, SC2012)
+disable=SC2086,SC2046,SC2231,SC1090,SC1091,SC2015,SC2155,SC2162,SC2009,SC2012

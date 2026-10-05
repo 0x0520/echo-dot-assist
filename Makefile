@@ -91,13 +91,16 @@ $(OUT)/ktree/.config: $(KFRAG)
 	@mkdir -p $(OUT)/ktree
 	$(KMAKE) -C $(KSRC) O=$(CURDIR)/$(OUT)/ktree defconfig
 	cat $< >> $@
-	$(KMAKE) -C $(KSRC) O=$(CURDIR)/$(OUT)/ktree olddefconfig modules_prepare 2>&1 | grep -v -e 'override: reassigning' -e 'changes choice state' -e '^$$' || true
+	$(KMAKE) -C $(KSRC) O=$(CURDIR)/$(OUT)/ktree olddefconfig modules_prepare > $(OUT)/ktree/prepare.log 2>&1; rc=$$?; 	grep -v -e 'override: reassigning' -e 'changes choice state' -e '^$$' $(OUT)/ktree/prepare.log; 	[ $$rc = 0 ] || { rm -f $@; exit $$rc; }
 endif
 
+# kbuild's noise is filtered out of a log rather than a pipe: through a pipe the status was grep's, a failed build went
+# unnoticed and the .ko of the build before was copied and shipped.  That one goes first, so a failure leaves none.
 $(OUT)/$(KMOD).ko: src/kmod/$(KMOD).c src/kmod/Kbuild $(OUT)/ktree/.config
 	@mkdir -p $(OUT)/kmod
 	cp src/kmod/$(KMOD).c src/kmod/Kbuild $(OUT)/kmod/
-	$(KMAKE) -C $(OUT)/ktree M=$(CURDIR)/$(OUT)/kmod HM_KMOD=$(KMOD) modules 2>&1 | grep -v -e 'Module.symvers' -e 'no dependencies and modversions' || true
+	rm -f $@ $(OUT)/kmod/$(KMOD).ko
+	$(KMAKE) -C $(OUT)/ktree M=$(CURDIR)/$(OUT)/kmod HM_KMOD=$(KMOD) modules > $(OUT)/kmod/build.log 2>&1; rc=$$?; 	grep -v -e 'Module.symvers' -e 'no dependencies and modversions' $(OUT)/kmod/build.log; 	exit $$rc
 	cp $(OUT)/kmod/$(KMOD).ko $@
 
 ifeq ($(STUBS),1)
@@ -149,7 +152,8 @@ $(OUT)/libcurlspy.so: src/tools/curlspy.c
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -fPIC -shared $< -o $@ -fuse-ld=lld -ldl
 
-$(OUT)/pryon_test: src/tools/pryon_test.c src/include/pryon_api.h $(STOCK)/libpryon.so
+# libz is a prerequisite too: with -j and STUBS=1 it was linked before its stand-in was made
+$(OUT)/pryon_test: src/tools/pryon_test.c src/include/pryon_api.h $(STOCK)/libpryon.so $(STOCK)/libz.so
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(STOCK)/libpryon.so $(STOCK)/libz.so
 
@@ -204,6 +208,16 @@ unit:
 	cc -O2 -Wall -Isrc/hassmic tests/unit/a2dp_codecs_test.c src/hassmic/a2dp_codecs.c src/hassmic/sbc.c src/third_party/freeaptx.c -lm -ldl -lopus -o build/a2dp_codecs_test && build/a2dp_codecs_test
 	if command -v sbcenc >/dev/null; then tests/unit/sbc_ref.sh; else echo "sbc: sbcenc/sbcdec (package sbc) missing, skipped"; fi
 
+# The scripts that run on the Echo, under its mksh and toybox: shellcheck as POSIX sh (.shellcheckrc: what is left out
+# and why), mksh's own parser over them and over what they source (device.conf), and no CR in any tracked text file: the
+# Echo's shell takes a CR as part of the word (.gitattributes).  CI runs this; needs shellcheck and mksh.
+ECHO_SH := $(wildcard scripts/system/*.sh scripts/device/*.sh)
+lint:
+	shellcheck -s sh $(ECHO_SH)
+	for f in $(ECHO_SH) devices/*/device.conf; do mksh -n $$f || exit 1; done
+	@git grep -lI "$$(printf '\r')" -- . ':!*.raw'; rc=$$?; \
+	[ $$rc = 1 ] || { [ $$rc = 0 ] && echo "CR in the files above: git add --renormalize ."; exit 1; }
+
 # what the daemon reports, and what bundles are called (ota-push.sh, CI)
 version:
 	@echo $(VERSION)$(if $(RELEASE),,+$(BUILD))
@@ -211,4 +225,4 @@ version:
 clean:
 	rm -rf build
 
-.PHONY: all host unit version clean kmod-missing kernel-tools FORCE
+.PHONY: all host unit lint version clean kmod-missing kernel-tools FORCE

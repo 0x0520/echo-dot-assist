@@ -5,7 +5,7 @@ import asyncio, base64, io, math, os, random, signal, struct, subprocess, sys, t
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from aioesphomeapi import SelectInfo, SelectState, NumberInfo, SwitchInfo, NumberState, SwitchState, TextSensorInfo, TextSensorState, SensorInfo, SensorState
 from aioesphomeapi import APIClient, MediaPlayerInfo, MediaPlayerEntityState, VoiceAssistantEventType as Ev, VoiceAssistantTimerEventType as Tm
-from aioesphomeapi import ZERO_NOISE_PSK, EventInfo, BinarySensorInfo, BinarySensorState
+from aioesphomeapi import ZERO_NOISE_PSK, EventInfo, BinarySensorInfo, BinarySensorState, MediaPlayerCommand
 from aioesphomeapi.model import Event
 from aioesphomeapi.core import InvalidEncryptionKeyAPIError, RequiresEncryptionAPIError
 
@@ -26,6 +26,7 @@ def wav_bytes(rate, seconds):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if "slow" in self.path: time.sleep(1.5)         # TTS still rendering: not even the headers yet
         body = wav_bytes(48000, 3.0 if "s=3" in self.path else 0.5)
         if self.path.endswith(".mp3"):                  # what Home Assistant sends for a TTS announcement before any pipeline ran
             body = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-ar", "24000",
@@ -528,6 +529,24 @@ async def main():
         check(True, "and the wake word works after it")
         c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_ERROR, {"code": "x", "message": "end of test pipeline"})
         await asyncio.sleep(0.5)
+
+        # Home Assistant's media stop while the audio is still being fetched: that one is dropped, and only that one (the
+        # stop used to outlive it, and every reply after it stayed silent until a restart)
+        before = os.path.getsize(play); finished.clear()
+        slow = asyncio.ensure_future(c.send_voice_assistant_announcement_await_response(f"http://127.0.0.1:{HTTP_PORT}/tts-slow.mp3", 15, "x"))
+        await asyncio.sleep(0.5)
+        c.media_player_command(mp[0].key, command=MediaPlayerCommand.STOP)
+        res = await slow
+        check(not res.success and os.path.getsize(play) == before, f"media stop during the fetch drops that announcement: success={res.success}")
+        res = await c.send_voice_assistant_announcement_await_response(f"http://127.0.0.1:{HTTP_PORT}/a.wav", 15, "x")
+        check(res.success and os.path.getsize(play) - before == 48000, f"the next announcement plays: {os.path.getsize(play) - before} bytes")
+        started.clear(); proc.send_signal(signal.SIGUSR1); await asyncio.wait_for(started.wait(), 5)
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_START, None)
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_STT_END, {"text": "turn on the light"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_TTS_END, {"url": f"http://127.0.0.1:{HTTP_PORT}/reply.wav"})
+        c.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_END, None)
+        await asyncio.sleep(2.0)
+        check(os.path.getsize(play) - before == 2 * 48000, f"and so does the next reply: {os.path.getsize(play) - before - 48000} bytes")
         await c.disconnect()
     finally:
         proc.terminate(); httpd.shutdown()

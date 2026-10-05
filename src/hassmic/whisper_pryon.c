@@ -83,11 +83,17 @@ int whisper_open(whisper_cb cb)
     return 0;
 }
 
-/* the detector of the request before goes now: deleting it right after its end of utterance could lose the result */
+/* The detector of the request before goes when the next request starts: deleting it right after its end of utterance
+ * could lose the result.  This runs on the capture thread, which feeds the wake word: AHE's wait for the backlog
+ * without end (-1) would make the wake word deaf for as long as the detector hangs.  By the next request the last one's
+ * audio was pushed seconds ago, so the wait is normally over at once; RETIRE_WAIT bounds it otherwise (presumably ms,
+ * like AHE's other timeouts: docs/re-whisper.md, not measured). */
+#define RETIRE_WAIT 300
 static void retire(void)
 {
     if (!pending) return;
-    WhisperApi_backlogWait(id, -1);
+    int r = WhisperApi_backlogWait(id, RETIRE_WAIT);
+    if (r) fprintf(stderr, "whisper: backlog wait for the last request returned %d\n", r);    /* what a timeout returns: not seen yet */
     WhisperApi_pushSessionEnd(id);
     WhisperApi_deleteWhisperDetector(id);
     pending = 0;
@@ -122,5 +128,5 @@ void whisper_end(int score)
     if (score && fed >= 160 && WhisperApi_pushEndOfUtterance(id, "Utterance-1", 0, fed / 160))
         fprintf(stderr, "whisper: end of utterance refused\n");
     else if (score) fprintf(stderr, "whisper: scoring %.2f s\n", fed / 16000.0);
-    if (!score) retire();
+    /* not scored: retired at the next request too, so that its backlog is never waited for right behind its audio */
 }

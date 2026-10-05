@@ -13,6 +13,9 @@
  *
  * Default ports 26053 (ESPHome) and 16700 (Wyoming): the stock firewall only admits inbound TCP 16384-32767.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE                     /* pipe2 on the PC */
+#endif
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -20,6 +23,7 @@
 #include <math.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <pthread.h>
 #include <signal.h>
@@ -49,13 +53,24 @@
 #include "whisper.h"
 #include "board.h"
 
-#define PIPELINE_TIMEOUT 30         /* seconds in LISTENING or THINKING before giving up */
+#define PIPELINE_TIMEOUT_MS 30000   /* in LISTENING or THINKING before giving up */
 #define TTS_RATE         22050      /* assumed when audio-start carries no rate */
+
+static long long mono_ms(void)
+{
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 static const char *const state_names[] = { "idle", "listening", "thinking", "speaking" };
 static int use_led = 1, use_earcon = 1, use_volume = 1, use_bt_announce = 1, use_bt = 1;
 static atomic_int sounds_pending;
-static void sound_queue(enum sound s) { atomic_fetch_or(&sounds_pending, 1 << s); }                          /* played by the earcon thread */
+/* The earcon thread sleeps on ear_cond until a sound or the alarm wants it.  Whoever sets either signals it under
+ * ear_lock (a leaf lock: taken under core_lock too) */
+static pthread_mutex_t ear_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ear_cond = PTHREAD_COND_INITIALIZER;
+static void ear_wake(void) { pthread_mutex_lock(&ear_lock); pthread_cond_signal(&ear_cond); pthread_mutex_unlock(&ear_lock); }
+static void sound_queue(enum sound s) { atomic_fetch_or(&sounds_pending, 1 << s); ear_wake(); }              /* played by the earcon thread */
 static void sound_request(enum sound s) { if (use_earcon) sound_queue(s); }
 
 const char *core_name;                  /* -n, else board.default_name */
@@ -98,9 +113,12 @@ static const struct proto *proto = &proto_esphome;
 pthread_mutex_t core_lock = PTHREAD_MUTEX_INITIALIZER;
 static int connected, satellite_running;
 static enum state state;
-static time_t state_since;
+/* The capture thread checks the pipeline timeout on every block without core_lock (a write to a stalled client may hold
+ * it for seconds): a copy of the state and since when, monotonic, written with it */
+static atomic_int state_seen;
+static atomic_llong state_since_ms;
 static atomic_int streaming, trigger_pending, button_pending, stop_pending, quit;
-static atomic_int flush_playback, alarm_on;   /* barge-in: drop queued TTS; UI sounds requested (bit per enum sound) */
+static atomic_int alarm_on;
 static atomic_int tts_on, music_on;                 /* something plays: the wake word model lowers its threshold then.
                                                     * music_on: MUSIC_* bits */
 static atomic_int dump_toggle;                      /* SIGTTIN: start / stop writing the processed mic stream to a file */
@@ -108,11 +126,15 @@ static int soft_mute;                               /* under lock: mute switch f
 static int dnd;                                     /* under lock: do not disturb */
 static int barge_in;                                /* under lock: start a new pipeline once the current one has ended
                                                       * (wake word during a reply, or the server asked to continue the conversation) */
-static struct micgain mic_gain;                     /* under lock: gain of what the pipeline hears (micgain.h) */
+static struct micgain mic_gain;                     /* under lock: gain settings as Home Assistant set them (micgain.h); the
+                                                      * mic sender works on its own copy, taken when mic_gain_gen moves */
+static unsigned mic_gain_gen;                       /* under lock */
 static int mic_fresh;                               /* under lock: a pipeline started, the gain has not seen it yet */
 static float keyword_db = 1;                        /* under lock: rms of the last wake word, dBFS */
 static int mic_denoise;                             /* under lock: noise reduction ahead of the gain (micdenoise.h):
                                                       * 0 off, 1 low, 2 medium, 3 high */
+static atomic_uint mic_seq;                         /* bumped by pipeline_start (lock held): mic blocks of an earlier
+                                                      * pipeline still queued for the sender go nowhere */
 static long long denoise_ns; static unsigned denoise_frames;   /* under lock: its cost in the running pipeline */
 static atomic_int earcon_sounding;                  /* one of our sounds plays ... */
 static atomic_llong earcon_heard_until;             /* ... and is still in the mic stream until then (mono_ms) */
@@ -123,11 +145,24 @@ static atomic_llong earcon_heard_until;             /* ... and is still in the m
  * (net.c); a shell would make it the effective group, and AIPC and the mixer refuse that. */
 static void child_ids(void) { gid_t e = getegid(); setregid(e, e); }
 
+/* bionic API 24 has no posix_spawn; SIGCHLD is ignored: no zombie.  Several of these run under core_lock (LED ring,
+ * volume), so on the Echo they vfork: the parent thread waits only until the exec instead of having the whole address
+ * space of a process with a dozen threads copied first.  What the child does before the exec is safe there: bionic's
+ * getegid, setregid, setpgid, open, dup2 and execv are system calls or thin wrappers around them (no lock, no malloc;
+ * setregid changes the calling task's ids only), and the child never returns from the function that forked.  Not on the
+ * PC: glibc's setregid asks every thread of the process to change its ids too (setxid), which a vfork child, sharing the
+ * parent's memory but not its threads, must not do. */
+#ifdef __ANDROID__
+#define spawn() vfork()
+#else
+#define spawn() fork()
+#endif
+
 static void run_argv(char *const argv[])
 {
-    if (fork() == 0) {                  /* bionic API 24 has no posix_spawn; SIGCHLD is ignored: no zombie */
+    if (spawn() == 0) {
         child_ids();
-        int nul = open("/dev/null", O_WRONLY);          /* ledctrl and audio_manager_set_prop chat on stdout: two log lines */
+        int nul = open("/dev/null", O_WRONLY | O_CLOEXEC); /* ledctrl and audio_manager_set_prop chat on stdout: two log lines */
         if (nul >= 0) dup2(nul, 1);                     /* per LED change otherwise.  Errors (stderr) still reach the log */
         execv(argv[0], argv);
         _exit(127);
@@ -140,27 +175,50 @@ static void run(const char *path, const char *a1, const char *a2)
     run_argv(argv);
 }
 
-/* Its stdout into buf (NUL-terminated, cut at n - 1); empty when it cannot run (PC build) */
-static void run_output(char *const argv[], char *buf, size_t n);
-void core_run(char *const argv[], char *out, size_t n) { run_output(argv, out, n); }
-static void run_output(char *const argv[], char *buf, size_t n)
+/* Its stdout into buf (NUL-terminated, cut at n - 1); empty when it cannot run (PC build).  It gets timeout_ms to close
+ * its stdout: these run on the capture thread (afe_score) and under core_lock (first reads of volume and equalizer), and
+ * a lipc tool that hangs on a busy daemon would otherwise make the wake word deaf or stop the whole core.  Then its
+ * process group goes (afe_score's shell has two tools under it).  No waitpid: SIGCHLD is ignored, so the kernel reaps it,
+ * and a child stuck in the kernel would hang the wait just the same.
+ * The pipe is close-on-exec: a tool forked meanwhile by another thread would otherwise hold its write end, and the read
+ * here would wait for that one to end too. */
+#define RUN_TIMEOUT_MS 1000             /* the slowest seen: two lipc calls in 150 ms */
+static void run_output_ms(char *const argv[], char *buf, size_t n, int timeout_ms)
 {
-    int p[2]; size_t len = 0; ssize_t r;
+    int p[2]; size_t len = 0; pid_t pid;
     buf[0] = 0;
-    if (pipe(p)) return;
-    if (fork() == 0) {                  /* not popen: its shell would undo child_ids() */
+    if (pipe2(p, O_CLOEXEC)) return;
+    if ((pid = spawn()) == 0) {         /* not popen: its shell would undo child_ids() */
         child_ids();
-        int nul = open("/dev/null", O_WRONLY);
-        dup2(p[1], 1); if (nul >= 0) dup2(nul, 2);
-        close(p[0]); close(p[1]);
+        setpgid(0, 0);
+        int nul = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        dup2(p[1], 1); if (nul >= 0) dup2(nul, 2);  /* the copies keep no close-on-exec */
         execv(argv[0], argv);
         _exit(127);
     }
     close(p[1]);
-    while (len + 1 < n && ((r = read(p[0], buf + len, n - 1 - len)) > 0 || (r < 0 && errno == EINTR))) if (r > 0) len += (size_t)r;
+    if (pid < 0) { close(p[0]); return; }
+    setpgid(pid, pid);                  /* fork on the PC: the child may not have got there yet */
+    for (long long end = mono_ms() + timeout_ms; len + 1 < n; ) {
+        long long left = end - mono_ms();
+        if (left <= 0) {
+            fprintf(stderr, "run: %s %s gave no answer within %d ms, killed\n", argv[0], argv[1] ? argv[1] : "", timeout_ms);
+            if (kill(-pid, SIGKILL)) kill(pid, SIGKILL);
+            break;
+        }
+        struct pollfd pf = { p[0], POLLIN, 0 };
+        int r = poll(&pf, 1, (int)left);
+        if (r < 0 && errno != EINTR) break;
+        if (r <= 0) continue;
+        ssize_t k = read(p[0], buf + len, n - 1 - len);
+        if (k > 0) len += (size_t)k;
+        else if (k == 0 || errno != EINTR) break;
+    }
     buf[len] = 0;
-    close(p[0]);                        /* SIGCHLD is ignored: nothing to wait for */
+    close(p[0]);
 }
+static void run_output(char *const argv[], char *buf, size_t n) { run_output_ms(argv, buf, n, RUN_TIMEOUT_MS); }
+void core_run(char *const argv[], char *out, size_t n) { run_output_ms(argv, out, n, 2 * RUN_TIMEOUT_MS); }
 
 static void led(const char *op, const char *pattern)
 {
@@ -184,10 +242,9 @@ void core_set_state(enum state s)
     if (s == state) return;
     fprintf(stderr, "state: %s -> %s\n", state_names[state], state_names[s]);
     led_for(state, s);
-    state = s; state_since = time(NULL);
+    state = s;
+    atomic_store(&state_since_ms, mono_ms()); atomic_store(&state_seen, s);
 }
-
-static long long mono_ms(void);
 
 /* Amazon's keyword models accept the wake word at a lower score while the device itself makes noise (kw.cfg.json:
  * "AlarmState" 1 cuts the ECHO threshold from 0.75 to 0.45, "AudioPlayerState" / "audio_playback" 1 to 0.70), because
@@ -213,6 +270,7 @@ static void playback_hint(void)
 static struct core_wake_word wake_words[MAX_WAKE_WORDS];
 static int n_wake_words, wake_active;               /* under core_lock once running */
 static atomic_int wake_switch;                      /* capture thread: load wake_words[wake_active] */
+static atomic_int wake_reset_pending;               /* capture thread: wake_reset() before the next block */
 
 static const char *models_dir(void) { const char *e = getenv("HASSMIC_MODELS"); return e ? e : "/data/local/hassmic/models"; }
 static const char *wake_word_path(void)
@@ -282,8 +340,27 @@ int core_wake_word(int set)
     return wake_active;
 }
 
+static void on_wake(const char *keyword, uint64_t begin, uint64_t end);
+static int wake_ok;                                 /* capture thread (main() before it starts): a model is loaded */
+
+/* Capture thread, or main() before it starts.  A model that does not load falls back to the stock one, and that is
+ * what Home Assistant is told from then on (it used to be shown the one that failed).  0: none loaded, no wake word */
+static int wake_load(int i)
+{
+    if (wake_open(wake_words[i].manifest, on_wake) == 0) { fprintf(stderr, "wake word: \"%s\" loaded\n", wake_words[i].name); return 1; }
+    fprintf(stderr, "wake word: cannot load %s\n", wake_words[i].manifest);
+    if (i == 0) return 0;
+    if (wake_open(wake_words[0].manifest, on_wake)) { fprintf(stderr, "wake word: cannot load %s either\n", wake_words[0].manifest); return 0; }
+    fprintf(stderr, "wake word: back to \"%s\"\n", wake_words[0].name);
+    pthread_mutex_lock(&core_lock);
+    if (wake_active == i) wake_active = 0;          /* not a pick Home Assistant made meanwhile: that loads next */
+    pthread_mutex_unlock(&core_lock);
+    return 1;
+}
+
 static long long wake_cut_ms;    /* when the wake word last cut a reply or an alarm: a "stop" right behind it belongs to that */
-static long long last_wake_ms;   /* Amazon's models know "stop" only in the ~2 s after the wake word (op.cfg.json: awake state) */
+static long long last_wake_ms;   /* under lock.  Amazon's models know "stop" only in the ~2 s after the wake word (op.cfg.json:
+                                  * awake state) */
 static int quiet_abort;
 
 static atomic_int afe_asked;                        /* the front end was asked for the wake word's energies (afe_score) */
@@ -319,6 +396,7 @@ static void pipeline_start(void)
 {
     quiet_abort = 0;
     mic_fresh = 1;
+    atomic_fetch_add(&mic_seq, 1);                  /* before streaming: a block the capture thread queues under it is ours */
     proto->start();
     atomic_store(&streaming, 1);
     listening(1);
@@ -463,7 +541,7 @@ int core_soft_mute(int set)
 
 void core_mic_level(int dbfs)
 {
-    if (dbfs != mic_gain.level) { micgain_init(&mic_gain, dbfs); mic_fresh = 1; }
+    if (dbfs != mic_gain.level) { micgain_init(&mic_gain, dbfs); mic_gain_gen++; mic_fresh = 1; }
 }
 
 int core_mic_denoise(int set)
@@ -485,12 +563,17 @@ void core_mic_off(void) { atomic_store(&whisper_eou, 1); atomic_store(&streaming
 
 void core_restart_after(void) { barge_in = 1; }
 
+static void tts_pending_spent(void);
+
 void core_pipeline_finish(void)
 {
+    tts_pending_spent();
     if (atomic_exchange(&streaming, 0) && connected && proto->stop) proto->stop();
     mic_stopped();
     core_set_state(IDLE);
-    if (mono_ms() - last_wake_ms > 3000) wake_reset();      /* a reset puts the engine back to sleep: "<wake word>, stop" would lose its "stop" */
+    /* A reset puts the engine back to sleep: "<wake word>, stop" would lose its "stop".  Done by the capture thread, which
+     * feeds the decoder: this runs on any thread */
+    if (mono_ms() - last_wake_ms > 3000) atomic_store(&wake_reset_pending, 1);
     if (!connected) barge_in = 0;
     if ((barge_in || !core_local_wake) && satellite_running && connected) {
         if (barge_in) sound_request(SND_WAKE);
@@ -512,6 +595,8 @@ void core_error(void)
     if (quiet_abort) { quiet_abort = 0; return; }      /* Home Assistant's complaint about a pipeline "stop" ended: not news */
     if (state != SPEAKING) { led("-s", "anim_start_error_short"); core_pipeline_finish(); }
 }
+
+static void tts_cut(void);
 
 static void trigger(int touch)          /* touch: the action button rather than the wake word */
 {
@@ -539,12 +624,12 @@ static void trigger(int touch)          /* touch: the action button rather than 
     } else if (state == IDLE) {
         sound_request(touch ? SND_TOUCH : SND_WAKE);
         pipeline_start();
-    } else if (state == SPEAKING && !atomic_load(&flush_playback)) {       /* not already being cut.  barge_in alone does not
+    } else if (state == SPEAKING && !core_tts_flushing()) {                /* not already being cut.  barge_in alone does not
                                                                              * say that: continue-conversation sets it too */
         fprintf(stderr, "barge-in\n");
         wake_cut_ms = mono_ms();
         barge_in = 1;
-        atomic_store(&flush_playback, 1);   /* playback thread drops TTS up to audio-stop, then we restart */
+        tts_cut();                          /* playback thread drops TTS up to audio-stop, then we restart */
     }
     pthread_mutex_unlock(&core_lock);
 }
@@ -564,7 +649,7 @@ static void stop_word(void)
         fprintf(stderr, "stop: reply cut\n");
         barge_in = 0;
         atomic_fetch_and(&sounds_pending, ~(1 << SND_WAKE | 1 << SND_TOUCH));
-        atomic_store(&flush_playback, 1);
+        tts_cut();
     } else if (state == LISTENING && mono_ms() - wake_cut_ms < 4000) {
         fprintf(stderr, "stop: pipeline dropped\n");
         atomic_fetch_and(&sounds_pending, ~(1 << SND_WAKE | 1 << SND_TOUCH));
@@ -583,8 +668,11 @@ static void stop_word(void)
 #define RING_SAMPLES (CAP_RATE * 4)
 static int16_t ring[RING_SAMPLES];                  /* what the wake word engine was fed, by its sample index */
 static uint64_t ring_n;                             /* capture thread: samples fed so far */
-static atomic_int det_pending;                      /* a detection for the capture thread; det_begin/end under core_lock */
-static uint64_t det_begin, det_end;
+/* Detections go to the capture thread, which owns the ring and acts on them: the engine's thread only hands them over
+ * (it used to read the ring while the capture thread wrote it, and to wait for core_lock behind a stalled client) */
+static pthread_mutex_t det_lock = PTHREAD_MUTEX_INITIALIZER;
+static int det_wake, det_stop;                      /* under det_lock */
+static uint64_t det_begin, det_end;                 /* under det_lock */
 static long long arb_due;                           /* capture thread: a round runs, decide then */
 static uint64_t arb_from;                           /* capture thread: first sample after the detection */
 
@@ -645,65 +733,143 @@ static int wake_score(uint64_t begin, uint64_t end, int simulated)
     return afe;
 }
 
-/* lock held.  Mic audio to the pipeline: noise reduction if switched on, then brought to speech level.  at: the ring's
- * index of the first sample (0: not from the ring).
+/* ---------------------------------------------------------------- mic audio to the pipeline
+ * The capture thread only queues the blocks; the mic sender thread makes them ready and sends them.  It used to send
+ * them itself, under core_lock: a client whose Wi-Fi stalls blocks that write for up to 5 s (SO_SNDTIMEO), and the
+ * wake word, sound detection and the capture loop stopped for that long, while every other thread waited for the lock.
+ * Now a stall only fills the queue, which drops its oldest blocks: a pipeline that far behind is lost anyway.
+ * Noise reduction and gain run on the sender without core_lock (RNNoise costs about 1 ms per 10 ms frame); it takes the
+ * lock to read the settings and for each send (proto->audio's contract). */
+#define MQ_BLOCK 512                                /* samples: 32 ms */
+#define MQ_SLOTS 64                                 /* 2 s: the 1 s ahead of a command (below) and a second of it */
+struct mblock { unsigned seq; int ahead; unsigned n; int16_t pcm[MQ_BLOCK]; };
+static struct mblock mq[MQ_SLOTS];
+static unsigned mq_head, mq_count, mq_dropped;      /* under mq_lock */
+static pthread_mutex_t mq_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t mq_cond = PTHREAD_COND_INITIALIZER;
+static unsigned mq_seq;                             /* capture thread: the pipeline it queued for last */
+
+static void mq_add(const int16_t *s, size_t n, unsigned seq, int ahead)
+{
+    pthread_mutex_lock(&mq_lock);
+    while (n) {
+        size_t k = n < MQ_BLOCK ? n : MQ_BLOCK;
+        if (mq_count == MQ_SLOTS) { mq_head = (mq_head + 1) % MQ_SLOTS; mq_count--; mq_dropped++; }
+        struct mblock *b = &mq[(mq_head + mq_count++) % MQ_SLOTS];
+        b->seq = seq; b->ahead = ahead; b->n = (unsigned)k; memcpy(b->pcm, s, k * 2);
+        s += k; n -= k;
+    }
+    pthread_cond_signal(&mq_cond);
+    pthread_mutex_unlock(&mq_lock);
+}
+
+static void mq_add_ring(uint64_t from, uint64_t to, unsigned seq, int ahead)
+{
+    if (ring_n > RING_SAMPLES && from < ring_n - RING_SAMPLES) from = ring_n - RING_SAMPLES;
+    while (from < to) {
+        uint64_t at = from % RING_SAMPLES, n = to - from;
+        if (n > RING_SAMPLES - at) n = RING_SAMPLES - at;
+        mq_add(ring + at, (size_t)n, seq, ahead);
+        from += n;
+    }
+}
+
+/* Capture thread: mic audio for the running pipeline.  at: the ring's index of the first sample (0: not from the ring).
+ * The first block of a pipeline brings the second ahead of it along, for RNNoise to settle on the room (mic_sender) */
+static unsigned mic_queue_seq(uint64_t at)
+{
+    unsigned seq = atomic_load(&mic_seq);
+    if (seq != mq_seq) { mq_seq = seq; if (at) mq_add_ring(at > CAP_RATE ? at - CAP_RATE : 0, at, seq, 1); }
+    return seq;
+}
+static void mic_queue(const int16_t *pcm, size_t n, uint64_t at) { mq_add(pcm, n, mic_queue_seq(at), 0); }
+static void mic_queue_ring(uint64_t from) { mq_add_ring(from, ring_n, mic_queue_seq(from), 0); }
+
+/* Mic audio to the pipeline: noise reduction if switched on, then brought to speech level.
  * - The wake word just before it sets the gain to start with (from up to 3 s back), and RNNoise first hears the second
  *   of room and wake word ahead of the command, so that it does not start on the first word.
  * - Our own wake sound is still in the stream after the echo canceller: +21 dB over the floor in micRaw, +4 to +8 dB in
  *   micAsr (4 triggers, 2026-09-30), as loud as a quiet talker.  The gain took it for speech and came down for the
  *   command behind it (-32 instead of -26 dBFS in Home Assistant's recording), so it holds still while a sound plays. */
-static void send_mic(const int16_t *pcm, size_t n, uint64_t at)
+static int16_t mic_back[CAP_RATE];                  /* mic sender: the last second it got, for RNNoise to start on */
+static size_t mic_back_n, mic_back_at;
+
+static void mic_back_add(const int16_t *s, size_t n)
 {
-    static int16_t out[1024 + MICDENOISE_FRAME];
-    if (mic_fresh) {
-        micgain_start(&mic_gain, mono_ms() - last_wake_ms < 3000 ? keyword_db : 1); mic_fresh = 0;
-        static const int denoise_db[] = { 0, 6, 9, 12 };
-        fprintf(stderr, "mic gain: talker %.1f dBFS, gain %+.1f dB", micgain_talker_db(&mic_gain), mic_gain.gain_db);
-        if (mic_denoise) fprintf(stderr, ", noise reduction %d dB", denoise_db[mic_denoise]);
-        fprintf(stderr, "\n");
-        if (mic_denoise) {
-            micdenoise_reset(denoise_db[mic_denoise]);
-            for (uint64_t i = at > CAP_RATE ? at - CAP_RATE : 0; at && i < at; ) {
-                size_t o = i % RING_SAMPLES, k = at - i;
-                if (k > RING_SAMPLES - o) k = RING_SAMPLES - o;
-                micdenoise_run(ring + o, k, NULL);
-                i += k;
-            }
-        }
-    }
-    mic_gain.hold = atomic_load(&sounds_pending) || atomic_load(&earcon_sounding) || mono_ms() < atomic_load(&earcon_heard_until);
-    while (n) {
-        size_t k = n < 1024 ? n : 1024, m = k;
-        const int16_t *src = pcm;
-        if (mic_denoise) {
-            struct timespec t0, t1;
-            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t0);
-            m = micdenoise_run(pcm, k, out); src = out;
-            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t1);
-            denoise_ns += (t1.tv_sec - t0.tv_sec) * 1000000000LL + t1.tv_nsec - t0.tv_nsec; denoise_frames += m / MICDENOISE_FRAME;
-        }
-        if (m) { micgain_run(&mic_gain, src, out, m); proto->audio(out, m * 2); }
-        pcm += k; n -= k;
-    }
+    for (size_t i = 0; i < n; i++) { mic_back[mic_back_at] = s[i]; mic_back_at = (mic_back_at + 1) % CAP_RATE; }
+    mic_back_n = mic_back_n + n > CAP_RATE ? CAP_RATE : mic_back_n + n;
 }
 
-static void stream_ring(uint64_t from)              /* lock held */
+static void mic_start(struct micgain *g, float kdb, int denoise)       /* mic sender: a pipeline (or new settings) */
 {
-    while (from < ring_n) {
-        uint64_t at = from % RING_SAMPLES, n = ring_n - from;
-        if (n > RING_SAMPLES - at) n = RING_SAMPLES - at;
-        send_mic(ring + at, n, from);
-        from += n;
+    static const int denoise_db[] = { 0, 6, 9, 12 };
+    micgain_start(g, kdb);
+    fprintf(stderr, "mic gain: talker %.1f dBFS, gain %+.1f dB", micgain_talker_db(g), g->gain_db);
+    if (denoise) fprintf(stderr, ", noise reduction %d dB", denoise_db[denoise]);
+    fprintf(stderr, "\n");
+    if (!denoise) return;
+    micdenoise_reset(denoise_db[denoise]);
+    size_t from = (mic_back_at + CAP_RATE - mic_back_n) % CAP_RATE, k = CAP_RATE - from < mic_back_n ? CAP_RATE - from : mic_back_n;
+    micdenoise_run(mic_back + from, k, NULL);
+    if (k < mic_back_n) micdenoise_run(mic_back, mic_back_n - k, NULL);
+}
+
+static void *mic_sender(void *arg)
+{
+    static struct mblock b;
+    static int16_t out[MQ_BLOCK + MICDENOISE_FRAME];
+    static struct micgain g;
+    unsigned seq = 0, gen = 0; int denoise = 0;
+    (void)arg;
+    pthread_mutex_lock(&core_lock); g = mic_gain; gen = mic_gain_gen; pthread_mutex_unlock(&core_lock);
+    for (;;) {
+        pthread_mutex_lock(&mq_lock);
+        while (!mq_count) pthread_cond_wait(&mq_cond, &mq_lock);
+        b = mq[mq_head]; mq_head = (mq_head + 1) % MQ_SLOTS; mq_count--;
+        unsigned dropped = mq_dropped; mq_dropped = 0;
+        pthread_mutex_unlock(&mq_lock);
+        if (dropped) fprintf(stderr, "mic: %u ms dropped, the client does not take the audio\n", dropped * MQ_BLOCK * 1000 / CAP_RATE);
+        if (b.seq != seq) { seq = b.seq; mic_back_n = 0; }
+        if (b.ahead) { mic_back_add(b.pcm, b.n); continue; }
+
+        int fresh = 0; float kdb = 1;
+        pthread_mutex_lock(&core_lock);
+        int live = b.seq == atomic_load(&mic_seq) && atomic_load(&streaming) && connected;
+        if (live && mic_fresh) {
+            mic_fresh = 0; fresh = 1;
+            if (gen != mic_gain_gen) { gen = mic_gain_gen; g = mic_gain; }     /* else the talker's level carries over */
+            kdb = mono_ms() - last_wake_ms < 3000 ? keyword_db : 1;
+        }
+        if (live) denoise = mic_denoise;
+        pthread_mutex_unlock(&core_lock);
+        if (!live) continue;
+
+        if (fresh) mic_start(&g, kdb, denoise);
+        g.hold = atomic_load(&sounds_pending) || atomic_load(&earcon_sounding) || mono_ms() < atomic_load(&earcon_heard_until);
+        size_t m = b.n; const int16_t *src = b.pcm; long long ns = 0;
+        if (denoise) {
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t0);
+            m = micdenoise_run(b.pcm, b.n, out); src = out;
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t1);
+            ns = (t1.tv_sec - t0.tv_sec) * 1000000000LL + t1.tv_nsec - t0.tv_nsec;
+        }
+        mic_back_add(b.pcm, b.n);
+        if (m) micgain_run(&g, src, out, m);
+
+        pthread_mutex_lock(&core_lock);
+        if (m && b.seq == atomic_load(&mic_seq) && atomic_load(&streaming) && connected) proto->audio(out, m * 2);
+        if (denoise) { denoise_ns += ns; denoise_frames += (unsigned)(m / MICDENOISE_FRAME); }
+        pthread_mutex_unlock(&core_lock);
     }
+    return NULL;
 }
 
 static void answer(uint64_t from)                   /* capture thread: act on the wake word; audio after it from the ring */
 {
     int was = atomic_load(&streaming);
     trigger(0);
-    pthread_mutex_lock(&core_lock);
-    if (from && !was && atomic_load(&streaming) && connected) stream_ring(from);
-    pthread_mutex_unlock(&core_lock);
+    if (from && !was && atomic_load(&streaming)) mic_queue_ring(from);
     if (!atomic_load(&streaming)) afe_done();          /* it stopped an alarm, or cut a reply: the pipeline's end follows */
 }
 
@@ -721,16 +887,20 @@ static void wake_heard(uint64_t begin, uint64_t end, int simulated)     /* captu
     arb_due = due; arb_from = ring_n;
 }
 
-static void on_wake(const char *keyword, uint64_t begin, uint64_t end)
+static void on_wake(const char *keyword, uint64_t begin, uint64_t end)     /* detector thread */
 {
     if (!core_local_wake) return;
-    if (!strcasecmp(keyword, "STOP")) { stop_word(); return; }
-    last_wake_ms = mono_ms();
-    { float db = 10 * log10f((ring_power(begin, end) + 1) / (32768.0f * 32768.0f));     /* the talker's level, for the gain */
-      pthread_mutex_lock(&core_lock); keyword_db = db; pthread_mutex_unlock(&core_lock); }
-    if (!arb_running()) { trigger(0); return; }
-    pthread_mutex_lock(&core_lock); det_begin = begin; det_end = end; pthread_mutex_unlock(&core_lock);
-    atomic_store(&det_pending, 1);                  /* the ring is the capture thread's */
+    pthread_mutex_lock(&det_lock);
+    if (!strcasecmp(keyword, "STOP")) det_stop = 1;
+    else { det_wake = 1; det_begin = begin; det_end = end; }
+    pthread_mutex_unlock(&det_lock);
+}
+
+static void wake_detected(uint64_t begin, uint64_t end)                    /* capture thread */
+{
+    float db = 10 * log10f((ring_power(begin, end) + 1) / (32768.0f * 32768.0f));     /* the talker's level, for the gain */
+    pthread_mutex_lock(&core_lock); keyword_db = db; last_wake_ms = mono_ms(); pthread_mutex_unlock(&core_lock);
+    wake_heard(begin, end, 0);
 }
 
 static int arb_send_key(const char *node, const char *network, const char *key)
@@ -745,13 +915,31 @@ static void arb_notify(void) { pthread_mutex_lock(&core_lock); if (proto->arb_ch
 
 /* ---------------------------------------------------------------- playback queue */
 
-struct item { struct item *next; int kind; unsigned rate, ch; size_t len; unsigned char data[]; };
+/* Replies are numbered streams: core_tts_begin starts the next one.  A cut (barge-in, "stop", Home Assistant's media
+ * stop) drops the stream that is queued or playing and everything before it; it can never outlast that stream, so the
+ * next reply always plays.  It used to be one flag that only the end of a played stream cleared: a media stop while the
+ * reply was still being fetched never got one, and every reply after it stayed silent until hassmic restarted.
+ * With nothing queued, a media stop is for the fetch under way (proto_esphome.c): it is kept for the stream about to
+ * begin, and spent when that begins or the pipeline ends without one. */
+struct item { struct item *next; int kind; unsigned gen, rate, ch; size_t len; unsigned char data[]; };
 enum { Q_START, Q_DATA, Q_STOP };
+/* Wyoming has no authentication and Home Assistant sends TTS faster than it plays: without a bound the queue took a
+ * whole reply, or anything a client cared to send, into memory.  At 22050 Hz mono this is 12 s ahead of the speaker
+ * (ESPHome's fetch holds back at 256 KiB by itself); a producer that finds it full waits, and drops after TTS_WAIT_MS of
+ * a playback that does not move. */
+#define TTS_QUEUE_MAX (1024 * 1024)
+#define TTS_WAIT_MS   5000
 
-static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t q_cond = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;   /* inside core_lock where both are taken */
+static pthread_cond_t q_cond = PTHREAD_COND_INITIALIZER, q_space = PTHREAD_COND_INITIALIZER;
 static struct item *q_head, *q_tail;
 static size_t q_bytes;
+static unsigned tts_gen;            /* under q_lock: the newest stream begun */
+static unsigned tts_done;           /* under q_lock: the newest stream whose end the playback thread has played out */
+static unsigned tts_cut_to;         /* under q_lock: streams up to this one are dropped */
+static int tts_cut_next;            /* under q_lock: and the one about to begin */
+
+static int tts_cutting(void) { return tts_cut_next || (tts_cut_to == tts_gen && tts_done != tts_gen); }    /* q_lock held */
 
 static void q_push(int kind, unsigned rate, unsigned ch, const void *data, size_t len)
 {
@@ -760,10 +948,34 @@ static void q_push(int kind, unsigned rate, unsigned ch, const void *data, size_
     it->next = NULL; it->kind = kind; it->rate = rate; it->ch = ch; it->len = len;
     if (len) memcpy(it->data, data, len);
     pthread_mutex_lock(&q_lock);
+    if (kind == Q_START) { if (tts_cut_next) { tts_cut_to = tts_gen + 1; tts_cut_next = 0; } tts_gen++; }
+    it->gen = tts_gen;
+    if (kind == Q_DATA) {           /* back pressure: never with core_lock held (core.h), so the wait stops no one else */
+        struct timespec until; clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += TTS_WAIT_MS / 1000;
+        while (q_bytes + len > TTS_QUEUE_MAX && it->gen > tts_cut_to)
+            if (pthread_cond_timedwait(&q_space, &q_lock, &until)) {
+                fprintf(stderr, "play: playback stuck, %zu bytes queued: TTS audio dropped\n", q_bytes);
+                break;
+            }
+        if (it->gen <= tts_cut_to || q_bytes + len > TTS_QUEUE_MAX) { pthread_mutex_unlock(&q_lock); free(it); return; }
+    }
     if (q_tail) q_tail->next = it; else q_head = it;
     q_tail = it; q_bytes += len;
     pthread_cond_signal(&q_cond);
     pthread_mutex_unlock(&q_lock);
+}
+
+static void tts_cut(void)               /* drop what is queued or playing; nothing when nothing is */
+{
+    pthread_mutex_lock(&q_lock);
+    if (tts_done != tts_gen) { tts_cut_to = tts_gen; pthread_cond_broadcast(&q_space); }
+    pthread_mutex_unlock(&q_lock);
+}
+
+static void tts_pending_spent(void)     /* lock held: a cut kept for a stream that did not come is over with the pipeline */
+{
+    pthread_mutex_lock(&q_lock); tts_cut_next = 0; pthread_mutex_unlock(&q_lock);
 }
 
 static void *playback_thread(void *arg)
@@ -776,9 +988,11 @@ static void *playback_thread(void *arg)
         struct item *it = q_head;
         q_head = it->next; if (!q_head) q_tail = NULL;
         q_bytes -= it->len;
+        int drop = it->kind != Q_STOP && it->gen <= tts_cut_to;
+        pthread_cond_broadcast(&q_space);
         pthread_mutex_unlock(&q_lock);
 
-        if (atomic_load(&flush_playback) && it->kind != Q_STOP) {
+        if (drop) {
             if (open) { play_close(0); open = 0; }
             free(it);
             continue;
@@ -796,8 +1010,11 @@ static void *playback_thread(void *arg)
         case Q_STOP:
             if (open) { play_close(1); open = 0; }
             atomic_store(&tts_on, 0); playback_hint();
-            atomic_store(&flush_playback, 0);
+            /* The stream counts as over only under core_lock, together with the state going back to IDLE: a wake word in
+             * between would have seen SPEAKING and a stream already ended, cut nothing and flagged nothing, and the
+             * barge-in it starts is the restart below. */
             pthread_mutex_lock(&core_lock);
+            pthread_mutex_lock(&q_lock); tts_done = it->gen; pthread_cond_broadcast(&q_space); pthread_mutex_unlock(&q_lock);
             if (proto->played) proto->played();      /* also without a client: modules reset their state here */
             core_pipeline_finish();
             pthread_mutex_unlock(&core_lock);
@@ -816,10 +1033,17 @@ void core_tts_begin(unsigned rate, unsigned channels)
     q_push(Q_START, rate, channels, NULL, 0);
 }
 
-void core_tts_data(const void *pcm, size_t len) { if (!atomic_load(&flush_playback)) q_push(Q_DATA, 0, 0, pcm, len); }
+void core_tts_data(const void *pcm, size_t len) { q_push(Q_DATA, 0, 0, pcm, len); }
 void core_tts_end(void) { q_push(Q_STOP, 0, 0, NULL, 0); }
-int  core_tts_flushing(void) { return atomic_load(&flush_playback); }
-void core_tts_flush(void) { atomic_store(&flush_playback, 1); }
+int  core_tts_flushing(void) { pthread_mutex_lock(&q_lock); int r = tts_cutting(); pthread_mutex_unlock(&q_lock); return r; }
+
+void core_tts_flush(void)
+{
+    pthread_mutex_lock(&q_lock);
+    if (tts_done != tts_gen) tts_cut_to = tts_gen; else tts_cut_next = 1;
+    pthread_cond_broadcast(&q_space);
+    pthread_mutex_unlock(&q_lock);
+}
 
 size_t core_tts_queued(void)
 {
@@ -829,11 +1053,10 @@ size_t core_tts_queued(void)
 
 /* ---------------------------------------------------------------- earcon, buttons */
 
-static long long mono_ms(void);
-
 void core_alarm(int on)
 {
     if (atomic_exchange(&alarm_on, on) == on) return;
+    ear_wake();
     fprintf(stderr, "alarm: %s\n", on ? "ringing" : "off");
     led(on ? "-s" : "-u", "active_timer");
     playback_hint();
@@ -875,12 +1098,23 @@ static void *earcon_thread(void *arg)
             atomic_store(&earcon_heard_until, mono_ms() + 250);         /* speaker to mic stream: 85 ms, and the room's tail */
             atomic_store(&earcon_sounding, 0);
         }
+        long long wait_until = 0;                       /* 0: until something is asked for */
         if (atomic_load(&alarm_on)) {                   /* timer finished: triple blip every 1.2 s, at most a minute */
             if (!alarm_end) alarm_end = mono_ms() + 60000;
             if (mono_ms() > alarm_end) core_alarm(0);
-            else { for (int k = 0; k < 3; k++) play_earcon(tone, N, RATE); usleep(800000); }
+            else { for (int k = 0; k < 3; k++) play_earcon(tone, N, RATE); wait_until = mono_ms() + 800; }
         } else alarm_end = 0;
-        usleep(20000);
+        /* It polled every 20 ms, for ever, and a sound asked for while the alarm rang waited out the 800 ms pause */
+        pthread_mutex_lock(&ear_lock);
+        while (!atomic_load(&sounds_pending) && (wait_until ? mono_ms() < wait_until : !atomic_load(&alarm_on))) {
+            if (!wait_until) { pthread_cond_wait(&ear_cond, &ear_lock); continue; }
+            struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+            long long ns = ts.tv_nsec + (wait_until - mono_ms()) * 1000000LL;
+            ts.tv_sec += ns / 1000000000; ts.tv_nsec = ns % 1000000000;
+            if (pthread_cond_timedwait(&ear_cond, &ear_lock, &ts) == ETIMEDOUT) break;
+            if (!atomic_load(&alarm_on)) break;     /* switched off: no pause to wait out */
+        }
+        pthread_mutex_unlock(&ear_lock);
     }
     return NULL;
 }
@@ -912,12 +1146,6 @@ static void on_mute(int muted)          /* hardware latch changed (button) */
 static int volume = -1;                      /* 0..100, read from the device on first use */
 static char vol_pat[24];
 static atomic_llong vol_clear_at;
-
-static long long mono_ms(void)
-{
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
 
 static int read_prop_volume(const char *prop, int fallback)
 {
@@ -1107,19 +1335,22 @@ float core_lux(void)
  * is pulled back in line.
  * The mixer's global Mute silences every stream whatever the volumes say, and it persists across reboots: stock Alexa
  * ("Alexa, mute") can leave it set, and then nothing plays.  Nothing of ours uses it (the mic button is a hardware latch,
- * a player mute from Music Assistant is ours in software), so a set Mute is cleared. */
-static void volume_sync(void)
+ * a player mute from Music Assistant is ours in software), so a set Mute is cleared.
+ * Each read is a process (audio_manager_get_prop): three every 2 s, for ever, was most of what hassmic forked.  Now
+ * MainVolume, the one people move, every 2 s; Mute and TTSVolume, which only a stock daemon moves, once a minute
+ * (full), and TTSVolume is set without asking whenever MainVolume moved. */
+static void volume_sync(int full)
 {
-    int main_v, tts_v;
-    if (read_prop_volume("Mute", 0) != 0) { fprintf(stderr, "speaker: global Mute was set, clearing it\n"); set_prop_volume("Mute", 0); }
+    int main_v, tts_v = -1;
+    if (full && read_prop_volume("Mute", 0) != 0) { fprintf(stderr, "speaker: global Mute was set, clearing it\n"); set_prop_volume("Mute", 0); }
     pthread_mutex_lock(&core_lock);
     int cur = core_volume();
     pthread_mutex_unlock(&core_lock);
     main_v = read_prop_volume("MainVolume", cur);
-    tts_v = read_prop_volume("TTSVolume", cur);
+    if (full) tts_v = read_prop_volume("TTSVolume", -1);
     pthread_mutex_lock(&core_lock);
     if (speaker_mode == SPEAKER_ABSOLUTE) {                         /* 100 is ours: only a stray TTSVolume to mend */
-        if (main_v == 100 && tts_v != 100) set_prop_volume("TTSVolume", 100);
+        if (main_v == 100 && tts_v >= 0 && tts_v != 100) set_prop_volume("TTSVolume", 100);
     } else if (volume == cur) {                                     /* nobody set it meanwhile */
         if (main_v != cur) {
             volume = main_v;
@@ -1127,8 +1358,8 @@ static void volume_sync(void)
             if (connected && proto->volume_changed) proto->volume_changed(volume);
             if (core_sendspin_port) sendspin_volume_changed(volume);
             a2dp_volume_changed(volume);
-        }
-        if (tts_v != volume) set_prop_volume("TTSVolume", volume);
+            set_prop_volume("TTSVolume", volume);
+        } else if (tts_v >= 0 && tts_v != volume) set_prop_volume("TTSVolume", volume);
     }
     pthread_mutex_unlock(&core_lock);
 }
@@ -1147,7 +1378,7 @@ static void *volume_led_thread(void *arg)
     int tick = 0;
     (void)arg;
     while (!atomic_load(&quit)) {
-        if (++tick % 10 == 0) volume_sync();
+        if (tick++ % 10 == 0) volume_sync(tick % 300 == 1);         /* 2 s; full every minute, first at start */
         long long at = atomic_load(&vol_clear_at);
         if (at && mono_ms() >= at) {
             pthread_mutex_lock(&core_lock);
@@ -1213,12 +1444,12 @@ static void *capture_thread(void *arg)
         if (dump) fwrite(pcm, 1, n, dump);
 
         if (core_local_wake && atomic_exchange(&wake_switch, 0)) {        /* Home Assistant picked another wake word */
-            pthread_mutex_lock(&core_lock); struct core_wake_word w = wake_words[wake_active]; pthread_mutex_unlock(&core_lock);
-            wake_close();
-            if (wake_open(w.manifest, on_wake) == 0) fprintf(stderr, "wake word: now \"%s\"\n", w.name);
-            else { fprintf(stderr, "wake word: cannot load %s, back to Alexa\n", w.manifest); wake_open(wake_words[0].manifest, on_wake); }
+            pthread_mutex_lock(&core_lock); int i = wake_active; pthread_mutex_unlock(&core_lock);
+            if (wake_ok) wake_close();
+            wake_ok = wake_load(i);
         }
-        if (core_local_wake) { ring_put(pcm, n / 2); wake_feed(pcm, n / 2); }
+        if (core_local_wake && atomic_exchange(&wake_reset_pending, 0) && wake_ok) wake_reset();
+        if (core_local_wake) { ring_put(pcm, n / 2); if (wake_ok) wake_feed(pcm, n / 2); }
         if (atomic_load(&sound_want) != sound_running) {           /* Home Assistant switched sound detection */
             if (!sound_running) {
                 const char *types[SOUND_MAP]; for (int i = 0; i < SOUND_MAP; i++) types[i] = sound_map[i].amazon;
@@ -1236,23 +1467,26 @@ static void *capture_thread(void *arg)
             if (whisper_on && s) whisper_feed(pcm, n / 2);
             if (whisper_on && !s) { whisper_end(atomic_exchange(&whisper_eou, 0)); whisper_on = 0; }
         }
-        if (atomic_load(&streaming)) {
-            pthread_mutex_lock(&core_lock);
-            if (atomic_load(&streaming) && connected) send_mic(pcm, n / 2, core_local_wake ? ring_n - n / 2 : 0);
-            pthread_mutex_unlock(&core_lock);
-        }
-        if (atomic_exchange(&det_pending, 0)) {
-            pthread_mutex_lock(&core_lock); uint64_t b = det_begin, e = det_end; pthread_mutex_unlock(&core_lock);
-            wake_heard(b, e, 0);
+        if (atomic_load(&streaming)) mic_queue(pcm, n / 2, core_local_wake ? ring_n - n / 2 : 0);    /* mic_sender sends it */
+        {
+            pthread_mutex_lock(&det_lock);
+            int w = det_wake, s = det_stop; uint64_t b = det_begin, e = det_end;
+            det_wake = det_stop = 0;
+            pthread_mutex_unlock(&det_lock);
+            if (w) wake_detected(b, e);
+            if (s) stop_word();
         }
         if (arb_due && mono_ms() >= arb_due) { arb_due = 0; if (arb_decide()) answer(arb_from); else afe_done(); }    /* after this block went out live */
 
-        pthread_mutex_lock(&core_lock);
-        if (core_local_wake && (state == LISTENING || state == THINKING) && time(NULL) - state_since > PIPELINE_TIMEOUT) {
-            fprintf(stderr, "pipeline timeout\n");
-            core_pipeline_finish();
+        int st = atomic_load(&state_seen);              /* no core_lock for every block: see state_seen */
+        if (core_local_wake && (st == LISTENING || st == THINKING) && mono_ms() - atomic_load(&state_since_ms) > PIPELINE_TIMEOUT_MS) {
+            pthread_mutex_lock(&core_lock);
+            if ((state == LISTENING || state == THINKING) && mono_ms() - atomic_load(&state_since_ms) > PIPELINE_TIMEOUT_MS) {
+                fprintf(stderr, "pipeline timeout\n");
+                core_pipeline_finish();
+            }
+            pthread_mutex_unlock(&core_lock);
         }
-        pthread_mutex_unlock(&core_lock);
     }
     return NULL;
 }
@@ -1297,22 +1531,23 @@ int main(int argc, char **argv)
     pthread_mutex_lock(&core_lock); listening(0); pthread_mutex_unlock(&core_lock);
     if (core_local_wake) {
         wake_words_scan(manifest);
-        const char *m = wake_words[wake_active].manifest;
-        if (wake_open(m, on_wake) < 0 && (wake_active == 0 || (fprintf(stderr, "cannot load wake word model %s, trying Alexa\n", m), wake_active = 0,
-                                                                  wake_open(wake_words[0].manifest, on_wake) < 0))) {
-            fprintf(stderr, "cannot load wake word model %s\n", wake_words[wake_active].manifest); return 1;
-        }
+        if (!(wake_ok = wake_load(wake_active))) { fprintf(stderr, "cannot load a wake word model\n"); return 1; }
     }
     if (whisper_open(on_whisper) == 0) atomic_store(&whisper_last, -1);
     else fprintf(stderr, "whisper: no model, no whisper detection (scripts/artifacts.sh installs it)\n");
     static const struct arb_hooks arb_hooks = { arb_send_key, arb_notify };
     if (arb_port && core_local_wake && proto->arb_send && arb_start(arb_port, core_node_name(), &arb_hooks)) fprintf(stderr, "arbitration: not available\n");
+    /* Read once now, so that their first use (Home Assistant's first look, a volume button) does not run the mixer's tools
+     * under core_lock */
+    pthread_mutex_lock(&core_lock); core_volume(); core_eq(0); pthread_mutex_unlock(&core_lock);
 
-    pthread_t cap_t, play_t, ear_t;
-    pthread_create(&cap_t, NULL, capture_thread, NULL);
-    pthread_create(&play_t, NULL, playback_thread, NULL);
-    pthread_create(&ear_t, NULL, earcon_thread, NULL);
-    { pthread_t vol_t; pthread_create(&vol_t, NULL, volume_led_thread, NULL); pthread_detach(vol_t); }
+    /* Without any one of these the satellite only looks alive: better that init starts it again */
+    static void *(*const core_threads[])(void *) = { capture_thread, mic_sender, playback_thread, earcon_thread, volume_led_thread };
+    for (size_t i = 0; i < sizeof core_threads / sizeof *core_threads; i++) {
+        pthread_t t; int e = pthread_create(&t, NULL, core_threads[i], NULL);
+        if (e) { fprintf(stderr, "cannot start a core thread: %s\n", strerror(e)); return 1; }
+        pthread_detach(t);
+    }
 
     static const struct button_handler buttons = { on_action, on_mute, on_volume };
     if (buttons_start(input, &buttons) < 0) fprintf(stderr, "buttons: %s not available\n", input);

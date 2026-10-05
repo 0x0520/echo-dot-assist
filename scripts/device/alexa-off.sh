@@ -1,7 +1,13 @@
 #!/system/bin/sh
 # Stop the Alexa client and OTA until next reboot.  Leaves mixer, shmd, ledcontroller, Wi-Fi untouched.
+#   alexa-off.sh            by hand.  After alexa-on.sh (hassmic.alexa=1) also the satellite back: both init services
+#                           started anew, the egress lock first (main.sh firewall), then the satellite (main.sh satellite)
+#   alexa-off.sh services   what main.sh and run.sh run before every start of hassmic: only stop Amazon's services.  Never
+#                           undoes alexa-on.sh: between its setprop and its stop of the satellite this may still run.
 # Which services that are: device.conf of this model, next to this script.
 . "${0%/*}/device.conf" || exit 1
+BACK=; [ "$1" != services ] && [ "$(getprop hassmic.alexa)" = 1 ] && BACK=1
+[ -z "$BACK" ] || setprop hassmic.alexa 0
 # ledcontroller sets ALEXA_PROP=1 after the boot animation, which starts the Alexa services.
 setprop $ALEXA_PROP 0
 for s in $ALEXA_SERVICES $UPDATE_SERVICES $UPDATE_ONDEMAND; do stop $s; done
@@ -19,4 +25,10 @@ ledctrl -c >/dev/null; ledctrl -u setup-mode >/dev/null
 # oobed leaves a Wi-Fi Direct group up for the Alexa app (p2p-p2p0-0 + dnsmasq).  wpa_supplicant itself must stay: it also runs wlan0.
 wpa_cli -p $WPA_SOCKETS -i p2p0 p2p_group_remove p2p-p2p0-0 >/dev/null 2>&1
 sleep 1
+if [ -n "$BACK" ]; then
+    # lockdown.sh watch stops the cloud daemons again and puts the egress lock back in place of the update guard
+    stop hassmic_fw; start hassmic_fw
+    start hassmic
+    echo "alexa-off: satellite back, egress lock restored"
+fi
 getprop | grep -E "init.svc.($(echo $ALEXA_SERVICES $UPDATE_SERVICES $UPDATE_ONDEMAND mixer shmd ledcontroller | tr ' ' '|'))\]"

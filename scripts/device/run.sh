@@ -2,7 +2,7 @@
 # Start the satellite in the foreground.  Extra arguments go to hassmic (e.g. -P wyoming, -w remote, -E, -V).
 D=/data/local/hassmic
 . $D/device.conf || exit 1
-sh $D/alexa-off.sh >/dev/null
+sh $D/alexa-off.sh services >/dev/null
 mkdir -p $D/state && chown $DAEMON_USER $D/state    # settings changed from Home Assistant (runs as DAEMON_USER)
 stop $UX_SERVICE
 mkdir -p /data/misc/avahi/services && $D/hassmic "$@" -S > /data/misc/avahi/services/hassmic.service

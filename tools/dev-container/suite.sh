@@ -14,6 +14,7 @@ step lint make lint
 step otatool_test sh tests/otatool_test.sh
 step ota_push_test sh tests/ota_push_test.sh
 step boot_test sh tests/boot_test.sh
+step alexa_test sh tests/alexa_test.sh
 for t in fake_ha_esphome fake_ha fake_ha_arbitration fake_ha_update fake_ma_sendspin; do
     step $t timeout 900 .venv/bin/python tests/$t.py
 done

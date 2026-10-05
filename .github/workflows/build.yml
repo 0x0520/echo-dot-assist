@@ -179,6 +179,8 @@ jobs:
         run: sh tests/ota_push_test.sh
       - name: Boot logic (root side of updates, with the Echo's shell)
         run: sh tests/boot_test.sh
+      - name: Alexa on and off without a reboot (main.sh, lockdown.sh, init and iptables stand-ins)
+        run: sh tests/alexa_test.sh
       - name: Online updates
         run: .venv/bin/python tests/fake_ha_update.py
       - name: ESPHome native API

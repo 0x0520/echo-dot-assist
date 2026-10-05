@@ -9,7 +9,8 @@
 #   PROTO=esphome               optional: esphome (default, port 26053) or wyoming (port 16700)
 #   ARGS=""                     optional extra hassmic arguments
 #   MODE=stock-online           optional: stock Alexa with internet, e.g. to let it fetch a wake-word model.  hassmic stays
-#                               off, nothing is stopped or blocked except firmware updates (lockdown.sh ota-only)
+#                               off, nothing is stopped or blocked except firmware updates (lockdown.sh ota-only).  The
+#                               property hassmic.alexa=1 (alexa-on.sh) means the same until the next reboot
 #   ADB_WIFI=1                  optional: leave adb over Wi-Fi open (root shell for the whole network, no password; read
 #                               by lockdown.sh).  Without it: closed, opened for 30 min by a switch in Home Assistant
 umask 022                                   # init gives us 077; what we create must be readable by the daemon's user
@@ -57,6 +58,8 @@ fi
 sh -n $CONF 2> /dev/null && [ "$(. $CONF > /dev/null 2>&1; echo ok)" = ok ] || no_satellite "$CONF does not load (shell syntax)" conf
 . $CONF
 NAME=${NAME:-$DEFAULT_NAME}
+# scripts/device/alexa-on.sh: stock Alexa until alexa-off.sh or the next reboot, which forgets the property
+ALEXA_ON=; [ "$(getprop hassmic.alexa)" = 1 ] && { MODE=stock-online; ALEXA_ON=1; }
 
 # uxeventd plays the "ready for setup" voice prompts and the orange setup spinner on an unregistered device.  hassmic drives
 # LEDs (ledctrl) and earcons itself, so it goes.  Stopped before "class_start main" it never starts (SVC_DISABLED).
@@ -247,7 +250,7 @@ ota_watch() {
 if [ "$MODE" = stock-online ]; then
     # hassmic is off on purpose: that must not count as an update that failed to come up.
     [ "$1" = firewall ] || { echo 0 > $OTA/tries; exit 0; }
-    { rotate_log; echo "== stock-online, uptime $(cut -d. -f1 /proc/uptime)s: Alexa runs, updaters cut off"; } >> $LOG 2>&1
+    { rotate_log; echo "== stock-online${ALEXA_ON:+ (alexa-on.sh, until reboot or alexa-off.sh)}, uptime $(cut -d. -f1 /proc/uptime)s: Alexa runs, updaters cut off"; } >> $LOG 2>&1
     exec sh $D/lockdown.sh ota-only watch >> $LOG 2>&1
 fi
 
@@ -264,7 +267,7 @@ satellite)
         rotate_log
         echo "== satellite start, uptime $(cut -d. -f1 /proc/uptime)s, $(cat $D/VERSION 2>/dev/null || echo factory) from $D"
         sh $D/lockdown.sh services        # stops the cloud daemons that were not up yet at "on boot"; the firewall is the watcher's
-        sh $D/alexa-off.sh; quiet
+        sh $D/alexa-off.sh services; quiet
     } >> $LOG 2>&1
     # A binary in /data wins over the installed one: lets a new build be tried without a trip through TWRP.
     BIN=$D/hassmic; [ -x $BASE/hassmic ] && BIN=$BASE/hassmic
@@ -320,7 +323,7 @@ satellite)
             exec sh $SYS/boot.sh satellite
         fi
         # ALEXA_PROP may have been set again meanwhile (ledcontroller restart)
-        sh $D/alexa-off.sh > /dev/null 2>&1; quiet
+        sh $D/alexa-off.sh services > /dev/null 2>&1; quiet
         sleep 3
     done
     ;;

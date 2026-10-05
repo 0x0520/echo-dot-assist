@@ -43,6 +43,7 @@ Models not in the table: what is known and how to add one is in [`devices/`](dev
 | Interrupt a reply ("Alexa" / "Alexa, stop")   | ✅                      | ✅                                           | ✅                       |
 | Several Echos hear it, only the nearest answers | ✅ (Amazon cloud)      | ✅ between these Echos, on the LAN           | ❌                       |
 | Timers                                        | ✅                      | ✅                                           | ❌                       |
+| Alarm clock, also without Home Assistant      | ✅                      | ✅ three alarms, set in HA ([details](#alarm-clock)) | ❌                |
 | Announcements, follow-up questions            | ✅                      | ✅                                           | ❌                       |
 | Media player entity (TTS, `play_media`)       | ❌                      | ✅                                           | ❌                       |
 | Multiroom music                               | Amazon speaker groups   | Music Assistant (Sendspin)                   | Music Assistant (Sendspin) |
@@ -77,11 +78,26 @@ Details:
   the device to perform Home Assistant actions" in each Echo's ESPHome options (Home Assistant shows a repair until
   then); give every Echo its own `NAME`. Other satellites (ESP32 and so on) are not part of it; Home Assistant itself then lets the first one
   that reports the wake word answer, and the Echo that is second now just goes quiet instead of flashing an error.
-- **Buttons**: action = talk without the wake word / pause and resume music / stop an alarm / cancel a request while
+- **Buttons**: action = talk without the wake word / pause and resume music / stop a timer or alarm / cancel a request while
   Home Assistant is still listening or thinking (as on a Voice PE; the wake word then cancels it too and listens
   again; ESPHome only); volume in 10 % steps;
   mic-off is the hardware mute it always was (red ring, Alexa's own sounds). The LED ring shows listening, thinking,
   speaking, errors and mute. Silent and dark at boot.
+- **Alarm clock**<a id="alarm-clock"></a>: three alarms that ring on the Echo itself, like stock's, also while Home
+  Assistant or your network is down (Home Assistant itself only has timers). Each has "Alarm 1" (on/off), "Alarm 1 time"
+  and "Alarm 1 repeat": once, every day, weekdays, weekends, or one day of the week ("Mondays"). A one-time alarm switches
+  itself off after it rang. It rings for up to 10 minutes; the action button, "Alexa, stop" (right behind the wake
+  word, as always) or the "Stop alarm" button end it, and "Snooze alarm" makes it ring again in 9 minutes. For
+  automations: "Alarm ringing" (on while one rings), the "Alarm" event (`alarm_1`, `alarm_2`, `alarm_3`, when it starts
+  ringing; only while Home Assistant is connected) and "Next alarm" (a timestamp; unknown when none is on).
+  - **The time comes from Home Assistant**, with its time zone, so summer time is handled (an alarm in the hour the
+    clocks skip rings an hour later on the clock, one in the hour they repeat rings once). The Echo asks when Home
+    Assistant connects and every hour, and keeps counting on its own in between, also while Home Assistant is away.
+  - **After the Echo restarts, alarms wait for Home Assistant.** Locked away from the internet, the Echo has no clock it
+    can trust after a reboot or a power cut, so no alarm rings until Home Assistant has told it the time; one that
+    should have rung in the last 10 minutes then rings late, an older one is skipped. "Next alarm" stays unknown until
+    then. hassmic itself restarting (an update) does not lose the time.
+  - Same sound as a timer, at the Echo's volume. ESPHome only, not with Wyoming.
 - **Music**: one source at a time, the newest wins. A phone starting over Bluetooth pauses Music Assistant (the whole
   group), Music Assistant starting on the Echo pauses the phone. The voice assistant ducks both.
 - **Playing on a Bluetooth speaker**<a id="bluetooth-speaker-output"></a>: everything the Echo plays (replies, timers,

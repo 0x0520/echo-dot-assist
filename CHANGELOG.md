@@ -4,6 +4,12 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-10-06
 
+- **Alarm clock on the Echo.** Three alarms, set in Home Assistant (time, on/off, and once, every day, weekdays,
+  weekends or one weekday), ring on the Echo itself for up to 10 minutes, also when Home Assistant or the network is
+  down. Stop them with the action button, "Alexa, stop" or the "Stop alarm" button; "Snooze alarm" rings again in 9
+  minutes. "Alarm ringing", the "Alarm" event and "Next alarm" are there for automations. The Echo takes the time and
+  time zone from Home Assistant (summer time included); after the Echo restarts, alarms ring only once Home Assistant
+  has told it the time again.
 - **A client with a bad connection no longer stalls the Echo.** When one of the connected clients (Home Assistant, or a
   second one such as a debugging tool) stopped taking data, for example because its Wi-Fi dropped, the wake word,
   the buttons and every other client could hang for up to 5 seconds. Each client now gets what is sent to it from a

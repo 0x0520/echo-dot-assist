@@ -41,6 +41,8 @@ struct proto {
     void (*arb_changed)(void);                  /* may be NULL: arbitration membership or peers changed */
     void (*sound)(const char *event);           /* may be NULL: sound detection heard one of core_sound_events */
     void (*whispered)(int on);                  /* may be NULL: the request just ended was whispered or not (core_whispered) */
+    void (*alarms_changed)(int rang);           /* may be NULL: the alarm clock (alarms.h) changed by itself; rang: the slot
+                                                 * that started ringing, or < 0 */
 };
 extern const struct proto proto_wyoming, proto_esphome;
 
@@ -106,7 +108,8 @@ void   core_tts_flush(void);                                /* cut the stream qu
                                                                (a fetch under way), unless the pipeline ends first.  A cut
                                                                never reaches past its stream */
 size_t core_tts_queued(void);                               /* bytes not yet played: for back pressure */
-void   core_alarm(int on);                                  /* timer finished: ring until button, wake word or 60 s */
+void   core_alarm(int on);                                  /* timer finished: ring until button, wake word or 60 s.
+                                                               Off also silences the alarm clock (alarms.h) */
 enum { MUSIC_SENDSPIN = 1, MUSIC_BLUETOOTH = 2 };
 void   core_music(int source, int on);                      /* a music stream runs: the wake word threshold follows */
 void   core_bt_device(const char *name, int on);            /* a Bluetooth speaker source connected / went (not the lock) */

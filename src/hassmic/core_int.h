@@ -39,7 +39,8 @@ void *volume_led_thread(void *arg);
 void sound_queue(enum sound s);                 /* any thread: played by the earcon thread */
 void sound_request(enum sound s);               /* the same unless -E or Home Assistant's switch turned the sounds off */
 void sound_unqueue_wake(void);                  /* any thread: a wake or touch sound asked for is not played after all */
-int  alarm_ringing(void);                       /* any thread */
+int  alarm_ringing(void);                       /* any thread: a timer or the alarm clock rings */
+void alarm_ring(int seconds);                   /* any thread: as core_alarm(1), for up to that long (alarms.c) */
 void own_tts(int on);                           /* playback thread: a reply plays or stopped playing */
 int  own_sound_within(long long ms);            /* any thread: something of ours plays or did within the last ms */
 int  own_sound_hold(void);                      /* any thread: one of our sounds plays or is still in the mic stream */

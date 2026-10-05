@@ -111,8 +111,11 @@ dozen daemons phone home within seconds.
       posting to `api.amazon.com`, plus DHCP hands out 8.8.8.8 as second DNS. Not covered: the boot window before `lockdown.sh`
       (router-side only)
 - [x] **(device)** Persistent: rules in `/system/bin/debug_firewall.sh` (stock `firewall.sh` runs it after its own flush) plus init service for `lockdown.sh watch` — solved differently: init service `hassmic_fw` runs `lockdown.sh watch` from `on boot`
-- [ ] Clock: no NTP once locked down. Nothing in hassmic needs wall-clock time (timers are Home Assistant's, hassmic only rings;
-      the log carries no timestamps). Only if timestamps in `boot.log` are ever wanted: point `sntp` at the router
+- [ ] Clock: no NTP once locked down. The alarm clock (2026-10-06) takes its time from Home Assistant instead
+      (GetTimeRequest, kept against `CLOCK_BOOTTIME`; `alarms.c`), and does not trust anything after a reboot until Home
+      Assistant answers. Open, needs the device: whether the RTC keeps the time over a reboot and over a power cut
+      (`date` before `reboot` and after, and after unplugging for a minute); if it does, the system clock could be
+      trusted within a bound after a reboot. Timestamps in `boot.log`: still none (`sntp` at the router, if ever wanted)
 
 ## Phase 3 — First contact **(device)**
 
@@ -1233,6 +1236,29 @@ Run in this order. Each step says what it proves.
       arrives in 0.02 s and the wake word's pipeline starts in 0.03 s, and the stuck client is let go; on the old code
       10 s and 5 s), the full suite, no warnings. Needs the device: Home Assistant over Wi-Fi with a second client
       that drops off the network mid-pipeline.
+- [x] Offline alarm clock (2026-10-06, `alarms.c`, `alarmtime.c`): three alarms set from Home Assistant (per alarm a
+      switch, an ESPHome time entity and a repeat select: once, every day, weekdays, weekends, one weekday), stop and
+      snooze (9 min) buttons, "Alarm ringing" binary sensor, "Alarm" event entity (`alarm_N` when it starts ringing), "Next
+      alarm" timestamp text sensor. They ring through the timer's ring (`alarm_ring()`, up to 10 min; a timer finishing
+      meanwhile does not cut it short) and stop like it (action button, "stop" keyword, button entity). The wall clock is
+      Home Assistant's GetTimeResponse (id 37: fixed32 epoch, POSIX TZ string as aioesphomeapi derives it from tzdata),
+      asked of the voice assistant's client only, on subscribe, every hour, and every 30 s while there is none; whole
+      seconds, so taken as the middle of that second, and differences under 1.5 s ignored as jitter. Kept as an offset to
+      `CLOCK_BOOTTIME`, saved in `state/clock` with `/proc/sys/kernel/random/boot_id`: a hassmic restart keeps it, a new
+      boot does not; then nothing rings until Home Assistant answers, and an alarm missed by up to 10 min rings late.
+      `state/alarms` keeps per slot up to when its occurrences are done, so a restart never rings one twice. The TZ
+      string is parsed by our own code (`tz_parse`: names quoted or not, offsets to the second, `Mm.w.d`, `Jn`, `n`,
+      transition times -167..167 h; no rules: the US's), not bionic's `tzset()`, which works through the environment of
+      the whole process. A time skipped by DST rings that much later on the clock, a repeated one the first time only.
+      Tested: `make unit` (new `alarmtime_test.c`: 14 zones of every shape, offsets against glibc at 200000 moments each;
+      fixed cases across midnight, weekdays, both Berlin changes, Sydney's summer over new year; 150 random alarms per
+      zone against a minute-by-minute walk over glibc's clock), `fake_ha_esphome` (Home Assistant in Berlin: TZ kept,
+      entities, an alarm 4 s ahead rings on time with its event, stop button, once switches off; snooze puts the next
+      ring 9 min out and stop drops it; rings with Home Assistant disconnected and "stop" ends it; after a hassmic restart
+      it rings with no client at all; with another boot id nothing rings until Home Assistant answers, then the missed
+      one rings late), the full suite, every model with STUBS=1 and the PC build without warnings. Needs the device: the
+      ring at the Echo's volume over a night, `boot_id` readable by the daemon user under SELinux (else the clock is
+      never kept over a restart), Home Assistant's real answer (its TZ string), the RTC question above.
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
-      way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
+      way would be Improv over BLE, ble.c has the controller); reminders (HA has timers only; the alarm clock is done, above).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

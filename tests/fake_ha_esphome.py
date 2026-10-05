@@ -664,18 +664,26 @@ async def alarm_clock(env, state, log, start_hassmic, cur):
           and last(st, nxt.key, TextSensorState) == "" and last(st, ringing.key, BinarySensorState) is False,
           "alarms off at 07:00 once by default; next alarm unknown, not ringing")
 
-    # one alarm a few seconds ahead: it rings, says so, and the stop button ends it; once, so it switches itself off
+    # one alarm a few seconds ahead: it rings, says so, and the stop button ends it; once, so it switches itself off.
+    # The volume was turned down to 0: it rings at 30 %, and the volume goes back to 0 afterwards.
+    mpk = next(e.key for e in by.values() if isinstance(e, MediaPlayerInfo))
+    def volume(): x = [s for s in st if isinstance(s, MediaPlayerEntityState)]; return round(x[-1].volume * 100) if x else None
+    ha.media_player_command(mpk, volume=0.0)
     t, iso = ahead(4)
     ha.time_command(tm[0].key, t.hour, t.minute, t.second); ha.switch_command(sw[0].key, True)
     await asyncio.sleep(0.5)
-    check(last(st, nxt.key, TextSensorState) == iso and last(st, sw[0].key, SwitchState) is True, f"alarm 1 set {t:%H:%M:%S} Berlin: next alarm {iso}")
+    check(last(st, nxt.key, TextSensorState) == iso and last(st, sw[0].key, SwitchState) is True and volume() == 0,
+          f"alarm 1 set {t:%H:%M:%S} Berlin: next alarm {iso}; volume {volume()}")
     ok = await wait_for(lambda: last(st, ringing.key, BinarySensorState) is True, 7)
     evs = [x.event_type for x in st if isinstance(x, Event) and x.key == ev.key]
     check(ok and evs == ["alarm_1"] and logged("alarm: ringing", n), f"it rings on time, event {evs}")
+    check(volume() == 30 and logged("alarm clock: volume 0, rings at 30", n), f"at volume 0 it rings at 30 % (volume {volume()})")
     ha.button_command(stop.key)
     ok = await wait_for(lambda: last(st, ringing.key, BinarySensorState) is False, 3)
     check(ok and logged("alarm: off", n) and last(st, sw[0].key, SwitchState) is False and last(st, nxt.key, TextSensorState) == "",
           "the stop button ends it; once: switched off, no next alarm")
+    check(await wait_for(lambda: volume() == 0, 2), f"and the volume is 0 again ({volume()})")
+    ha.media_player_command(mpk, volume=0.5); await asyncio.sleep(0.3)
     check(open(os.path.join(state, "alarms")).read().split("\n")[0].split()[:4] == ["0", "0", f"{t:%H:%M:%S}", "0"],
           f"kept in state/alarms: {open(os.path.join(state, 'alarms')).read().splitlines()[0]!r}")
 

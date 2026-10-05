@@ -24,6 +24,11 @@ static char tz_str[96];
 static struct tz tz;                        /* UTC until Home Assistant says */
 static int ring_slot = -1;                  /* whose alarm rings (alarm_ringing() says whether it still does) */
 static long long snooze_at = -1; static int snooze_slot;
+/* An alarm clock set in the evening rings in the morning at whatever the volume was left at: turned down to 0 for the
+ * night, it rang unheard.  So it rings at ALARM_MIN_VOLUME at least, and the volume goes back once it stops, unless
+ * someone moved it meanwhile (then theirs stands).  Timers keep the volume as it is: they are set a moment before, at a
+ * volume the user has just heard.  A hassmic that dies while it rings leaves the alarm's volume. */
+static int boost_from = -1, boost_to = -1;
 
 /* The boot clock rather than CLOCK_MONOTONIC: it goes on through a suspend, should the Echo ever do one */
 static long long boot_ms(void) { struct timespec ts; clock_gettime(CLOCK_BOOTTIME, &ts); return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
@@ -147,10 +152,28 @@ long long alarms_next(void)
     return n;
 }
 
+static void volume_up(void)
+{
+    int v = core_volume();
+    if (boost_to >= 0 || v >= ALARM_MIN_VOLUME) return;
+    boost_from = v; boost_to = ALARM_MIN_VOLUME;
+    fprintf(stderr, "alarm clock: volume %d, rings at %d\n", v, boost_to);
+    core_set_volume(boost_to);
+}
+
+static void volume_back(void)
+{
+    if (boost_to < 0) return;
+    if (core_volume() == boost_to) core_set_volume(boost_from);
+    else fprintf(stderr, "alarm clock: volume moved while it rang, left at %d\n", core_volume());
+    boost_from = boost_to = -1;
+}
+
 void alarms_stop(void)
 {
     if (alarm_ringing()) core_alarm(0);
     ring_slot = -1; snooze_at = -1;
+    volume_back();
 }
 
 int alarms_snooze(void)
@@ -159,6 +182,7 @@ int alarms_snooze(void)
     snooze_slot = ring_slot; snooze_at = now_s() + ALARM_SNOOZE_S;
     core_alarm(0);
     ring_slot = -1;
+    volume_back();
     fprintf(stderr, "alarm clock: alarm %d snoozed for %d min\n", snooze_slot + 1, ALARM_SNOOZE_S / 60);
     return 1;
 }
@@ -167,6 +191,7 @@ static void ring(int i)
 {
     ring_slot = i;
     fprintf(stderr, "alarm clock: alarm %d rings\n", i + 1);
+    volume_up();
     alarm_ring(ALARM_RING_S);
 }
 
@@ -174,7 +199,7 @@ static void ring(int i)
 static int tick(void)
 {
     int rang = -1;
-    if (ring_slot >= 0 && !alarm_ringing()) { ring_slot = -1; rang = -2; }   /* stopped: button, wake word, "stop", 10 min */
+    if (ring_slot >= 0 && !alarm_ringing()) { ring_slot = -1; rang = -2; volume_back(); }  /* stopped: button, wake word, "stop", 10 min */
     if (!clock_ok) return rang;
     long long now = now_s();
     if (snooze_at >= 0 && now >= snooze_at) { snooze_at = -1; ring(snooze_slot); rang = snooze_slot; }

@@ -1205,6 +1205,18 @@ Run in this order. Each step says what it proves.
       tree (integration/all). Needs the device: wake word and replies under a Wi-Fi stall, vfork
       with the real ledctrl/lipc tools, `WhisperApi_backlogWait`'s timeout unit and return value, a model switch to a
       broken model.
+- [x] Bluetooth code split (2026-10-05, maintenance, no behaviour change). `a2dp.c` (1750 lines) is now `bt_link.c`
+      (link keys, pairing window, BR/EDR events, L2CAP signalling; the `hci.h` hooks), `sdp.c`, `a2dp_sink.c`,
+      `avrcp.c` and `a2dp_source.c`, sharing `bt_int.h` (thread and lock rules there) through functions instead of each
+      other's state. The ACL fragment queue, buffer credits, L2CAP framing and reassembly that ble.c and a2dp.c each had
+      are `acl.c`, one queue per side counting in the shared pool when LE has no buffers of its own; the two key files'
+      write-to-temp-and-rename is `keyfile.c`. hci.h's "never hci_cmd from event handling" is enforced: ble.c marks
+      event and ACL handling and refuses (logs a bug, -1) a command sent from it; a2dp_test.c checks the BR/EDR event
+      paths send none. Tested on the PC: `make unit` (new tests/unit/acl_test.c: fragmentation and boundary flags, flow
+      control, shared pool, a link going with packets queued and outstanding, reassembly against bad fragments, key
+      file mode and replacement; a2dp_test.c now builds from the five modules), the full dev-container suite, donut/
+      biscuit/radar STUBS=1 and the PC build warning-free. Needs a device: a phone playing (SBC and AAC) with the LE
+      proxy scanning, speaker search, play on the speaker and its volume, LE pairing, and the log free of "BUG".
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

@@ -145,14 +145,19 @@ No model `#ifdef`s in shared code: new differences become a board field, a `devi
   through Home Assistant, as the newcomer's own ESPHome action `esphome.<node>_arbitration_key` (encrypted to its
   X25519 key). ESPHome only; needs "Allow the device to perform Home Assistant actions".
 - **Music**: `sendspin.c` (Music Assistant Sendspin player over `ws.c`/`noise.c`/`net.c`/`hash.c`, decodes via
-  `dr_flac`/`minimp3`/libopus). `a2dp.c` + `a2dp_codecs.c` + `sbc.c` = Bluetooth A2DP sink (SBC, AAC via firmware FFmpeg
-  loaded with dlopen, aptX/aptX HD via `freeaptx`) with AVRCP. Only one music source plays at a time (newest wins).
-  The other way, playing on a Bluetooth speaker: `a2dp.c` (inquiry, pairing, AVDTP initiator, AVRCP absolute volume)
+  `dr_flac`/`minimp3`/libopus). Bluetooth A2DP sink (SBC, AAC via firmware FFmpeg loaded with dlopen, aptX/aptX HD via
+  `freeaptx`) with AVRCP: `bt_link.c` (link keys, pairing window, BR/EDR events, L2CAP channels; the `hci.h` hooks),
+  `sdp.c`, `a2dp_sink.c` (AVDTP sink, jitter buffer, player thread), `avrcp.c`, `a2dp_codecs.c`, `sbc.c`; what they
+  share and their thread/lock rules in `bt_int.h`. Only one music source plays at a time (newest wins).
+  The other way, playing on a Bluetooth speaker: `a2dp_source.c` (inquiry, pairing, AVDTP initiator, AVRCP absolute volume)
   + `btout.c`, which stands in for btmanagerd towards the mixer's own A2DP route (LIPC `A2DPSourceConnect`, the A2DP
   HAL's abstract sockets, AIPC service uuid 0 via `libace_aipc.so`; `docs/re-a2dp-source.md`) and SBC-encodes
   (`sbc.c`). While on the speaker the core has a volume of its own (`core_speaker`).
 - **Bluetooth**: `ble.c`/`ble_crypto.c` talk raw HCI (`hci.h`) to the controller for the HA Bluetooth proxy (scan, GATT,
   Just Works pairing); Amazon's `btmanagerd` is stopped. A2DP shares the controller; scanning pauses while a phone plays.
+  Both sides send through `acl.c` (ACL fragment queue, the controller's buffer credits, shared when LE has no buffers of
+  its own, L2CAP framing and reassembly) and keep keys with `keyfile.c`. `hci_cmd` is for upkeep only: ble.c refuses it
+  (logged as a bug, -1) while an event or ACL packet is being handled.
 - **adb over Wi-Fi** (`adbwifi.c`): the HA switch only writes a request for root's firewall watcher, as `ota.c` does
   for updates; opening needs the keyed ESPHome connection, or (`ota.c`, `HMOTA-ADB1`) a challenge signed with the update key.
 - **Wi-Fi motion** (`wifimotion.c`, experimental, off by default): polls the RCPI of the frames from the AP at 10 Hz, scatter

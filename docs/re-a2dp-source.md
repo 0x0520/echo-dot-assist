@@ -2,7 +2,7 @@
 
 Static analysis of NS65741 (donut; biscuit's `libaudioCtrl.so`, `audio.a2dp.default.so` and `libace_aipc.so` are
 byte-identical), checked on an Echo Dot 2 with `src/tools/a2dpprobe.c` (2026-10-01). Used by `src/hassmic/btout.c`
-(the mixer's side) and `a2dp.c` (the radio side). **UNVERIFIED** marks what was not seen on a device.
+(the mixer's side) and `a2dp_source.c` (the radio side). **UNVERIFIED** marks what was not seen on a device.
 
 `bin/mixer` is **ARM** code, not Thumb (even function addresses in its dynsym): `firmware/donut/re/mixer.asm`, made as
 Thumb, is garbage for the mixer's own functions. Addresses below are ARM for the mixer, Thumb for the libraries.

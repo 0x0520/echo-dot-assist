@@ -3,6 +3,7 @@
  *
  *   AVDTP     one sink endpoint per codec (a2dp_codecs.c: SBC, AAC, aptX HD, aptX; Opus not, see there), the source
  *             picks; delay reporting so video stays in sync.  One stream at a time: the others show as in use meanwhile.
+ *             AAC only while the "Bluetooth AAC" switch is on (a2dp_aac(), off by default): see there.
  *   audio     decoded into a jitter buffer, a player thread feeds the mixer's music stream.  The phone's clock and the
  *             mixer's drift apart: a frame is dropped or repeated now and then to hold the buffer at its target.
  */
@@ -144,6 +145,14 @@ static struct { struct link *l; int state, media, rseid, delay, label, sep; unsi
 
 static const struct a2dp_codec *sep_codec(int seid) { return seid >= 1 && seid <= nseps ? &a2dp_codecs[seps[seid - 1]] : NULL; }
 
+/* AAC goes into the firmware's FFmpeg 4 decoder, years of fixes behind, fed what any phone in radio range sends once it
+ * is paired (a2dp_codecs.c checks the LATM configuration, not the rest of the bitstream).  SBC and aptX are decoded by
+ * code of ours that is small and checked.  So the AAC endpoint is only offered while the user wants it; its SEID stays
+ * the same either way.  A source discovers the endpoints when it connects: a change counts from the next connection. */
+static atomic_int aac_on;
+int a2dp_aac(int set) { if (set >= 0) atomic_store(&aac_on, set != 0); return atomic_load(&aac_on); }
+static int sep_offered(int seid) { const struct a2dp_codec *c = sep_codec(seid); return c && (c->type != A2DP_AAC || atomic_load(&aac_on)); }
+
 static void set_streaming(int on)
 {
     if (atomic_exchange(&streaming, on) == on) return;
@@ -221,14 +230,18 @@ void av_rx(struct link *l, const unsigned char *p, size_t n)
     if (type != 0 || msg != 0) return;                     /* fragments (never this small) and answers to our delay reports */
     int mine = av.l == l, seid = dn >= 1 ? d[0] >> 2 : 0; const struct a2dp_codec *codec = sep_codec(seid);
     int ours = mine && seid == av.sep;                      /* the endpoint this link has configured */
+    if (!ours && !sep_offered(seid)) codec = NULL;          /* one configured before the switch went off plays on */
     switch (sig) {
-    case AV_DISCOVER:
+    case AV_DISCOVER: {
+        int k = 0;
         for (int i = 0; i < nseps; i++) {                   /* in use: taken by the stream, or by another source */
-            r[2 * i] = (i + 1) << 2 | (av.l && (!mine || av.sep == i + 1) ? 2 : 0);
-            r[2 * i + 1] = 0 << 4 | 1 << 3;                 /* audio, sink */
+            if (!sep_offered(i + 1) && !(mine && av.sep == i + 1)) continue;
+            r[2 * k] = (i + 1) << 2 | (av.l && (!mine || av.sep == i + 1) ? 2 : 0);
+            r[2 * k + 1] = 0 << 4 | 1 << 3;                 /* audio, sink */
+            k++;
         }
-        av_reply(l, label, sig, 1, r, 2 * nseps);
-        break;
+        av_reply(l, label, sig, 1, r, 2 * k);
+        break; }
     case AV_GET_CAP: case AV_GET_ALL_CAP:
         if (!codec) { r[0] = E_BAD_ACP_SEID; av_reply(l, label, sig, 0, r, 1); break; }
         av_reply(l, label, sig, 1, r, caps_of(codec, codec->caps, codec->ncaps, sig == AV_GET_ALL_CAP, r));

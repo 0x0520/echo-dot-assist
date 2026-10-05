@@ -5,7 +5,8 @@
 The JSON answer carries a signed CloudFront downloadUrl that expires within minutes, so the request is the thing to keep.
   tools/davs-fetch.py [--ecids 1,2,...] <map.db> <key> [locale] [outdir]
     key: alexa echo computer amazon ziggy, aed for the sound detection model (docs/re-aed.md), or whisper for the whisper
-         detection model (docs/re-whisper.md); locale default de-DE
+         detection model (docs/re-whisper.md, takes no locale); locale default de-DE.  Key check: downloads nothing,
+         exits 0 if DAVS takes the token (scripts/lib/artifacts.sh, token())
     --ecids: the wake word engine compatibility ids to ask for (default: donut's NS65741 engine).  An older engine lacks
              some (radar's has no 36, 37) and gets a model set it can load only when it asks with its own list;
              `pryon_test` prints it ("wakeword_ecids" in its attributes line).
@@ -14,12 +15,14 @@ aed: the request PuffinApp's AEDInventory::createRequest (0x43d898) builds: filt
      two global strings "AED" (0xf4274, 0xf42c0); the spelling DAVS wants is not known, so the variants are tried in turn.
      --ecids then means the aed_ecids (`aed_test` / `pryon_test` print them in the attributes line).
 whisper: AHE's request (Davs2UrlBuilder 0x665040): artifactType "alexa-hybrid", key "whisper-static", filters "ecid" ["6"]
-     (a literal in AHE) and modelClass ["odie-litespeed"] (ahe.config.json), locale only if the subscription is per locale.
-     Which of these DAVS insists on is not known, so variants are tried in turn, ending with ecid 1 (what libpryon's
-     WhisperApi_getLibraryAttributes reports).  --ecids is ignored.  Fetched 2026-10-04 for en-US with the second request
-     (with the locale).  It is one model for every language (only its thresholds are per locale), so a locale DAVS has
-     nothing for falls back to en-US.
+     (a literal in AHE), modelClass ["odie-litespeed"] (ahe.config.json) and locale ["en-US"].  There is one model for
+     every language (its thresholds are per locale), and DAVS hands it out for en-US only: on 2026-10-05 every other
+     locale, and every request without the locale or with another filter, got HTTP 404 "No suitable artifact found for
+     request." (Echo Dot 2's and Echo Dot 3's token alike).  So it is the one request, saved as whisper-en-US.
+     --ecids is ignored.
 map.db is /data/ace/kvstorage/map.db of the registered Echo; its access token lasts an hour after the device fetched it.
+A registration left behind on an Echo (an older run of scripts/artifacts.sh did not clear it) still has its token in
+map.db long after it expired: DAVS answers it with HTTP 403 and an empty body (Echo Dot 3, 2026-10-05).
 """
 import base64, json, pathlib, shutil, sqlite3, sys, tarfile, urllib.error, urllib.parse, urllib.request
 
@@ -28,13 +31,9 @@ ENGINE_IDS = [str(i) for i in (1, 10, 11, 12, 13, 14, 15, 16, 17, 19, 2, 20, 21,
 AED_IDS = ["1", "2", "3", "5", "6", "7"]                                 # NS65741 libpryon's aed_ecids
 AED_NAMES = [("AED", "AED"), ("aed", "aed"), ("AED", "aed"), ("aed", "AED")]
 # DAVS region by locale; PuffinApp picks one of NA, EU, FE
-# whisper: tried in this order; {loc} is the locale
-WHISPER_FILTERS = [{"ecid": ["6"], "modelClass": ["odie-litespeed"]},
-                   {"ecid": ["6"], "modelClass": ["odie-litespeed"], "locale": ["{loc}"]},
-                   {"ecid": ["6"]},
-                   {"ecid": ["1"], "modelClass": ["odie-litespeed"], "locale": ["{loc}"]},
-                   {"compatibilityId": ["6"], "modelClass": ["odie-litespeed"]}]
 REGION = {"en-US": "NA", "en-CA": "NA", "fr-CA": "NA", "es-MX": "NA", "pt-BR": "NA", "ja-JP": "FE", "en-AU": "FE", "en-IN": "FE"}
+WHISPER_REQ = {"artifactType": "alexa-hybrid", "artifactKey": "whisper-static",
+               "filters": {"ecid": ["6"], "modelClass": ["odie-litespeed"], "locale": ["en-US"]}}
 
 def ask(token, req):
     enc = urllib.parse.quote(base64.b64encode(json.dumps(req, separators=(",", ":")).encode()).decode(), safe="")
@@ -51,6 +50,11 @@ def main():
     locale = args[2] if len(args) > 2 else "de-DE"
     out = pathlib.Path(args[3] if len(args) > 3 else "device-logs/models")
     token = sqlite3.connect(db).execute("select cast(value as text) from deviceData where key='access_token'").fetchone()[0]
+    if key == "check":                  # the whisper request: 200 with a token DAVS takes, 401/403 without
+        try: ask(token, WHISPER_REQ)
+        except urllib.error.HTTPError as e:
+            if e.code != 404: sys.exit(f"token not accepted: HTTP {e.code}")
+        return
     if key == "aed":
         region = REGION.get(locale, "EU")
         info = None
@@ -65,17 +69,9 @@ def main():
         if info is None: sys.exit("aed: DAVS has no model under any of the names tried")
         dest = out / f"aed-{region}"
     elif key == "whisper":
-        info = None
-        for loc in dict.fromkeys([locale, "en-US"]):
-            for f in WHISPER_FILTERS:
-                f = {k: [x.replace("{loc}", loc) for x in v] for k, v in f.items()}
-                try:
-                    info = ask(token, {"artifactType": "alexa-hybrid", "artifactKey": "whisper-static", "filters": f}); break
-                except urllib.error.HTTPError as e:
-                    print(f"whisper: filters {json.dumps(f)}: HTTP {e.code} {e.read()[:200]!r}", file=sys.stderr)
-            if info: break
-        if info is None: sys.exit("whisper: DAVS has no model for any of the requests tried")
-        dest = out / f"whisper-{locale}"
+        locale = "en-US"
+        info = ask(token, WHISPER_REQ)
+        dest = out / "whisper-en-US"
     else:
         req = {"artifactType": "wakeword", "artifactKey": key,
                "filters": {"engineCompatibilityIdList": ecids or ENGINE_IDS, "locale": [locale], "modelClass": ["B"]}}
@@ -92,8 +88,10 @@ def main():
     tgz = dest / "artifact.tar.gz"
     with urllib.request.urlopen(info["downloadUrl"], timeout=120) as r: tgz.write_bytes(r.read())
     shutil.rmtree(dest / "unpacked", ignore_errors=True)     # an update: no file of the old one may stay
-    with tarfile.open(tgz) as t: t.extractall(dest / "unpacked", filter="data")
-    print(f"{key} {locale}: {tgz.stat().st_size} bytes, id {new}{f' (updated, was {old})' if old else ''} -> {dest}")
+    # the "data" filter (no paths out of unpacked/) where this Python has it: 3.12, and 3.8-3.11 only from the point
+    # releases of June 2023 on (Ubuntu 20.04's 3.8.10 has not), where the keyword is a TypeError after the download
+    with tarfile.open(tgz) as t: t.extractall(dest / "unpacked", **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+    print(f"{key} {locale}: {tgz.stat().st_size} bytes, id {new}{f' (updated, was {old})' if old and old != new else ''} -> {dest}")
 
 if __name__ == "__main__":
     main()

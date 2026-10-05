@@ -142,17 +142,18 @@ The JSON is base64-encoded (0x62fb28) and appended to `/v2/deviceArtifacts/?arti
 wake words and AED. The logcat shows a shorter journal form (`DavsQueryBuilder` 0x676774):
 `query={"artifactType":"<key>","filters":"{\"compatibilityId\":\"1\"}"}`. That form is not what goes on the wire.
 
-`tools/davs-fetch.py <map.db> whisper <locale>` (and the "Other artifacts" list of `scripts/artifacts.sh`) tries,
-in order:
+Which filters DAVS wants, tried 2026-10-05 with an Echo Dot 2's and an Echo Dot 3's token, every one for each of
+the 13 locales of `scripts/artifacts.sh` (de-DE en-US en-GB fr-FR it-IT es-ES ja-JP pt-BR en-CA fr-CA en-AU en-IN es-MX):
 1. `{"ecid":["6"],"modelClass":["odie-litespeed"]}`
 2. the same with `"locale"`
 3. `{"ecid":["6"]}`
 4. `{"ecid":["1"],"modelClass":["odie-litespeed"],"locale":[…]}`
 5. `{"compatibilityId":["6"],"modelClass":["odie-litespeed"]}`
 
-The result goes to `device-logs/models/whisper-<locale>/`. Fetched 2026-10-04 for en-US: request 2 answered (request
-1 gave HTTP 404 "No suitable artifact found for request."), so the locale filter is needed. Artifact
-`df014d05b47afff9a3f3e5c34ab3a538`, 497928 bytes, files dated 2020-11-19. Contents in section 5.
+Only request 2 with `"locale":["en-US"]` answers; all 64 others get HTTP 404 "No suitable artifact found for
+request.". So there is no model per language, and `tools/davs-fetch.py <map.db> whisper` (and the "Other artifacts"
+list of `scripts/artifacts.sh`) sends that one request, into `device-logs/models/whisper-en-US/`. Both Echos got the
+same answers and the same model. Artifact `df014d05b47afff9a3f3e5c34ab3a538`, 497928 bytes, files dated 2020-11-19. Contents in section 5.
 
 **Other AHE artifacts seen on 2026-09-21:**
 
@@ -259,7 +260,7 @@ request whispered":
 - A stray `pryon.manifest` for speaker-ID enrollment, whose config is not in the artifact.
 
 So the detector is a small DNN on filterbank features, gated by its own speech detector. The locale only picks the
-threshold, so one model serves all languages (presumably; only en-US was fetched).
+threshold, so one model serves all languages, and DAVS has no other (section 2: en-US only).
 
 **Events seen** (`whisper_test`, Echo Dot 2, model pushed to `/data/local/tmp`):
 - `"result"`: `{"whisper_results":{"confidence":8,"detector_id":"whisper-detector-1","device_type":"","end_frame_index":1000,"locale":"","start_frame_index":0,"threshold":922,"utterance_id":"Utterance-1"}}`.

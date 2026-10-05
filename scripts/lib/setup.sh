@@ -88,11 +88,17 @@ in_dir() { cd "$1" && shift && "$@"; }
 
 # waitfor "label[|done label]" CHECK [HINT [AFTER [TIMEOUT]]]: spinner until the shell command CHECK succeeds (tried
 # every 2 s).  HINT is shown once after AFTER seconds (default 60); with TIMEOUT seconds, gives up and returns 1.
+# An Echo that stays "offline" on adb over Wi-Fi (adb_is counts it) gets a hint of its own.
 waitfor() {
-    local label=${1%%|*} donel=${1#*|} check=$2 hint=$3 after=${4:-60} timeout=$5 t0=$SECONDS i
+    local label=${1%%|*} donel=${1#*|} check=$2 hint=$3 after=${4:-60} timeout=$5 t0=$SECONDS i offhint=1
     if [ -n "$DRY" ]; then printf '  %s· %s%s\n' "$DIM" "$label" "$N"; return 0; fi
+    ADB_OFFLINE=0
     until eval "$check" > /dev/null 2>&1; do
         if [ -n "$hint" ] && [ $((SECONDS - t0)) -ge "$after" ]; then _clr; warn "$hint"; hint=; fi
+        if [ -n "$offhint" ] && [ $ADB_OFFLINE -ge 10 ]; then
+            _clr; warn "The Echo takes adb's connection but stays \"offline\": its adb hangs. Unplug the Echo's power and plug it back in."
+            offhint=
+        fi
         [ -n "$timeout" ] && [ $((SECONDS - t0)) -ge "$timeout" ] && { _clr; fail "$label: gave up after $(_dur $timeout)"; return 1; }
         for i in {1..20}; do _tick "$label" $t0; sleep 0.1; done
     done
@@ -343,7 +349,9 @@ pick_serial() {
     export ANDROID_SERIAL=${list[s]}
 }
 # adb_is device|recovery: the Echo on adb in that state?  Over Wi-Fi (ANDROID_SERIAL host:port) adb does not come back
-# by itself after a reboot, so it is reconnected here.
+# by itself after a reboot, so it is reconnected here.  ADB_OFFLINE counts the checks in a row that found it "offline"
+# even after reconnecting: the Echo's adbd takes the connection and never answers.  Seen on an Echo Dot 3 after the
+# Alexa app moved it to another Wi-Fi network and back (2026-10-05); only a power cycle brought adb back.
 adb_is() {
     local s
     [ -n "$USB_ONLY" ] && { usb_serial || return 1; }
@@ -352,6 +360,7 @@ adb_is() {
         [ "$s" = offline ] && adb disconnect "$ANDROID_SERIAL" > /dev/null 2>&1
         timeout 5 adb connect "$ANDROID_SERIAL" > /dev/null 2>&1; s=$(adb get-state 2>/dev/null)
     fi
+    [ "$s" = offline ] && ADB_OFFLINE=$((${ADB_OFFLINE:-0} + 1)) || ADB_OFFLINE=0
     [ "$s" = "$1" ]
 }
 

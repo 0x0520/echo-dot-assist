@@ -881,8 +881,9 @@ Run in this order. Each step says what it proves.
       sites. On the Echo Dot 2 (same libpryon): attributes `engineCompatibilityIds [1]`, model set load and the
       handlers work, and `createWhisperDetector` refuses a set without a whisper section in `pryon.config`.
       Model: DAVS `alexa-hybrid`/`whisper-static`, AHE's filter `ecid` "6" plus `modelClass` `odie-litespeed`.
-      `tools/davs-fetch.py ... whisper` and the "Other artifacts" list of `scripts/artifacts.sh` try that and
-      variants. Fetched 2026-10-04 (en-US; the locale filter is needed): a DNN on 64 LFBE plus a DNN speech
+      `tools/davs-fetch.py ... whisper` and the "Other artifacts" list of `scripts/artifacts.sh` ask for that with
+      `locale` en-US, the only request DAVS answers (2026-10-05, Echo Dot 2's and Dot 3's tokens: 5 filter variants x 13
+      locales, 64 x HTTP 404 each; no model per language, none per device type). Fetched 2026-10-04: a DNN on 64 LFBE plus a DNN speech
       detector, thresholds per locale (default 922, de-DE 862). `src/tools/whisper_test.c` on the
       Echo Dot 2, German commands from 1–2 m, one detector per command: whispered 996/995/998, normal 1/0/1, quiet
       voice 18/1/2; with 0.5 s before and 1 s of silence after the speech 997-999 against 0-8. Non-speech sounds

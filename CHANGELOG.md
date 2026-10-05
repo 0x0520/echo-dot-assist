@@ -2,6 +2,23 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-10-05
+
+- **Whisper detection: one download, the one that exists.** Amazon has a single whisper model for every language
+  and hands it out only when asked for American English, so `scripts/artifacts.sh` now asks for just that, whatever
+  language is picked. Before, it asked for the picked language first and took the English one as a fallback.
+- **`scripts/artifacts.sh` says plainly at the end when whisper detection was ticked but not installed.** The log of
+  the run before is kept as `build/artifacts.log.1`, so a second try no longer wipes the record of the first.
+- **Downloads from Amazon work with older Python 3** (e.g. Ubuntu 20.04's 3.8): unpacking a model failed there after
+  the download.
+- **`scripts/artifacts.sh` no longer downloads with a dead registration.** An Echo could still carry the registration of
+  an earlier run, with a token Amazon refuses; the script took that for "registered already" and every download
+  failed. It now asks Amazon whether the token works, and otherwise has you set the Echo up in the Alexa app.
+- **`scripts/artifacts.sh` tells you when the Echo's adb hangs.** After the Alexa app moved an Echo Dot 3 to another
+  Wi-Fi network and back, adb over Wi-Fi took the connection but never answered, and the script waited forever. It
+  now says to unplug the Echo's power and plug it back in. An Echo left waiting for the Alexa app (orange ring) by a
+  run stopped halfway is explained too.
+
 ## 2026-10-04
 
 - **Whisper detection.** Whisper to the Echo, and Home Assistant knows: the binary sensor "Last request whispered" is

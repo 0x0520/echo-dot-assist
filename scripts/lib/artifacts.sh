@@ -39,10 +39,10 @@ m_stage() {
     header $cur ${#list[@]} "${list[@]}"
 }
 
-# model id "echo-de-DE" -> "Echo (de-DE)", "aed-EU" -> "Sound detection (EU)", "whisper-de-DE" -> "Whisper detection (de-DE)"
+# model id "echo-de-DE" -> "Echo (de-DE)", "aed-EU" -> "Sound detection (EU)", "whisper-en-US" -> "Whisper detection"
 label() {
     local k=${1%%-*}
-    case $k in aed) k=sound\ detection;; whisper) k=whisper\ detection;; esac
+    case $k in aed) k=sound\ detection;; whisper) printf 'Whisper detection'; return;; esac
     printf '%s (%s)' "${k^}" "${1#*-}"
 }
 is_aed() { [ "${1%%-*}" = aed ]; }
@@ -51,10 +51,13 @@ is_whisper() { [ "${1%%-*}" = whisper ]; }
 region() { case $1 in en-US|en-CA|fr-CA|es-MX|pt-BR) echo NA;; ja-JP|en-AU|en-IN) echo FE;; *) echo EU;; esac; }
 wpa() { ashell "wpa_cli -i $WLAN -p $WPA_SOCKETS $*"; }
 net_ids() { wpa list_networks | awk 'NR > 1 { print $1 }' | tr '\n' ' '; }
-token() {                              # the registered Echo's access token, pulled into $TMP/map.db
+# token: the registered Echo's access token, pulled into $TMP/map.db, and one DAVS takes.  A registration left behind by
+# an older run keeps its expired token in map.db (DAVS: HTTP 403), so being there is not enough.
+token() {
     rm -f $TMP/map.db*
     for f in $(ashell "ls $MAPDB*" 2>/dev/null); do adb pull "$f" $TMP/ > /dev/null 2>&1; done
-    [ -n "$(sqlite3 $TMP/map.db "select value from deviceData where key='access_token'" 2>/dev/null)" ]
+    [ -n "$(sqlite3 $TMP/map.db "select value from deviceData where key='access_token'" 2>/dev/null)" ] &&
+        python3 tools/davs-fetch.py $TMP/map.db check > /dev/null 2>&1
 }
 # update_block: a firmware update would cost the unlock, so nothing goes on without main.sh's guard in place
 update_block() {
@@ -115,7 +118,9 @@ build_lists() {
         [ -d $MODELS/$id/unpacked ] || have $id && continue
         WW_IDS+=("$id"); WW_ITEMS+=("$(label $id) ${DIM}· download from Amazon and install it$N")
     done
-    id=whisper-$LOC                     # one model for every language (only the threshold is per locale): any download will do
+    # one model for every language, from DAVS for en-US only (tools/davs-fetch.py); one fetched before under a
+    # locale's name (whisper-de-DE) is the same file
+    id=whisper-en-US
     for m in $MODELS/whisper-*/unpacked/pryon_whisper.manifest; do [ -f "$m" ] && { id=${m#$MODELS/}; id=${id%%/*}; break; }; done
     OT_IDS+=("$id")
     if [ -n "$HAVE_WHISPER" ]; then OT_ITEMS+=("$(label $id) ${DIM}· on this Echo already: install again$N")
@@ -154,7 +159,7 @@ sub_list() {
 fetch_model() {
     local id=$1 key=${1%%-*} loc=${1#*-} ecids=$ECIDS
     is_aed $id && { ecids=$AED_ECIDS; loc=$LOC; }
-    [ $key = whisper ] && ecids=          # davs-fetch.py has its own list
+    [ $key = whisper ] && ecids=          # davs-fetch.py has its own request
     task "Downloading $(label $id)" python3 tools/davs-fetch.py ${ecids:+--ecids $ecids} $TMP/map.db $key $loc $MODELS
 }
 
@@ -186,7 +191,7 @@ _artifacts_run() {
         fi
         pick_serial
         waitfor "Waiting for the Echo on adb|Echo on adb" "adb_is device" \
-            "Nothing? Connect it by USB, or open adb over Wi-Fi (scripts/adb-wifi.sh <echo-ip>) and give its address: scripts/artifacts.sh <echo-ip>" 15 || return 1
+            "Nothing? Connect it by USB, or open adb over Wi-Fi (scripts/adb-wifi.sh <echo-ip>) and give its address: scripts/artifacts.sh <echo-ip>. Orange ring? A run stopped halfway left it a stock Echo waiting for the Alexa app: set it up there (Devices → + → Add device → Amazon Echo), then scripts/artifacts.sh <its address> goes on." 15 || return 1
         device_load adb
         MODEL_NAME="Artifacts · $MODEL_NAME"
     else
@@ -277,9 +282,10 @@ _artifacts_run() {
             task "Restarting the Echo as a stock Echo" adb reboot || return 1
             sleep 10
         fi
-        # --- register.  Unregistered, stock comes up in setup mode: it drops the Wi-Fi network (dhcpcd killed, network
-        # disabled) and opens its own access point for the Alexa app (Echo Dot 2, 2026-10-04).  Over Wi-Fi the Echo is
-        # back on adb only once the app has set it up, so the app comes first and the connection is checked after it.
+        # --- register.  Unregistered, stock comes up in setup mode.  The Echo Dot 2 drops the Wi-Fi network (dhcpcd
+        # killed, network disabled) and opens its own access point for the Alexa app (2026-10-04); over Wi-Fi it is back
+        # on adb only once the app has set it up, so the app comes first and the connection is checked after it.  The
+        # Echo Dot 3 stays on the Wi-Fi network, and the app then moved it to a network of its own and back (2026-10-05).
         m_stage register
         [[ $ANDROID_SERIAL == *:* ]] || { wait_adb device || return 1; }
         local guarded=
@@ -306,7 +312,7 @@ _artifacts_run() {
         done
         rm -f $TMP/map.db*
         [ ${#FAILED[@]} -gt 0 ] &&
-            info "Not downloaded: ${FAILED[*]}. The token may have expired: wait a minute (the Echo renews it) and run this again."
+            info "Not downloaded: ${FAILED[*]} (why: above). Run this again to try again."
     fi
 
     # --- install everything that is on the PC now
@@ -355,6 +361,9 @@ _artifacts_run() {
     local ww=0 wh= ae=; for id in "${INSTALLED[@]}"; do if is_whisper $id; then wh=1; elif is_aed $id; then ae=1; else ww=1; fi; done
     [ -n "$ae" ] && tell "Sound detection takes the new model" "whenever it is on: the \"Sound detection\" switch in Home Assistant."
     [ $ww = 1 ] && tell "Pick it in Home Assistant" "Settings → Devices & services → this Echo → Wake word"
+    for id in "${WANT[@]}"; do            # ticked, not installed: said plainly, as nothing below mentions it then
+        is_whisper $id && [ -z "$wh" ] && fail "whisper detection is not installed: see $LOG"
+    done
     if [ -n "$wh" ]; then                 # what the hassmic started last said about it
         local said=$(ashell "grep -E 'whisper: (model|no model)' $D/boot.log | tail -1")
         case $said in

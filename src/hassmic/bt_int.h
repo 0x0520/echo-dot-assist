@@ -9,10 +9,10 @@
  *
  * Threads and locks.  Everything declared here runs on the controller thread (ble.c's), which calls into these modules
  * only through hci.h, one event, ACL packet or upkeep at a time; none of it takes a lock, and hci_cmd() is only ever
- * sent from upkeep or setup, never while an event is handled.  The other threads are the a2dp.h API (any thread: it
- * leaves requests in atomics and wakes the controller thread with hci_poke), a2dp_sink.c's player (the ring under its
- * r_lock) and avrcp.c's volume thread (core_lock).  State they share with the controller thread is atomic or under a
- * lock named where it is declared.
+ * sent from upkeep or setup, never while an event is handled (ble.c refuses it there).  The other threads are the
+ * a2dp.h API (any thread: it leaves requests in atomics and wakes the controller thread with hci_poke), a2dp_sink.c's
+ * player (the ring under its r_lock) and avrcp.c's volume thread (core_lock).  State they share with the controller
+ * thread is atomic or under a lock named where it is declared.
  */
 #ifndef BT_INT_H
 #define BT_INT_H

@@ -6,7 +6,8 @@
 
 /* ble.c */
 int  hci_cmd(unsigned op, const void *par, unsigned n);    /* waits for Command Complete / Status: HCI status, -1 = gone.
-                                                               Never from inside event handling (it pumps events itself) */
+                                                               Never from inside event handling (it pumps events itself):
+                                                               ble.c logs such a call as a bug and returns -1 */
 const unsigned char *hci_ret(void);                         /* the last Command Complete's parameters after the status */
 int  hci_write(const void *h4, size_t n);                   /* one H4 packet as it is */
 void hci_poke(void);                                        /* any thread: wake the controller thread for upkeep */

@@ -34,8 +34,9 @@ void btout_absvol(int on, int p) { (void)on; (void)p; }
 int  btout_want(void) { return 0; }
 size_t btout_packet(unsigned char *b, size_t m) { (void)b; (void)m; return 0; }
 
-static unsigned ops[64]; static int nops; static unsigned char ret[64]; static int writes, *pool;
-int  hci_cmd(unsigned op, const void *p, unsigned n) { (void)p; (void)n; if (nops < 64) ops[nops++] = op; return 0; }
+static unsigned ops[64]; static int nops; static unsigned char ret[64]; static int writes, *pool, in_event, cmd_in_event;
+/* ble.c refuses commands from event handling (hci.h); here they are counted, see ev() */
+int  hci_cmd(unsigned op, const void *p, unsigned n) { (void)p; (void)n; cmd_in_event += in_event; if (nops < 64) ops[nops++] = op; return 0; }
 const unsigned char *hci_ret(void) { return ret; }
 int  hci_write(const void *b, size_t n) { (void)b; (void)n; writes++; return 0; }
 void hci_poke(void) {}
@@ -50,6 +51,7 @@ static void expect(int ok, const char *fmt, ...)
     va_end(a);
 }
 static int sent(unsigned op) { for (int i = 0; i < nops; i++) if (ops[i] == op) return 1; return 0; }
+static int ev(const unsigned char *e, size_t n) { in_event = 1; int r = a2dp_event(e, n); in_event = 0; return r; }
 
 static void test_de(void)
 {
@@ -93,7 +95,7 @@ static void test_mtu(void)
 static void auth_failed(struct link *l, unsigned status)
 {
     unsigned char e[5] = { EV_AUTH_COMPLETE, 3, status, (unsigned char)l->handle, 0 };
-    a2dp_event(e, sizeof e);
+    ev(e, sizeof e);
 }
 
 static void test_keys(void)
@@ -115,7 +117,7 @@ static void test_keys(void)
     out.addr = 0xb1b2b3b4b5b6; out.on = 1; out.pairing = 0;
     expect(!out_may_pair(out.addr), "speaker without key may pair outside a search");
     unsigned char io[8] = { EV_IO_CAP_REQUEST, 6 }; for (int i = 0; i < 6; i++) io[2 + i] = out.addr >> 8 * i;
-    npend = 0; a2dp_event(io, sizeof io);
+    npend = 0; ev(io, sizeof io);
     expect(npend == 1 && pend[0].op == OP_IO_CAP_NEG, "speaker's IO capability request not refused");
     out.pairing = 1; out.pair_until = ms() + 1000;
     expect(out_may_pair(out.addr), "speaker found by the search may not pair");
@@ -167,6 +169,7 @@ static void test_pool(void)
 int main(void)
 {
     test_de(); test_mtu(); test_keys(); test_ring(); test_pool();
+    expect(!cmd_in_event, "%d HCI commands sent from event handling", cmd_in_event);
     if (!bad) printf("a2dp: SDP lengths, L2CAP MTU, link keys, pairing window, player rate, shared ACL pool ok\n");
     return bad;
 }

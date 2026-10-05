@@ -82,6 +82,7 @@ static char bdaddr[18];                         /* set once, before anything rea
 
 static unsigned char in[2048]; static size_t have;             /* H4 stream: reads may split or join packets */
 static int cc_op, cc_status;                                    /* last Command Complete / Status */
+static int in_event;                                            /* an event or ACL packet is being handled: no cmd() */
 static unsigned char cc_ret[72];                                /* its return parameters after the status */
 static struct ble_adv batch[BLE_BATCH]; static int nbatch; static struct timespec batch_t0;
 
@@ -807,17 +808,23 @@ static int pump(int ms)
         if (len > sizeof in) return -1;
         if (have < len) break;
         memcpy(pkt, in, len); memmove(in, in + len, have - len); have -= len;      /* handlers may pump again */
+        int was = in_event; in_event = 1;
         if (pkt[0] == H4_EVT) event(pkt + 1, len - 1); else acl_rx(pkt + 1, len - 1);
+        in_event = was;
     }
     if (nbatch && ms_since(&batch_t0) >= 100) flush_batch();
     return 0;
 }
 
 /* Sends a command and waits for its Command Complete / Status.  Returns the HCI status, -1 on timeout or I/O error.
- * Events arriving meanwhile are handled as usual. */
+ * Events arriving meanwhile are handled as usual.  Never from inside event handling (hci.h): the events it pumps would
+ * run inside the handler that is still working on its own, and a Disconnection Complete among them frees what that
+ * handler holds.  Such a call is a bug; it is logged and refused as if the controller were gone, which reopens it and
+ * drops every link: loud, and nothing is left half done. */
 static int cmd(unsigned op, const void *par, unsigned n)
 {
     unsigned char b[4 + 255] = { H4_CMD, op & 0xff, op >> 8, n };
+    if (in_event) { fprintf(stderr, "bluetooth: BUG: command %04x sent from event handling\n", op); return -1; }
     if (n > 255) return -1;
     if (n) memcpy(b + 4, par, n);
     cc_op = -1;

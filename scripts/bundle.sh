@@ -6,15 +6,14 @@
 # downloads itself, once they are switched on in Home Assistant (scripts/system/main.sh).
 set -e
 cd "$(dirname "$0")/.."
-. scripts/lib/device.sh; device_load
+PC_ANY=1 . scripts/lib/device.sh; device_load      # works on Windows too, with a release build
 [ $# = 2 ] || die "usage: [DEVICE=<codename>] scripts/bundle.sh KEY VERSION"
 # The Echo's shell keeps a CR as part of each word: one in the boot scripts and nothing starts after the next boot.
 # .gitattributes keeps them out of a checkout; this catches a tree checked out before it, or an editor that put them back.
 for f in scripts/system/*.sh scripts/device/*.sh $DDIR/device.conf $DDIR/hassmic.rc; do
     ! grep -q "$(printf '\r')" "$f" || die "$f has CR LF line endings: git add --renormalize . && git checkout -- ."
 done
+# what goes onto the Echo: scripts/lib/device.sh (ship_bins, ship_scripts); the module is data, not a program
 python3 scripts/otatool.py pack "$1" "$2" $OUT/hassmic.bundle \
-    $OUT/hassmic $OUT/runas $OUT/otatool $(ls $OUT/latency $OUT/mixcap $OUT/mixplay $OUT/pryon_test 2>/dev/null) $DDIR/device.conf:644 \
-    $(for k in $OUT/*.ko; do [ -f "$k" ] && echo "$k:644"; done) keys/release.pub:644 \
-    scripts/system/main.sh scripts/system/boot.sh scripts/system/sysinstall.sh $DDIR/hassmic.rc:644 \
-    scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh
+    $(ship_bins | sed 's/\.ko$/.ko:644/') $(ship_scripts) \
+    $DDIR/device.conf:644 $DDIR/hassmic.rc:644 keys/release.pub:644

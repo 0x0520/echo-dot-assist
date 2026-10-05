@@ -5,6 +5,14 @@
 
 die() { echo "$*" >&2; exit 1; }
 
+# Git Bash, MSYS2 and Cygwin on Windows run these scripts only part of the way: the Makefile wants Linux compilers,
+# and stat -c, nc -q, .venv/bin and the setup's package managers are not there.  So stop before anything is done.  Works
+# there: pushing a release build (ota-push.sh and bundle.sh, which set PC_ANY=1; Python's otatool, no compiler) and
+# adb-wifi.sh, which does not load this.
+on_windows() { case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0;; esac; return 1; }
+WSL_HINT="run it in WSL2 (Ubuntu: wsl --install), from a clone made there; for adb over USB attach the Echo with usbipd-win (README.md, Requirements)"
+[ -n "$PC_ANY" ] || ! on_windows || die "${0##*/} needs Linux, this is $(uname -s): $WSL_HINT"
+
 # codename whose device.conf names this product (ro.product.device)
 device_for_product() {
     for c in devices/*/device.conf; do
@@ -31,6 +39,24 @@ device_load() {
     OUT=build/$DEVICE
     FW=firmware/$DEVICE
     export DEVICE
+}
+
+# ship_bins: the Echo's binaries in $OUT that go onto it, one per line: what bundle.sh packs, install-system.sh and
+# deploy.sh push, and CI hands from its builds to the release job.  The tools on the mixer and Pryon only where the model
+# has those (Makefile BIN), Wi-Fi motion's module only where it was built.  pryon_test goes along because
+# scripts/artifacts.sh loads every wake word set with the Echo's own engine before installing it.  aed_test and
+# whisper_test stay on the PC: research tools (docs/re-aed.md, docs/re-whisper.md) that nothing on the Echo runs, pushed
+# by hand to /data/local/tmp when needed.
+ship_bins() {
+    echo $OUT/hassmic; echo $OUT/runas; echo $OUT/otatool
+    for _f in $OUT/latency $OUT/mixcap $OUT/mixplay $OUT/pryon_test $OUT/*.ko; do [ -f "$_f" ] && echo "$_f"; done
+    return 0
+}
+# ship_scripts: what runs as root on the Echo next to them (scripts/system: boot integration; scripts/device: firewall,
+# Alexa off and on).  device.conf, the keys and hassmic.rc are added by each caller, which treats them differently.
+ship_scripts() {
+    echo scripts/system/main.sh scripts/system/boot.sh scripts/system/sysinstall.sh \
+         scripts/device/lockdown.sh scripts/device/alexa-off.sh scripts/device/alexa-on.sh
 }
 
 # The binaries link against one firmware's libraries; on another one they may crash or misbehave in the audio path.

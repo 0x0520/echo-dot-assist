@@ -72,6 +72,7 @@ build_binaries() {
             echo "no release build of this commit on GitHub, and no Android NDK to build with: $DDIR/README.md" >&2
         fi
     fi
+    on_windows && die "no release build of this commit to use, and building needs Linux: $WSL_HINT"
     prebuilt_clear
     make -s all DEVICE=$DEVICE
 }

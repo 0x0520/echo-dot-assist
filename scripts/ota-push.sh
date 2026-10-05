@@ -12,7 +12,7 @@
 # read-only system partition.  Lose secrets/update.key and updates need one more trip through install-system.sh.
 set -e
 cd "$(dirname "$0")/.."
-. scripts/lib/device.sh; device_load
+PC_ANY=1 . scripts/lib/device.sh; device_load      # works on Windows too, with a release build
 HOST=${1:-$(cat secrets/ota.host 2>/dev/null || true)}
 [ -n "$HOST" ] || { echo "usage: scripts/ota-push.sh <echo-ip-or-hostname>"; exit 1; }
 [ -f secrets/update.key ] || { echo "secrets/update.key missing: this key pair is created by scripts/install-system.sh"; exit 1; }

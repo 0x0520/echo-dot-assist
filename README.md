@@ -91,6 +91,8 @@ Details:
   Assistant reads an ESPHome select's choices only when it connects, so keep only the speaker you want in pairing mode.
   "Play on Bluetooth speaker" switches between it and the Echo; the Echo reconnects by itself when the speaker comes
   back, and takes it when the speaker calls the Echo on switching on. "Bluetooth speaker" shows its name and state.
+  If the speaker forgets the Echo (reset, or paired with too many others), the Echo does not pair with it again on its
+  own: run "Bluetooth speaker search" again. The same for a phone: pair it again with "Bluetooth pairing" on.
   - **Volume**: the speaker has its own. While the Echo plays on it, the volume buttons, Home Assistant and Music
     Assistant set the speaker's volume, and the light ring shows it; the Echo starts from the speaker's own volume and
     the speaker's buttons move it too. Back on the Echo, its own volume returns. With a speaker that supports
@@ -102,7 +104,9 @@ Details:
     music played elsewhere in the room has not been measured yet.
   - SBC only (every speaker has it), one speaker at a time. ESPHome only for setting it up.
 - **Bluetooth**: the proxy works like an ESPHome `bluetooth_proxy` with `active: true`, up to 3 connections, "Just Works"
-  pairing only. While a phone plays, the proxy stops scanning: the radio cannot do both without the music stuttering.
+  pairing only, with full-length (16-byte) keys. A device that has forgotten its pairing keeps its bond on the Echo until
+  Home Assistant pairs it again (which replaces the bond) or unpairs it. While a phone plays, the proxy stops scanning:
+  the radio cannot do both without the music stuttering.
 - **Settings in Home Assistant**: "Mic level" (how loud speech reaches the voice assistant, -35 to -15 dBFS, default
   -26; the Echo adjusts its gain to it), "Noise reduction" (off by default; low, medium, high: RNNoise on what the voice
   assistant gets takes the background down by up to 6, 9 or 12 dB), mute switch, "Do not disturb"

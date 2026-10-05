@@ -1104,6 +1104,24 @@ Run in this order. Each step says what it proves.
       boots (the counter only trusts the update's own binary); an Echo whose mic delivers nothing never passes the self
       test and so keeps the factory copy (muted is not that: micAsr still delivers, as digital silence, see the Echo 2
       above). Not on a device yet.
+- [x] Bluetooth hardening (2026-10-05, review of `a2dp.c`, `a2dp_codecs.c`, `ble.c`, `ble_crypto.c`, `btout.c`):
+      AAC's in-band LATM configuration decided the decoded rate (implicit SBR: 88.2 / 96 kHz) and the player's 48 kHz
+      stack buffer overflowed: StreamMuxConfig checked before FFmpeg (AAC LC, negotiated rate, 1-2 channels, else
+      dropped), decoded frames at another rate dropped, ring_push refuses < 8 or > 48 kHz, player chunk/out clamped
+      (out = n / ratio ran a few frames over even at 48 kHz). Keys: peer-reported auth failures (BR/EDR 0x05/0x06, LE
+      encryption 0x06) no longer delete link keys / bonds; out_may_pair only during a search's window (OUT_PAIR_S 120 s);
+      in the phone pairing window a stale key is dropped and we authenticate again; HA's LE "pair" re-pairs a device
+      whose bond failed (asked = consent). SDP de() bound wrap on 32-bit; LE/BR-EDR shared ACL buffers (LE Read Buffer
+      Size 0) one credit pool (hci_acl_pool); GATT discovery timeout per request; ATT MTU exchange honoured once,
+      prepared writes advance by bytes sent; SMP: 16-byte keys only, peer P-256 key checked on the curve
+      (ble_crypto.c p256_on_curve); upkeep() re-checks a connection after each cmd() (slot generation), a2dp voids
+      queued commands of a gone link; L2CAP peer MTU >= 48; core_state() an atomic snapshot, ble.c's handler pointer
+      atomic; player resamples outside r_lock. Tested on the PC: `make unit` (new tests/unit/a2dp_test.c: SDP lengths,
+      MTU, key retention, pairing window, player rate, shared pool; LATM cases in a2dp_codecs_test.c; P-256 vectors in
+      ble_crypto_test.c), fake_ha_esphome.py, donut/biscuit/radar STUBS=1 warning-free. Needs a device: AAC from an
+      iPhone and an Android phone still plays (their LATM passes the check), SBC/aptX unchanged, a phone that forgot the
+      Echo re-pairs with "Bluetooth pairing" on, speaker search + reconnect, LE proxy pairing with a real device (16-byte
+      keys, SC), whether LE Read Buffer Size reports 0 on donut/biscuit/radar (log line "shared with LE").
 - [ ] Other stock features without a Home Assistant counterpart yet (survey 2026-10-01): Wi-Fi setup without a PC (stock: `oobed`, 5 s action button; ESPHome's
       way would be Improv over BLE, ble.c has the controller); offline alarm clock and reminders (HA has timers only).
       Not worth mapping: Matter (`ace_chip_service`), Sidewalk/BLE mesh, Drop In/calling (`commsd`), stereo pairs.

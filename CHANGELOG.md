@@ -19,7 +19,14 @@ What changed for people using the Echo, newest first. Details and measurements a
   update, and the update never became the fallback; installing an update now removes it.
 - **Hardened the root side of updates** against a compromised hassmic: root no longer writes the update result through
   a name in hassmic's own directory, which could have been made to point at a file root then runs.
-
+- **Bluetooth is harder to attack.** A phone or device in radio range could crash hassmic with crafted AAC audio, and
+  a device pretending to be a paired one could make the Echo forget the real pairing and pair itself in its place.
+  Both are closed, along with a series of smaller checks on what other Bluetooth devices send (see PLAN.md).
+- **A forgotten Bluetooth pairing is no longer repaired behind your back.** If a speaker the Echo plays on is reset,
+  run "Bluetooth speaker search" again; a phone that forgot the Echo pairs again with "Bluetooth pairing" on, as
+  before. For the Bluetooth proxy, Home Assistant's "pair" pairs such a device afresh. Before, the Echo deleted the
+  pairing on the other side's word and re-paired with whoever answered.
+- **Bluetooth proxy pairing needs full-length keys** (16 bytes), which every current device offers.
 - **Whisper detection: one download, the one that exists.** Amazon has a single whisper model for every language
   and hands it out only when asked for American English, so `scripts/artifacts.sh` now asks for just that, whatever
   language is picked. Before, it asked for the picked language first and took the English one as a fallback.

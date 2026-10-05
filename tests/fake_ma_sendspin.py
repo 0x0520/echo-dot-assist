@@ -2,15 +2,51 @@
 """Plays Music Assistant's side of Sendspin against build/hassmic-host with the reference server library
 (aiosendspin 9.1.1, the version in Music Assistant 2.10.4): dials the player, approves it unpaired, streams a sine,
 sends a volume command, and checks what reaches the player's audio backend."""
-import asyncio, logging, math, os, signal, struct, subprocess, sys, tempfile
+import asyncio, json, logging, math, os, signal, struct, subprocess, sys, tempfile
+import aiohttp
 import numpy as np
-from aiosendspin.noise import Identity, InMemoryServerPairingStore, decode_token
+from aiosendspin.noise import Identity, InMemoryServerPairingStore, SENTINEL_PSK, decode_token
+from aiosendspin.noise.driver import run_handshake_server
+from aiosendspin.noise.keys import psk_id_for
+from aiosendspin.noise.trust_store import PskCategory, ResolvedPsk
 from aiosendspin.noise.pairing import PairingAttempt
 from aiosendspin.models.types import PairMethod, MediaCommand
 from aiosendspin.server import SendspinServer, AudioFormat, ClientAddedEvent
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 16958
+
+
+UPGRADE = (b"GET /sendspin HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+           b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+
+
+async def sentinel_intruder(activate, then):
+    """Dials the player as a server holding only the published Sentinel key, declares `activate`, sends `then`; returns the
+    message types the player sent back."""
+    async def sentinel(_cid): return ResolvedPsk(psk_id_for(SENTINEL_PSK), SENTINEL_PSK, PskCategory.SENTINEL)
+    types = []
+    async with aiohttp.ClientSession() as http:
+        ws = await http.ws_connect(f"ws://127.0.0.1:{PORT}/sendspin")
+        enc = (await run_handshake_server(ws, local_identity=Identity.generate(), psk_provider=sentinel)).encrypted_ws
+        await enc.send_str(json.dumps({"type": "server/hello", "payload": {"name": "intruder"}}))
+        await enc.send_str(json.dumps({"type": "server/activate", "payload": activate}))
+        for m in then: await enc.send_str(json.dumps(m))
+        try:
+            async with asyncio.timeout(3):
+                while (msg := await enc.receive()).type == aiohttp.WSMsgType.TEXT: types.append(json.loads(msg.data)["type"])
+        except TimeoutError: pass
+        await ws.close()
+    return types
+
+
+async def closes(reader, secs):
+    """True if the player closes this connection within `secs` (whatever it sent before)."""
+    try:
+        await asyncio.wait_for(reader.read(), secs)
+        return True
+    except ConnectionError: return True
+    except TimeoutError: return False
 
 
 def check(cond, what):
@@ -133,6 +169,35 @@ async def main():
         await server.initiate_pairing(cid, PairingAttempt(method=PairMethod.PAIRING_PSK, pairing_psk=tok.pairing_psk))
         await asyncio.sleep(5)
         check(server.get_client(cid).role("player@v1") is not None, "unpaired access off: plays once paired with the token")
+
+        # anyone on the LAN knows the Sentinel key: declaring "pairing" must neither push the paired server out nor let
+        # the stranger play or set the volume
+        player = server.get_client(cid).role("player@v1"); vol = player.volume
+        types = await sentinel_intruder({"activities": ["pairing"], "pairing": {"method": "pin"}}, [
+            {"type": "server/command", "payload": {"player": {"command": "volume", "volume": 7}}},
+            {"type": "stream/start", "payload": {"player": {"codec": "pcm", "sample_rate": 48000, "channels": 2, "bit_depth": 16}}}])
+        await asyncio.sleep(1)
+        check(server.get_client(cid).is_connected and server.get_client(cid).role("player@v1") is not None,
+              "Sentinel session declaring pairing does not push out the paired server")
+        check("client/time" not in types and "client/state" not in types, f"Sentinel session is not admitted: got {types}")
+        check(player.volume == vol, f"Sentinel session cannot set the volume: {player.volume} (was {vol})")
+
+        # connections that never finish the handshake: a cap on how many, a deadline, a small frame limit
+        idle = [await asyncio.open_connection("127.0.0.1", PORT) for _ in range(6)]
+        await asyncio.sleep(0.5)
+        check(server.get_client(cid).is_connected, "paired server survives six idle connections")
+        r, w = await asyncio.open_connection("127.0.0.1", PORT)
+        w.write(UPGRADE + b"\x82\x7f" + (1 << 20).to_bytes(8, "big"))      # announces a 1 MB frame before the handshake
+        await w.drain()
+        check(await closes(r, 3), "1 MB frame before the handshake: connection closed")
+        w.close()
+        await asyncio.sleep(10)
+        gone = [await closes(r, 1) for r, _ in idle]
+        for _, w in idle: w.close()
+        gone = sum(gone)
+        check(gone == len(idle), f"silent connections closed by the handshake deadline: {gone} of {len(idle)}")
+        check(server.get_client(cid).is_connected and server.get_client(cid).role("player@v1") is not None,
+              "paired server still connected and playing-ready afterwards")
     finally:
         proc.terminate(); await server.close()
     print("FAILED" if check.failed else "all good")

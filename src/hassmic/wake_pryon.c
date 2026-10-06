@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "pryon_api.h"
+#include "threadname.h"
 
 #define MODEL_SET "hassmic-ms"
 #define DECODER   "hassmic-dec"
@@ -83,14 +84,16 @@ static void on_result(const char *decoderId, PryonEnumeratedResult *r)
  * under MODEL_SET, loaded, and the fallback to the stock model asked for a new one under the same name */
 int wake_open(const char *manifest, wake_cb cb)
 {
-    PryonMultichannelAudioFormat fmt;
+    PryonMultichannelAudioFormat fmt; struct thread_tids before;
     if (opened) return -1;
     callback = cb;
     PryonApi_SetLoggingCallback(on_log);
     PryonApi_SetEnumeratedResultCallback(on_result);
     if (PryonModelSet_New(MODEL_SET, manifest, "")) return -1;
     PryonDecoder_NewPryonMultichannelAudioFormat_Default(&fmt);
+    thread_tids(&before);
     if (PryonDecoder_NewSpotterAudioDecoder(DECODER, MODEL_SET, "pryon", fmt, "{}")) { PryonModelSet_Delete(MODEL_SET); return -1; }
+    thread_name_new(&before, "pryon wake");     /* the decoder's worker: threadname.h */
     pthread_mutex_lock(&props_lock);
     opened = 1;
     push_props();

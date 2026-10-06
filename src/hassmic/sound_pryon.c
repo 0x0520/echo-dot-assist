@@ -11,6 +11,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "pryon_api.h"
+#include "threadname.h"
 
 #define MODEL     "/system/local/models/AED/pryon.manifest"
 #define MODEL_SET "hassmic-aed-ms"
@@ -56,7 +57,7 @@ static void on_result(const char *decoderId, PryonAcousticEventResult *r)
 
 int sound_open(const char *const *t, int n, sound_cb cb)
 {
-    PryonMultichannelAudioFormat fmt;
+    PryonMultichannelAudioFormat fmt; struct thread_tids before;
     PryonClientProperty props[MAX_TYPES + 1]; PryonClientEvent ev[MAX_TYPES + 1];
     static char names[MAX_TYPES][48];
     if (opened) return 0;
@@ -70,7 +71,9 @@ int sound_open(const char *const *t, int n, sound_cb cb)
         if (PryonModelSet_New(MODEL_SET, m, "")) { fprintf(stderr, "sound: cannot load %s\n", m); return -1; }
     }
     PryonDecoder_NewPryonMultichannelAudioFormat_Default(&fmt);
+    thread_tids(&before);
     if (PryonDecoder_NewSpotterAudioDecoder(DECODER, MODEL_SET, "pryon", fmt, "{}")) { PryonModelSet_Delete(MODEL_SET); return -1; }
+    thread_name_new(&before, "pryon sound");    /* the decoder's worker: threadname.h */
     props[0].name = "AcousticEventDetectionEnabled"; props[0].value = 1;
     for (int i = 0; i < ntypes; i++) {
         snprintf(names[i], sizeof names[i], "aed_%s_enabled", types[i]);

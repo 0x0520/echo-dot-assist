@@ -1434,8 +1434,11 @@ Run in this order. Each step says what it proves.
       (PR_SET_NAME, 15 chars) first: capture, mic sender, playback, earcon, volume led, alarms, selftest, `<proto>
       client`, outq writer, media fetch, bt announce, diag, light, kill wait, adb watch, ota push, update, arbitration,
       improv, ble controller, a2dp player, avrcp volume, btout route/aipc/hal, buttons, mute latch, privacy key,
-      sendspin play/listen/conn/time, wifi motion. Not the main thread (pidof matches it); the libraries' own threads
-      (AIPC, Pryon) stay "hassmic". **Kill**: ESPHome action `kill_process` (pid int, signal string: term/empty or
+      sendspin play/listen/conn/time, wifi motion. Not the main thread (pidof matches it). Pryon's decoder worker is
+      named from outside (`thread_tids` before `PryonDecoder_NewSpotterAudioDecoder`, `thread_name_new` after: a new tid
+      still carrying the caller's name gets "pryon wake" / "pryon sound" / "pryon whisper" through
+      `/proc/self/task/<tid>/comm`): on the Dot 3 it was the anonymous "hassmic" thread at 16-20 % of all CPU, the whole
+      wake word (`debuggerd -b`: only libpryon frames; capture, which feeds it, 0.6 %). AIPC's threads name themselves. **Kill**: ESPHome action `kill_process` (pid int, signal string: term/empty or
       kill; HA makes both required). Keyed connection only, else refused and logged. hassmic reads the process's start
       time (refuses here if it cannot read it), writes `state/kill-request` (0600, `pid start TERM|KILL`), one at a time,
       and polls `state/kill-result` for 20 s (a "kill wait" thread). Root (`kill_watch` in ota_watch, every 2 s): takes
@@ -1450,9 +1453,15 @@ Run in this order. Each step says what it proves.
       ignored for 3 s]" / "FAILED refused: ..." / "FAILED ... still runs" into `state/kill-result` (renamed in, like
       wifi-result: `answer()` now serves both) and boot.log. A result answered after hassmic killed itself is read at
       the next start. Firewall invariant untouched: no new port, no new egress.
-      `scripts/top.sh [secs]`: one `adb shell` per refresh (two looks at `/proc/stat` and hassmic's threads 1 s apart,
-      meminfo, loadavg, `top -b -n 1 -m 15`, and `ps -A -o PID,USER,PCPU,RSS,NAME` or `ps` when that top prints
-      nothing), rendered with awk on the PC; no `lib/device.sh`, so Git Bash works; `ONCE=1` for one look.
+      `scripts/top.sh [secs]`: one `adb shell` per refresh (two looks at `/proc/stat`, every `/proc/<pid>/stat` and
+      hassmic's threads 1 s apart, meminfo, loadavg), rendered with awk on the PC: processes by CPU (ties by RSS), `TOPN`
+      of them (15), with RSS; hassmic's RSS and threads. No `lib/device.sh`, so Git Bash works; `ONCE=1` for one look.
+      It first used `top -b -n 1 -m 15` with `ps -A -o ...` as fallback: on the Dot 3 (Fire OS 6574.1) top has no
+      batch mode and toolbox ps takes `-A` for a pid ("bad pid '-A'") and prints all ~160 processes without CPU.
+      **Measured on the Dot 3** (2026-10-06, idle, no Home Assistant connected yet, `scripts/top.sh`): 159 processes,
+      43-53 % of all cores busy in all; mixer 18-19 % / 22.8 MB, hassmic 17 % / 26.5 MB of which "pryon wake" 17 %
+      and capture 0.6 %, everything else under 4 %; memory 12.6 % used, 859 of 983 MB available. Load average ~7 with
+      that: the kernel threads in D (GCPU, cpu_sched_threa, cpu_usage_threa, entropy_thread, fuse_log) count in it.
       Measured on the PC (x86, container): a sample of the 44 processes of Docker Desktop's VM (`--pid=host`) takes
       0.84 ms, all of it CPU (mean of 20; the first, cold, 6.8 ms); in fake_ha_esphome.py's namespace (4 processes, 18
       threads) 0.6 ms. For ~200 processes on the Echo's A35 that suggests a few ms every 10 s, well under 0.1 % of a core.

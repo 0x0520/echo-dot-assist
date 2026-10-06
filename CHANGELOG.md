@@ -8,7 +8,9 @@ What changed for people using the Echo, newest first. Details and measurements a
   memory used and available, load, hassmic's own CPU and memory, the five busiest processes and hassmic's threads by
   name, every 10 s. All but "Memory used" are off until you enable them. The action `kill_process` ends a process by
   its number (taken only from Home Assistant with the Echo's key); the Echo refuses to end what keeps it running,
-  reachable or locked down, and "Last kill" says what happened. `scripts/top.sh` shows the same live over adb.
+  reachable or locked down, and "Last kill" says what happened. `scripts/top.sh` shows the same live over adb,
+  with the busiest processes' CPU and memory (it listed every process without CPU on the Echo Dot 3). The wake word
+  engine's own thread is now called "pryon wake" instead of a second "hassmic": it is most of what hassmic costs.
 - **adb over Wi-Fi with your update key opens for your PC only.** `scripts/adb-wifi.sh` used to open port 5555, a
   root shell without a password, to the whole network for 30 minutes; now only the address that signed the request
   gets in. The "Debug access" switch in Home Assistant and `ADB_WIFI=1` still open it to the network, unless the new

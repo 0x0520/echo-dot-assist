@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pryon_api.h"
+#include "threadname.h"
 
 #define MODEL_SET "hassmic-whisper-ms"
 #define SKIP      8000                  /* samples: 0.5 s after the wake word */
@@ -104,8 +105,10 @@ void whisper_begin(void)
     if (!opened) return;
     retire();
     snprintf(id, sizeof id, "hassmic-whisper-%u", ++seq);
-    WhisperAudioFormat fmt = { 0, 16000, 16, 1 };
+    WhisperAudioFormat fmt = { 0, 16000, 16, 1 }; struct thread_tids before;
+    thread_tids(&before);
     if (WhisperApi_createWhisperDetector(id, MODEL_SET, "pryon", fmt)) { fprintf(stderr, "whisper: cannot create a detector\n"); return; }
+    thread_name_new(&before, "pryon whisper");  /* a worker of the detector, if it starts one: threadname.h */
     active = pending = 1; fed = skipped = 0;
 }
 

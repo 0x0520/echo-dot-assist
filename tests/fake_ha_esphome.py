@@ -430,7 +430,10 @@ async def main():
         started.clear(); mic.clear(); proc.send_signal(signal.SIGUSR1)
         await asyncio.wait_for(started.wait(), 5); await asyncio.sleep(1.0)
         peak = max(abs(v) for v in struct.unpack(f"<{len(mic) // 2}h", mic[:len(mic) // 2 * 2])) if mic else 0
-        check(len(mic) > 16000 and len(mic) % 320 == 0 and 8000 < peak <= 29100,
+        # the mic level is -30 here (cli2 above), not the -20 of the first check: espeak's peaks sit ~17 dB over its
+        # active level, so a settled gain gives 7000-8000 at most, and 8000 failed about every other run.  Level + 12 dB
+        # still tells "brought up" from left at the raw -55 dBFS
+        check(len(mic) > 16000 and len(mic) % 320 == 0 and 32768 * 10 ** ((-30 + 12) / 20) < peak <= 29100,
               f"with noise reduction: mic audio streamed in whole 10 ms frames at speech level: {len(mic)} bytes in 1 s, peak {peak}")
         enc.send_voice_assistant_event(Ev.VOICE_ASSISTANT_RUN_END, None); await asyncio.sleep(0.3)
         enc.select_command(by["noise_reduction"].key, "Off"); await asyncio.sleep(0.3)

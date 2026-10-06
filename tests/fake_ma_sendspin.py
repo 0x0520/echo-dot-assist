@@ -90,6 +90,13 @@ async def main():
         client.group.group_role("controller").set_supported_commands([MediaCommand.PLAY, MediaCommand.PAUSE, MediaCommand.NEXT])
         stream = client.group.start_stream()
         n, phase = 4800, 0
+        # the first commit is stamped before the server's start-up work (encoder, stream/start); on a slow PC it is
+        # queued ~0.3 s late, the player rightly drops it (multiroom sync) and the server re-anchors its timeline:
+        # let that eat silence, not the tone
+        for _ in range(5):
+            stream.prepare_audio(bytes(n * 4), fmt)
+            await stream.commit_audio()
+            await stream.sleep_to_limit_buffer(1_000_000)
         for i in range(40):                                # 4 s of 440 Hz
             k = np.arange(phase, phase + n); s = (8000 * np.sin(2 * np.pi * 440 * k / 48000)).astype("<i2")
             phase += n
@@ -98,6 +105,12 @@ async def main():
             await stream.sleep_to_limit_buffer(1_000_000)
             if i == 15: player.set_volume(30)
             if i == 25: proc.send_signal(signal.SIGUSR2)      # action button while music plays
+        # FLAC encodes in 4608-sample blocks and aiosendspin's stop() drops the partial last one (64 ms of these 4 s)
+        # instead of flushing it: follow the tone with silence, so all of it is in whole blocks
+        for _ in range(3):
+            stream.prepare_audio(bytes(n * 4), fmt)
+            await stream.commit_audio()
+            await stream.sleep_to_limit_buffer(1_000_000)
         await asyncio.sleep(2.5)
         fmt_used = player.get_audio_format() if hasattr(player, "get_audio_format") else None
         check("ControllerPauseEvent" in ctl_events, f"action button during playback sends controller pause: {ctl_events}")
@@ -109,7 +122,9 @@ async def main():
         nz = np.flatnonzero(np.abs(pcm) > 100)
         tone = pcm[nz[0]:nz[-1] + 1] if len(nz) else pcm[:0]
         dur = len(tone) / 48000
-        check(3.9 <= dur <= 4.05, f"played {dur:.3f} s of tone (sent 4.000 s) as {want}")
+        # silence on both sides: all of it arrives in whole FLAC blocks, nothing may be missing (100 ms are 44 periods
+        # of 440 Hz and would not even show as a phase step below)
+        check(3.99 <= dur <= 4.01, f"played {dur:.3f} s of tone (sent 4.000 s) as {want}")
         # continuity: a dropped or repeated frame shows as a phase jump of the 440 Hz sine
         if len(tone) > 48000:
             ph = np.unwrap(np.angle(np.fft.ifft(np.fft.fft(tone) * (np.fft.fftfreq(len(tone)) > 0) * 2)))     # analytic signal
